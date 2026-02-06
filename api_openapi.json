@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Blocknet Daemon API",
-    "description": "Authenticated JSON API for the Blocknet privacy blockchain daemon. Used by GUI wallets (Tauri) and tooling. All private endpoints require Bearer token authentication via a cookie file (`<dataDir>/api.cookie`) written on daemon startup. Public routes (GET-only blockchain queries) are also served unauthenticated when using `--explorer` mode.",
+    "description": "Authenticated JSON API for the Blocknet privacy blockchain daemon. All private endpoints require Bearer token authentication via a cookie file (`<dataDir>/api.cookie`) written on daemon startup. Public routes (GET-only blockchain queries) are also served unauthenticated when using `--explorer` mode.",
     "version": "0.1.0",
     "license": {
       "name": "MIT"

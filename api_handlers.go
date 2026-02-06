@@ -468,35 +468,8 @@ func blockToJSON(block *Block, chainHeight uint64) map[string]any {
 }
 
 // findChainTx searches for a tx by hash string in the blockchain (tip backwards).
-// Reuses the same approach as explorer.findTx.
 func (s *APIServer) findChainTx(hashStr string) (*Transaction, uint64, bool) {
-	chain := s.daemon.Chain()
-	height := chain.Height()
-
-	for h := height; ; h-- {
-		block := chain.GetBlockByHeight(h)
-		if block == nil {
-			if h == 0 {
-				break
-			}
-			continue
-		}
-
-		for _, tx := range block.Transactions {
-			txID, err := tx.TxID()
-			if err != nil {
-				continue
-			}
-			if fmt.Sprintf("%x", txID) == hashStr {
-				return tx, h, true
-			}
-		}
-
-		if h == 0 {
-			break
-		}
-	}
-	return nil, 0, false
+	return s.daemon.Chain().FindTxByHashStr(hashStr)
 }
 
 // createTxBuilder creates a transaction builder wired to the daemon (same as CLI).

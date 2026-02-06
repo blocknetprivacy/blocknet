@@ -272,34 +272,9 @@ func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 	renderTemplate(w, explorerTxTmpl, data)
 }
 
-// findTx searches for a transaction by hash in the blockchain
+// findTx searches for a transaction by hash in the blockchain.
 func (e *Explorer) findTx(hashStr string) (*Transaction, uint64, bool) {
-	// Scan blocks from tip backwards (more recent txs are looked up more often)
-	height := e.daemon.chain.Height()
-	for h := height; ; h-- {
-		block := e.daemon.chain.GetBlockByHeight(h)
-		if block == nil {
-			if h == 0 {
-				break
-			}
-			continue
-		}
-
-		for _, tx := range block.Transactions {
-			txID, err := tx.TxID()
-			if err != nil {
-				continue
-			}
-			if fmt.Sprintf("%x", txID) == hashStr {
-				return tx, h, true
-			}
-		}
-
-		if h == 0 {
-			break
-		}
-	}
-	return nil, 0, false
+	return e.daemon.chain.FindTxByHashStr(hashStr)
 }
 
 func (e *Explorer) handleSearch(w http.ResponseWriter, r *http.Request) {

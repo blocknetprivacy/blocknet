@@ -479,7 +479,12 @@ func (c *Chain) GetBlock(hash [32]byte) *Block {
 func (c *Chain) GetBlockByHeight(height uint64) *Block {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	return c.getBlockByHeightLocked(height)
+}
 
+// getBlockByHeightLocked is the lock-free inner implementation.
+// Caller must hold at least c.mu.RLock.
+func (c *Chain) getBlockByHeightLocked(height uint64) *Block {
 	// Check memory cache first
 	if hash, ok := c.byHeight[height]; ok {
 		if block, ok := c.blocks[hash]; ok {
@@ -959,6 +964,39 @@ func (c *Chain) IsFinalized(height uint64) bool {
 		return false
 	}
 	return c.height-height >= MaxReorgDepth
+}
+
+// FindTxByHashStr searches for a transaction by hex hash string, scanning
+// blocks from tip backwards. Returns the transaction, block height, and
+// whether it was found.
+func (c *Chain) FindTxByHashStr(hashStr string) (*Transaction, uint64, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	for h := c.height; ; h-- {
+		block := c.getBlockByHeightLocked(h)
+		if block == nil {
+			if h == 0 {
+				break
+			}
+			continue
+		}
+
+		for _, tx := range block.Transactions {
+			txID, err := tx.TxID()
+			if err != nil {
+				continue
+			}
+			if fmt.Sprintf("%x", txID) == hashStr {
+				return tx, h, true
+			}
+		}
+
+		if h == 0 {
+			break
+		}
+	}
+	return nil, 0, false
 }
 
 // ============================================================================
