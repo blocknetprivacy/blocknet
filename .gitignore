@@ -1,0 +1,55 @@
+# Binaries
+blocknet
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Coverage
+*.out
+
+# Go workspace
+go.work
+
+# Private data (NEVER commit these!)
+account.json
+wallet.dat
+*.dat
+*.key
+identity.key
+
+# Chain/node data
+data/
+chain.db
+
+# Build artifacts
+releases/
+dist/
+
+# Peer discovery
+peer.txt
+
+# Website (deployed separately)
+website/
+
+# Rust/Cargo
+crypto-rs/target/
+crypto-rs/Cargo.lock
+**/*.rs.bk
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

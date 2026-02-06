@@ -1,0 +1,609 @@
+package p2p
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"math/rand"
+	"sync"
+	"time"
+
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
+)
+
+// PEX message types
+const (
+	PEXMsgGetPeers byte = 0x01
+	PEXMsgPeers    byte = 0x02
+	PEXMsgAnnounce byte = 0x03
+)
+
+// MaxPeersPerExchange is the maximum peers to send in one exchange
+const MaxPeersPerExchange = 32
+
+// PeerRecord represents a known peer's address info
+type PeerRecord struct {
+	ID       string   `json:"id"`
+	Addrs    []string `json:"addrs"`
+	LastSeen int64    `json:"last_seen"`
+	Score    int      `json:"score"` // Higher = better peer
+}
+
+// Ban thresholds and durations
+const (
+	ScoreThresholdBan      = 0   // Score at or below triggers ban
+	ScoreThresholdWarn     = 20  // Score below this is concerning
+	ScorePenaltyInvalid    = -10 // Penalty for invalid data
+	ScorePenaltyTimeout    = -5  // Penalty for timeout
+	ScorePenaltyMisbehave  = -25 // Penalty for misbehavior
+	ScoreRewardGood        = 1   // Reward for good behavior
+	BanDurationShort       = 15 * time.Minute
+	BanDurationMedium      = 2 * time.Hour
+	BanDurationLong        = 24 * time.Hour
+	MaxBansBeforePermanent = 5 // After this many bans, permanent ban
+)
+
+// BanRecord tracks a banned peer
+type BanRecord struct {
+	PeerID    peer.ID
+	Reason    string
+	BannedAt  time.Time
+	ExpiresAt time.Time
+	BanCount  int // How many times this peer has been banned
+	Permanent bool
+}
+
+// PeerExchange manages peer discovery without public DHT
+type PeerExchange struct {
+	mu sync.RWMutex
+
+	node       *Node
+	seedNodes  []peer.AddrInfo
+	knownPeers map[peer.ID]*PeerRecord
+
+	// Ban list
+	bannedPeers map[peer.ID]*BanRecord
+
+	// Connection tracking
+	lastExchange map[peer.ID]time.Time
+
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// NewPeerExchange creates a new peer exchange manager
+func NewPeerExchange(node *Node, seedAddrs []string) *PeerExchange {
+	seeds := make([]peer.AddrInfo, 0, len(seedAddrs))
+	for _, addr := range seedAddrs {
+		ma, err := multiaddr.NewMultiaddr(addr)
+		if err != nil {
+			continue
+		}
+		pi, err := peer.AddrInfoFromP2pAddr(ma)
+		if err != nil {
+			continue
+		}
+		seeds = append(seeds, *pi)
+	}
+
+	return &PeerExchange{
+		node:         node,
+		seedNodes:    seeds,
+		knownPeers:   make(map[peer.ID]*PeerRecord),
+		bannedPeers:  make(map[peer.ID]*BanRecord),
+		lastExchange: make(map[peer.ID]time.Time),
+	}
+}
+
+// Start begins peer exchange operations
+func (pex *PeerExchange) Start(ctx context.Context) error {
+	pex.ctx, pex.cancel = context.WithCancel(ctx)
+
+	// Connect to seed nodes
+	if err := pex.connectToSeeds(); err != nil {
+		return err
+	}
+
+	// Start background tasks
+	go pex.exchangeLoop()
+	go pex.cleanupLoop()
+
+	return nil
+}
+
+// Stop halts peer exchange
+func (pex *PeerExchange) Stop() {
+	if pex.cancel != nil {
+		pex.cancel()
+	}
+}
+
+// connectToSeeds attempts to connect to all seed nodes
+func (pex *PeerExchange) connectToSeeds() error {
+	if len(pex.seedNodes) == 0 {
+		return nil // No seeds configured
+	}
+
+	ourID := pex.node.PeerID()
+	var connected int
+	var skipped int
+
+	for _, seed := range pex.seedNodes {
+		// Don't connect to ourselves
+		if seed.ID == ourID {
+			skipped++
+			continue
+		}
+
+		// log.Printf("Connecting to seed: %s", seed.String())
+		ctx, cancel := context.WithTimeout(pex.ctx, 10*time.Second)
+		err := pex.node.host.Connect(ctx, seed)
+		cancel()
+
+		if err == nil {
+			connected++
+			pex.addKnownPeer(seed.ID, seed.Addrs)
+			// log.Printf("Connected to seed: %s", seed.ID)
+		} else {
+			log.Printf("Failed to connect to seed %s: %v", seed.ID, err)
+		}
+	}
+
+	// Only error if we had seeds to connect to (excluding self) and failed all
+	if connected == 0 && len(pex.seedNodes) > skipped {
+		return fmt.Errorf("failed to connect to any seed nodes")
+	}
+
+	return nil
+}
+
+// exchangeLoop periodically exchanges peers with connected nodes
+func (pex *PeerExchange) exchangeLoop() {
+	// Initial exchange after short delay
+	time.Sleep(5 * time.Second)
+
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-pex.ctx.Done():
+			return
+		case <-ticker.C:
+			pex.doExchange()
+		}
+	}
+}
+
+// doExchange performs peer exchange with a random subset of connected peers
+func (pex *PeerExchange) doExchange() {
+	peers := pex.node.host.Network().Peers()
+	if len(peers) == 0 {
+		// No peers, try seeds again
+		pex.connectToSeeds()
+		return
+	}
+
+	// Pick random peers to exchange with (max 3)
+	rand.Shuffle(len(peers), func(i, j int) {
+		peers[i], peers[j] = peers[j], peers[i]
+	})
+
+	count := 3
+	if len(peers) < count {
+		count = len(peers)
+	}
+
+	for _, p := range peers[:count] {
+		pex.exchangeWith(p)
+	}
+}
+
+// exchangeWith performs peer exchange with a specific peer
+func (pex *PeerExchange) exchangeWith(p peer.ID) {
+	ctx, cancel := context.WithTimeout(pex.ctx, 30*time.Second)
+	defer cancel()
+
+	s, err := pex.node.host.NewStream(ctx, p, ProtocolPEX)
+	if err != nil {
+		return
+	}
+	defer s.Close()
+
+	// Send GetPeers request
+	if err := writeMessage(s, PEXMsgGetPeers, nil); err != nil {
+		return
+	}
+
+	// Read response
+	msgType, data, err := readMessage(s)
+	if err != nil {
+		return
+	}
+
+	if msgType != PEXMsgPeers {
+		return
+	}
+
+	// Parse peer records
+	var records []PeerRecord
+	if err := json.Unmarshal(data, &records); err != nil {
+		return
+	}
+
+	// Add new peers
+	for _, rec := range records {
+		pid, err := peer.Decode(rec.ID)
+		if err != nil {
+			continue
+		}
+
+		// Don't add ourselves
+		if pid == pex.node.PeerID() {
+			continue
+		}
+
+		addrs := make([]multiaddr.Multiaddr, 0, len(rec.Addrs))
+		for _, a := range rec.Addrs {
+			ma, err := multiaddr.NewMultiaddr(a)
+			if err != nil {
+				continue
+			}
+			addrs = append(addrs, ma)
+		}
+
+		if len(addrs) > 0 {
+			pex.addKnownPeer(pid, addrs)
+
+			// Try to connect if we need more peers
+			if len(pex.node.Peers()) < pex.node.config.MaxOutbound {
+				go pex.tryConnect(pid, addrs)
+			}
+		}
+	}
+
+	pex.mu.Lock()
+	pex.lastExchange[p] = time.Now()
+	pex.mu.Unlock()
+}
+
+// tryConnect attempts to connect to a peer
+func (pex *PeerExchange) tryConnect(pid peer.ID, addrs []multiaddr.Multiaddr) {
+	// Skip if already connected
+	if pex.node.host.Network().Connectedness(pid) == network.Connected {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(pex.ctx, 30*time.Second)
+	defer cancel()
+
+	pi := peer.AddrInfo{ID: pid, Addrs: addrs}
+	if err := pex.node.host.Connect(ctx, pi); err == nil {
+		pex.updatePeerScore(pid, 1) // Successful connection
+	}
+}
+
+// HandleStream handles incoming PEX protocol streams
+func (pex *PeerExchange) HandleStream(s network.Stream) {
+	defer s.Close()
+
+	// Read message
+	msgType, _, err := readMessage(s)
+	if err != nil {
+		return
+	}
+
+	switch msgType {
+	case PEXMsgGetPeers:
+		pex.handleGetPeers(s)
+	case PEXMsgAnnounce:
+		// Peer is announcing themselves - we already know them from the connection
+	}
+}
+
+// handleGetPeers responds to a peer request
+func (pex *PeerExchange) handleGetPeers(s network.Stream) {
+	records := pex.getPeerRecords(MaxPeersPerExchange)
+
+	data, err := json.Marshal(records)
+	if err != nil {
+		return
+	}
+
+	writeMessage(s, PEXMsgPeers, data)
+}
+
+// getPeerRecords returns a subset of known peers
+func (pex *PeerExchange) getPeerRecords(max int) []PeerRecord {
+	pex.mu.RLock()
+	defer pex.mu.RUnlock()
+
+	records := make([]PeerRecord, 0, max)
+
+	// Add connected peers first (they're definitely reachable)
+	for _, p := range pex.node.Peers() {
+		if len(records) >= max {
+			break
+		}
+
+		addrs := pex.node.host.Peerstore().Addrs(p)
+		if len(addrs) == 0 {
+			continue
+		}
+
+		addrStrs := make([]string, len(addrs))
+		for i, a := range addrs {
+			addrStrs[i] = a.String()
+		}
+
+		records = append(records, PeerRecord{
+			ID:       p.String(),
+			Addrs:    addrStrs,
+			LastSeen: time.Now().Unix(),
+			Score:    10,
+		})
+	}
+
+	// Add from known peers
+	for pid, rec := range pex.knownPeers {
+		if len(records) >= max {
+			break
+		}
+
+		// Skip if already added
+		alreadyAdded := false
+		for _, r := range records {
+			if r.ID == pid.String() {
+				alreadyAdded = true
+				break
+			}
+		}
+		if alreadyAdded {
+			continue
+		}
+
+		records = append(records, *rec)
+	}
+
+	return records
+}
+
+// addKnownPeer adds or updates a known peer
+func (pex *PeerExchange) addKnownPeer(pid peer.ID, addrs []multiaddr.Multiaddr) {
+	pex.mu.Lock()
+	defer pex.mu.Unlock()
+
+	addrStrs := make([]string, len(addrs))
+	for i, a := range addrs {
+		addrStrs[i] = a.String()
+	}
+
+	if existing, ok := pex.knownPeers[pid]; ok {
+		existing.Addrs = addrStrs
+		existing.LastSeen = time.Now().Unix()
+	} else {
+		pex.knownPeers[pid] = &PeerRecord{
+			ID:       pid.String(),
+			Addrs:    addrStrs,
+			LastSeen: time.Now().Unix(),
+			Score:    5,
+		}
+	}
+
+	// Also add to peerstore for libp2p
+	pex.node.host.Peerstore().AddAddrs(pid, addrs, time.Hour)
+}
+
+// updatePeerScore adjusts a peer's score and may trigger a ban
+func (pex *PeerExchange) updatePeerScore(pid peer.ID, delta int) {
+	pex.mu.Lock()
+	defer pex.mu.Unlock()
+
+	if rec, ok := pex.knownPeers[pid]; ok {
+		rec.Score += delta
+		if rec.Score < 0 {
+			rec.Score = 0
+		}
+		if rec.Score > 100 {
+			rec.Score = 100
+		}
+
+		// Check if should ban
+		if rec.Score <= ScoreThresholdBan {
+			pex.banPeerLocked(pid, "score dropped to zero", BanDurationMedium)
+		}
+	}
+}
+
+// IsBanned checks if a peer is currently banned
+func (pex *PeerExchange) IsBanned(pid peer.ID) bool {
+	pex.mu.RLock()
+	defer pex.mu.RUnlock()
+
+	ban, exists := pex.bannedPeers[pid]
+	if !exists {
+		return false
+	}
+
+	if ban.Permanent {
+		return true
+	}
+
+	// Check if ban expired
+	if time.Now().After(ban.ExpiresAt) {
+		return false
+	}
+
+	return true
+}
+
+// BanPeer bans a peer for the specified duration
+func (pex *PeerExchange) BanPeer(pid peer.ID, reason string, duration time.Duration) {
+	pex.mu.Lock()
+	defer pex.mu.Unlock()
+	pex.banPeerLocked(pid, reason, duration)
+}
+
+// banPeerLocked bans a peer (caller must hold lock)
+func (pex *PeerExchange) banPeerLocked(pid peer.ID, reason string, duration time.Duration) {
+	now := time.Now()
+
+	// Check existing ban record
+	existing, exists := pex.bannedPeers[pid]
+	banCount := 1
+	if exists {
+		banCount = existing.BanCount + 1
+	}
+
+	// Escalate ban duration for repeat offenders
+	if banCount >= 3 {
+		duration = BanDurationLong
+	}
+
+	permanent := banCount >= MaxBansBeforePermanent
+
+	pex.bannedPeers[pid] = &BanRecord{
+		PeerID:    pid,
+		Reason:    reason,
+		BannedAt:  now,
+		ExpiresAt: now.Add(duration),
+		BanCount:  banCount,
+		Permanent: permanent,
+	}
+
+	// Disconnect immediately
+	if pex.node != nil && pex.node.host != nil {
+		pex.node.host.Network().ClosePeer(pid)
+	}
+
+	// Remove from known peers
+	delete(pex.knownPeers, pid)
+}
+
+// UnbanPeer removes a ban (for manual intervention)
+func (pex *PeerExchange) UnbanPeer(pid peer.ID) {
+	pex.mu.Lock()
+	defer pex.mu.Unlock()
+	delete(pex.bannedPeers, pid)
+}
+
+// GetBannedPeers returns list of currently banned peers
+func (pex *PeerExchange) GetBannedPeers() []*BanRecord {
+	pex.mu.RLock()
+	defer pex.mu.RUnlock()
+
+	var bans []*BanRecord
+	now := time.Now()
+	for _, ban := range pex.bannedPeers {
+		if ban.Permanent || now.Before(ban.ExpiresAt) {
+			bans = append(bans, ban)
+		}
+	}
+	return bans
+}
+
+// PenalizePeer applies a penalty to a peer's score
+func (pex *PeerExchange) PenalizePeer(pid peer.ID, penalty int, reason string) {
+	pex.mu.Lock()
+	defer pex.mu.Unlock()
+
+	rec, ok := pex.knownPeers[pid]
+	if !ok {
+		// Create record with starting score
+		rec = &PeerRecord{
+			ID:       pid.String(),
+			Score:    50, // Start at middle
+			LastSeen: time.Now().Unix(),
+		}
+		pex.knownPeers[pid] = rec
+	}
+
+	rec.Score += penalty
+	if rec.Score < 0 {
+		rec.Score = 0
+	}
+
+	// Immediate ban for severe misbehavior
+	if penalty <= ScorePenaltyMisbehave || rec.Score <= ScoreThresholdBan {
+		pex.banPeerLocked(pid, reason, BanDurationMedium)
+	}
+}
+
+// RewardPeer increases a peer's score for good behavior
+func (pex *PeerExchange) RewardPeer(pid peer.ID) {
+	pex.updatePeerScore(pid, ScoreRewardGood)
+}
+
+// cleanupLoop removes stale peers
+func (pex *PeerExchange) cleanupLoop() {
+	ticker := time.NewTicker(30 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-pex.ctx.Done():
+			return
+		case <-ticker.C:
+			pex.cleanup()
+		}
+	}
+}
+
+// cleanup removes peers not seen in a long time and expired bans
+func (pex *PeerExchange) cleanup() {
+	pex.mu.Lock()
+	defer pex.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-24 * time.Hour).Unix()
+
+	// Cleanup stale peers
+	for pid, rec := range pex.knownPeers {
+		if rec.LastSeen < cutoff {
+			delete(pex.knownPeers, pid)
+		}
+	}
+
+	// Cleanup expired bans (keep permanent bans)
+	for pid, ban := range pex.bannedPeers {
+		if !ban.Permanent && now.After(ban.ExpiresAt) {
+			delete(pex.bannedPeers, pid)
+		}
+	}
+}
+
+// KnownPeerCount returns the number of known peers
+func (pex *PeerExchange) KnownPeerCount() int {
+	pex.mu.RLock()
+	defer pex.mu.RUnlock()
+	return len(pex.knownPeers)
+}
+
+// BannedPeerCount returns the number of currently banned peers
+func (pex *PeerExchange) BannedPeerCount() int {
+	pex.mu.RLock()
+	defer pex.mu.RUnlock()
+
+	count := 0
+	now := time.Now()
+	for _, ban := range pex.bannedPeers {
+		if ban.Permanent || now.Before(ban.ExpiresAt) {
+			count++
+		}
+	}
+	return count
+}
+
+// GetPeerScore returns a peer's current score (-1 if unknown)
+func (pex *PeerExchange) GetPeerScore(pid peer.ID) int {
+	pex.mu.RLock()
+	defer pex.mu.RUnlock()
+
+	if rec, ok := pex.knownPeers[pid]; ok {
+		return rec.Score
+	}
+	return -1
+}
