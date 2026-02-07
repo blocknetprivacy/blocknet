@@ -327,10 +327,34 @@ func (c *CLI) printWelcome() {
 		balanceStr += fmt.Sprintf(" + %s pending", formatAmount(pending))
 	}
 
+	green := "\033[38;5;118m"
+	reset := "\033[0m"
+	if c.noColor {
+		green = ""
+		reset = ""
+	}
+
+	logo := []string{
+		`        ▄███████▄`,
+		`        ▀█████████▄`,
+		`          ▀█████████▄`,
+		`            ▀█████████▄`,
+		`              ▀█████████▄`,
+		`                ▀█████████▄`,
+		`                  ▀███████▀`,
+		``,
+		`  ▄████████████████████████████▄`,
+		fmt.Sprintf(`  ████    BLOCKNET v%s   ████`, Version),
+		`  ▀████████████████████████████▀`,
+	}
+
 	fmt.Println()
-	fmt.Println("╔══════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                      BLOCKNET v0.1                           ║")
-	fmt.Println("╚══════════════════════════════════════════════════════════════╝")
+	for _, line := range logo {
+		fmt.Printf("%s%s%s\n", green, line, reset)
+		time.Sleep(40 * time.Millisecond)
+	}
+
+	fmt.Println()
 	fmt.Printf("  Address: %s...\n", c.wallet.Address()[:24])
 	fmt.Printf("  Balance: %s\n", balanceStr)
 	fmt.Printf("  Height:  %d\n", height)

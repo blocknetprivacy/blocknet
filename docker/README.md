@@ -45,7 +45,7 @@ Environment variables in `.env`:
 
 ```bash
 # Get auth token
-TOKEN=$(docker exec blocknet-node cat /data/.cookie)
+TOKEN=$(docker exec blocknet-node cat /data/api.cookie)
 
 # Start mining
 curl -X POST http://localhost:8332/api/mining/start \
@@ -89,7 +89,7 @@ The updater checks GitHub every 5 minutes and rebuilds the node on new commits.
 ### View wallet address:
 
 ```bash
-TOKEN=$(docker exec blocknet-node cat /data/.cookie)
+TOKEN=$(docker exec blocknet-node cat /data/api.cookie)
 curl http://localhost:8332/api/wallet \
   -H "Authorization: Bearer $TOKEN"
 ```
@@ -159,6 +159,6 @@ docker exec blocknet-node curl -s localhost:8332/api/status
 curl http://localhost:8332/api/status
 
 # Check miner status
-TOKEN=$(docker exec blocknet-node cat /data/.cookie)
+TOKEN=$(docker exec blocknet-node cat /data/api.cookie)
 curl http://localhost:8332/api/mining -H "Authorization: Bearer $TOKEN"
 ```

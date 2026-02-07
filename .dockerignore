@@ -1,0 +1,10 @@
+.git
+data/
+releases/
+wallet.dat
+*.dat
+target/
+docker/.env
+docker/.sweep-token
+docker/sweep.log
+docker/sweep.sh

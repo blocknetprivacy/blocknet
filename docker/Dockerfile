@@ -88,6 +88,6 @@ VOLUME ["/data", "/wallet"]
 
 # Health check via API
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD curl -sf http://localhost:8332/api/status || exit 1
+    CMD curl -sf -H "Authorization: Bearer $(cat /data/api.cookie 2>/dev/null)" http://localhost:8332/api/status || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]
