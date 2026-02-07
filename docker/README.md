@@ -62,12 +62,29 @@ curl -X POST http://localhost:8332/api/mining/threads \
   -d '{"threads": 2}'
 ```
 
-### Auto-mine on startup:
+### Mining
+
+Mining is **not** started automatically in Docker.
+
+Use the API to start mining when desired:
 
 ```bash
-# In .env:
-BLOCKNET_AUTO_MINE=true
-BLOCKNET_MINE_THREADS=1
+# Get auth token
+TOKEN=$(docker exec blocknet-node cat /data/api.cookie)
+
+# Start mining
+curl -X POST http://localhost:8332/api/mining/start \
+  -H "Authorization: Bearer $TOKEN"
+
+# Check miner status
+curl http://localhost:8332/api/mining \
+  -H "Authorization: Bearer $TOKEN"
+
+# Set threads (each needs 2GB RAM)
+curl -X POST http://localhost:8332/api/mining/threads \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"threads": 2}'
 ```
 
 ## Auto-Updates

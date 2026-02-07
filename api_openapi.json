@@ -635,6 +635,86 @@
         }
       }
     },
+    "/api/wallet/seed": {
+      "post": {
+        "operationId": "getWalletSeed",
+        "tags": ["Wallet"],
+        "summary": "Wallet recovery seed",
+        "description": "Returns the wallet's 12-word BIP39 recovery phrase. Requires Bearer token and wallet password confirmation. Response includes Cache-Control: no-store.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["password"],
+                "properties": {
+                  "password": {
+                    "type": "string",
+                    "description": "Wallet password"
+                  }
+                }
+              },
+              "example": {
+                "password": "my-wallet-passphrase"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Recovery seed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "mnemonic": { "type": "string" },
+                    "words": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    }
+                  }
+                },
+                "example": {
+                  "mnemonic": "abandon ability able about above absent absorb abstract absurd abuse access accident",
+                  "words": ["abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract", "absurd", "abuse", "access", "accident"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid JSON body",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "invalid JSON body" }
+              }
+            }
+          },
+          "401": {
+            "description": "Incorrect password or missing Bearer token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "incorrect password" }
+              }
+            }
+          },
+          "403": { "$ref": "#/components/responses/WalletLocked" },
+          "404": {
+            "description": "No recovery seed available",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "no recovery seed available" }
+              }
+            }
+          },
+          "503": { "$ref": "#/components/responses/NoWallet" }
+        }
+      }
+    },
     "/api/mining": {
       "get": {
         "operationId": "getMiningStatus",

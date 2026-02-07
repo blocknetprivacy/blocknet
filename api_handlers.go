@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"blocknet/wallet"
@@ -170,12 +171,12 @@ func (s *APIServer) handleBalance(w http.ResponseWriter, r *http.Request) {
 	total, unspent := s.wallet.OutputCount()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"spendable":     s.wallet.SpendableBalance(height),
-		"pending":       s.wallet.PendingBalance(height),
-		"total":         s.wallet.Balance(),
-		"outputs_total": total,
+		"spendable":       s.wallet.SpendableBalance(height),
+		"pending":         s.wallet.PendingBalance(height),
+		"total":           s.wallet.Balance(),
+		"outputs_total":   total,
 		"outputs_unspent": unspent,
-		"chain_height":  height,
+		"chain_height":    height,
 	})
 }
 
@@ -348,6 +349,41 @@ func (s *APIServer) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"locked": false})
 }
 
+// handleSeed returns the wallet recovery seed (BIP39 mnemonic).
+// POST /api/wallet/seed
+func (s *APIServer) handleSeed(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWallet(w, r) {
+		return
+	}
+
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	if subtle.ConstantTimeCompare([]byte(req.Password), s.password) != 1 {
+		writeError(w, http.StatusUnauthorized, "incorrect password")
+		return
+	}
+
+	mnemonic := s.wallet.Mnemonic()
+	if mnemonic == "" {
+		writeError(w, http.StatusNotFound, "no recovery seed available")
+		return
+	}
+
+	// Sensitive response: discourage caching.
+	w.Header().Set("Cache-Control", "no-store")
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mnemonic": mnemonic,
+		"words":    strings.Fields(mnemonic),
+	})
+}
+
 // ============================================================================
 // Mining handlers
 // ============================================================================
@@ -439,11 +475,11 @@ func blockToJSON(block *Block, chainHeight uint64) map[string]any {
 		txData, _ := json.Marshal(tx)
 		txHash := ComputeTxHash(txData)
 		txs[i] = map[string]any{
-			"hash":       fmt.Sprintf("%x", txHash),
+			"hash":        fmt.Sprintf("%x", txHash),
 			"is_coinbase": i == 0 && block.Header.Height > 0,
-			"inputs":     len(tx.Inputs),
-			"outputs":    len(tx.Outputs),
-			"fee":        tx.Fee,
+			"inputs":      len(tx.Inputs),
+			"outputs":     len(tx.Outputs),
+			"fee":         tx.Fee,
 		}
 	}
 
