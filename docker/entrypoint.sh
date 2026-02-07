@@ -37,56 +37,6 @@ echo "Wallet file: ${BLOCKNET_WALLET_FILE}"
 echo "P2P listen: ${BLOCKNET_LISTEN}"
 echo "=========================================="
 
-# Function to start mining via API after daemon is ready
-start_mining() {
-    if [ "$BLOCKNET_AUTO_MINE" != "true" ]; then
-        return
-    fi
-    
-    echo "Waiting for API to be ready..."
-
-    # Wait for cookie file to appear (means API is up)
-    COOKIE_FILE="${BLOCKNET_DATA_DIR}/api.cookie"
-    for i in {1..120}; do
-        if [ -f "$COOKIE_FILE" ]; then
-            TOKEN=$(cat "$COOKIE_FILE")
-            # Verify API responds with auth
-            if curl -sf -H "Authorization: Bearer ${TOKEN}" \
-                "http://localhost:${BLOCKNET_API_ADDR##*:}/api/status" > /dev/null 2>&1; then
-                echo "API is ready!"
-                break
-            fi
-        fi
-        sleep 1
-    done
-
-    if [ -z "$TOKEN" ]; then
-        echo "Warning: Could not authenticate to API after 120s"
-        return
-    fi
-    
-    # Set mining threads
-    if [ -n "$BLOCKNET_MINE_THREADS" ] && [ "$BLOCKNET_MINE_THREADS" != "1" ]; then
-        echo "Setting mining threads to ${BLOCKNET_MINE_THREADS}..."
-        curl -sf -X POST "http://localhost:${BLOCKNET_API_ADDR##*:}/api/mining/threads" \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{\"threads\": ${BLOCKNET_MINE_THREADS}}" || true
-    fi
-    
-    # Start mining
-    echo "Starting miner..."
-    RESULT=$(curl -sf -X POST "http://localhost:${BLOCKNET_API_ADDR##*:}/api/mining/start" \
-        -H "Authorization: Bearer ${TOKEN}" 2>&1) || true
-    
-    if echo "$RESULT" | grep -q '"running":true'; then
-        echo "Mining started successfully!"
-        echo "  Threads: ${BLOCKNET_MINE_THREADS:-1}"
-        echo "  RAM usage: ~$((${BLOCKNET_MINE_THREADS:-1} * 2))GB"
-    else
-        echo "Mining start response: $RESULT"
-    fi
-}
 
 # Function to handle wallet password
 # The daemon prompts for password on stdin
@@ -110,8 +60,8 @@ run_daemon() {
     fi
 }
 
-# Start mining in background after daemon is up
-start_mining &
+# Mining is intentionally NOT started automatically.
+# Use the API to start mining if desired (see docker/README.md).
 
 # Run the daemon (this blocks)
 run_daemon

@@ -18,8 +18,6 @@ services:
       - BLOCKNET_API_ADDR=0.0.0.0:8332
       - BLOCKNET_EXPLORER_ADDR=:8080
       - BLOCKNET_WALLET_PASSWORD=${BLOCKNET_WALLET_PASSWORD:-changeme}
-      - BLOCKNET_AUTO_MINE=${BLOCKNET_AUTO_MINE:-false}
-      - BLOCKNET_MINE_THREADS=${BLOCKNET_MINE_THREADS:-1}
       - BLOCKNET_SEED_MODE=false
     
     # Port mappings
@@ -33,15 +31,8 @@ services:
       - blocknet-data:/data
       - blocknet-wallet:/wallet
     
-    # Resource limits (adjust based on mining threads)
-    # Each mining thread needs ~2GB RAM
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-        reservations:
-          memory: 2G
-    
+    # No resource limits by default.
+    # If you start mining manually via the API, ensure the host has ~2GB RAM per mining thread.
     # Logging
     logging:
       driver: "json-file"

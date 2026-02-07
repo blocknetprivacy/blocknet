@@ -62,12 +62,29 @@ curl -X POST http://localhost:8332/api/mining/threads \
   -d '{"threads": 2}'
 ```
 
-### Auto-mine on startup:
+### Mining
+
+Mining is **not** started automatically in Docker.
+
+Use the API to start mining when desired:
 
 ```bash
-# In .env:
-BLOCKNET_AUTO_MINE=true
-BLOCKNET_MINE_THREADS=1
+# Get auth token
+TOKEN=$(docker exec blocknet-node cat /data/api.cookie)
+
+# Start mining
+curl -X POST http://localhost:8332/api/mining/start \
+  -H "Authorization: Bearer $TOKEN"
+
+# Check miner status
+curl http://localhost:8332/api/mining \
+  -H "Authorization: Bearer $TOKEN"
+
+# Set threads (each needs 2GB RAM)
+curl -X POST http://localhost:8332/api/mining/threads \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"threads": 2}'
 ```
 
 ## Auto-Updates
@@ -125,13 +142,15 @@ docker run --rm -v blocknet-wallet:/wallet -v $(pwd):/backup alpine \
 
 ## Resource Requirements
 
+`docker-compose.yml` does **not** set hard memory limits by default.
+
 | Component | RAM | CPU | Disk |
 |-----------|-----|-----|------|
 | Node only | 512MB | 1 core | 10GB+ |
 | + 1 miner thread | 2.5GB | 1 core | - |
 | + 2 miner threads | 4.5GB | 2 cores | - |
 
-Mining uses Argon2id with 2GB memory per thread for ASIC resistance.
+Mining uses Argon2id with ~2GB memory per thread for ASIC resistance.
 
 ## Troubleshooting
 
