@@ -3,8 +3,10 @@ package p2p
 
 import (
 	"crypto/rand"
+	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -13,7 +15,6 @@ import (
 )
 
 // IdentityManager handles peer ID generation and rotation
-// For privacy, we generate ephemeral identities rather than persistent ones
 type IdentityManager struct {
 	mu sync.RWMutex
 
@@ -32,12 +33,8 @@ type IdentityManager struct {
 // IdentityConfig configures identity behavior
 type IdentityConfig struct {
 	// RotationInterval is how often to rotate identity (0 = never)
-	// Recommended: 24 hours for reasonable privacy without too much churn
+	// Only applies in ephemeral mode (no BLOCKNET_P2P_KEY env var, no XDG key)
 	RotationInterval time.Duration
-
-	// PersistPath is where to save the identity key (empty = ephemeral)
-	// Use this for seed/bootstrap nodes that need stable peer IDs
-	PersistPath string
 
 	// OnRotate is called when identity changes
 	OnRotate func(newKey crypto.PrivKey, newID peer.ID)
@@ -47,58 +44,84 @@ type IdentityConfig struct {
 func DefaultIdentityConfig() IdentityConfig {
 	return IdentityConfig{
 		RotationInterval: 24 * time.Hour,
-		PersistPath:      "",
 		OnRotate:         nil,
 	}
 }
 
-// NewIdentityManager creates a new identity manager
-// If PersistPath is set, loads existing identity or creates and saves a new one
+// NewIdentityManager creates a new identity manager.
+//
+// Identity resolution order:
+//  1. BLOCKNET_P2P_KEY env var → load or create key at that path, never rotate
+//  2. XDG config dir (e.g. ~/.config/blocknet/identity.key) → if exists, load it, never rotate
+//  3. Otherwise → ephemeral identity with rotation
 func NewIdentityManager(cfg IdentityConfig) (*IdentityManager, error) {
 	var key crypto.PrivKey
 	var id peer.ID
-	var err error
+	var persistPath string
+	var rotationAge time.Duration
 
-	// Check for override identity file first
-	if home, _ := os.UserHomeDir(); home != "" {
-		overridePath := home + "/.blocknet/identity.key"
-		if key, id, err = loadIdentity(overridePath); err == nil {
-			cfg.PersistPath = overridePath
-			cfg.RotationInterval = 0
-		}
-	}
-
-	if key == nil && cfg.PersistPath != "" {
-		// Try to load existing identity
-		key, id, err = loadIdentity(cfg.PersistPath)
+	// 1. BLOCKNET_P2P_KEY env var — explicit persistent identity
+	if envPath := os.Getenv("BLOCKNET_P2P_KEY"); envPath != "" {
+		var err error
+		key, id, err = loadIdentity(envPath)
 		if err != nil {
-			// Generate new and save
+			// File doesn't exist yet — generate and save
 			key, id, err = generateIdentity()
 			if err != nil {
 				return nil, err
 			}
-			if err := saveIdentity(cfg.PersistPath, key); err != nil {
-				return nil, err
+			if err := saveIdentity(envPath, key); err != nil {
+				return nil, fmt.Errorf("failed to save identity to BLOCKNET_P2P_KEY path %s: %w", envPath, err)
+			}
+			log.Printf("Generated new persistent identity: %s (saved to %s)", id.String()[:16]+"...", envPath)
+		} else {
+			log.Printf("Loaded persistent identity: %s (from BLOCKNET_P2P_KEY=%s)", id.String()[:16]+"...", envPath)
+		}
+		persistPath = envPath
+		rotationAge = 0
+	}
+
+	// 2. XDG config dir — manually placed key file
+	if key == nil {
+		if xdgPath, err := defaultIdentityPath(); err == nil {
+			if k, i, err := loadIdentity(xdgPath); err == nil {
+				key = k
+				id = i
+				persistPath = xdgPath
+				rotationAge = 0
+				log.Printf("Loaded persistent identity: %s (from %s)", id.String()[:16]+"...", xdgPath)
 			}
 		}
-	} else if key == nil {
-		// Ephemeral identity
+	}
+
+	// 3. Ephemeral identity
+	if key == nil {
+		var err error
 		key, id, err = generateIdentity()
 		if err != nil {
 			return nil, err
 		}
+		rotationAge = cfg.RotationInterval
+		log.Printf("Using ephemeral identity: %s (rotates every %s)", id.String()[:16]+"...", rotationAge)
 	}
 
-	im := &IdentityManager{
+	return &IdentityManager{
 		currentKey:  key,
 		currentID:   id,
 		createdAt:   time.Now(),
-		rotationAge: cfg.RotationInterval,
-		persistPath: cfg.PersistPath,
+		rotationAge: rotationAge,
+		persistPath: persistPath,
 		onRotate:    cfg.OnRotate,
-	}
+	}, nil
+}
 
-	return im, nil
+// defaultIdentityPath returns the XDG config path for the identity key
+func defaultIdentityPath() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(configDir, "blocknet", "identity.key"), nil
 }
 
 // loadIdentity loads an identity from disk
@@ -127,12 +150,17 @@ func saveIdentity(path string, key crypto.PrivKey) error {
 	if err != nil {
 		return err
 	}
+
+	// Ensure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+
 	return os.WriteFile(path, data, 0600)
 }
 
 // generateIdentity creates a new Ed25519 keypair for peer identity
 func generateIdentity() (crypto.PrivKey, peer.ID, error) {
-	// Use Ed25519 for identity (fast, secure, small keys)
 	priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
 	if err != nil {
 		return nil, "", err
@@ -170,7 +198,7 @@ func (im *IdentityManager) Age() time.Duration {
 // ShouldRotate returns true if the identity is older than the rotation interval
 func (im *IdentityManager) ShouldRotate() bool {
 	if im.rotationAge == 0 {
-		return false // Rotation disabled
+		return false
 	}
 	im.mu.RLock()
 	defer im.mu.RUnlock()
@@ -178,11 +206,9 @@ func (im *IdentityManager) ShouldRotate() bool {
 }
 
 // Rotate generates a new identity and notifies the callback
-// Returns the new peer ID
-// Does nothing if rotation is disabled (rotationAge == 0)
+// Does nothing if rotation is disabled (persistent identity)
 func (im *IdentityManager) Rotate() (peer.ID, error) {
 	if im.rotationAge == 0 {
-		// Rotation disabled (seed node)
 		return im.CurrentPeerID(), nil
 	}
 
@@ -197,19 +223,10 @@ func (im *IdentityManager) Rotate() (peer.ID, error) {
 	im.currentID = newID
 	im.createdAt = time.Now()
 	callback := im.onRotate
-	persistPath := im.persistPath
 	im.mu.Unlock()
-
-	// Save to disk if persistence is enabled
-	if persistPath != "" {
-		if err := saveIdentity(persistPath, newKey); err != nil {
-			log.Printf("Warning: failed to save rotated identity: %v", err)
-		}
-	}
 
 	log.Printf("Identity rotated from %s to %s", oldID, newID)
 
-	// Notify outside the lock to prevent deadlocks
 	if callback != nil {
 		callback(newKey, newID)
 	}
@@ -221,7 +238,6 @@ func (im *IdentityManager) Rotate() (peer.ID, error) {
 // Returns a stop function
 func (im *IdentityManager) StartRotationLoop() func() {
 	if im.rotationAge == 0 {
-		// Rotation disabled, return no-op stop function
 		return func() {}
 	}
 
@@ -231,7 +247,6 @@ func (im *IdentityManager) StartRotationLoop() func() {
 	go func() {
 		defer close(done)
 
-		// Check every 5 minutes if rotation is needed
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 
@@ -254,7 +269,6 @@ func (im *IdentityManager) StartRotationLoop() func() {
 }
 
 // SetRotationCallback sets the callback for identity rotation
-// This is useful if the callback wasn't known at construction time
 func (im *IdentityManager) SetRotationCallback(cb func(newKey crypto.PrivKey, newID peer.ID)) {
 	im.mu.Lock()
 	defer im.mu.Unlock()

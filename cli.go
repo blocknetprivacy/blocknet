@@ -42,7 +42,6 @@ type CLIConfig struct {
 	Mining       bool
 	MineThreads  int
 	RecoverMode  bool   // If true, prompt for mnemonic to recover wallet
-	SeedMode     bool   // If true, run as seed node with persistent identity
 	DaemonMode   bool   // If true, run headless (no interactive prompts)
 	ExplorerAddr string // HTTP address for block explorer (empty = disabled)
 	APIAddr      string // API listen address (empty = disabled)
@@ -199,7 +198,6 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 		DataDir:      cfg.DataDir,
 		ListenAddrs:  cfg.ListenAddrs,
 		SeedNodes:    cfg.SeedNodes,
-		SeedMode:     cfg.SeedMode,
 		ExplorerAddr: cfg.ExplorerAddr,
 	}
 

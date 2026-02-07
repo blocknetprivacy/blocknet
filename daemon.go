@@ -57,9 +57,6 @@ type DaemonConfig struct {
 	// Data directory
 	DataDir string
 
-	// SeedMode enables persistent identity for bootstrap nodes
-	SeedMode bool
-
 	// ExplorerAddr is the HTTP address for the block explorer (empty = disabled)
 	ExplorerAddr string
 }
@@ -132,13 +129,6 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 	nodeCfg.ListenAddrs = cfg.ListenAddrs
 	nodeCfg.SeedNodes = cfg.SeedNodes
 	nodeCfg.UserAgent = "blocknet/" + Version
-
-	// Seed nodes get persistent identity and don't connect to other seeds
-	if cfg.SeedMode {
-		nodeCfg.Identity.PersistPath = cfg.DataDir + "/identity.key"
-		nodeCfg.Identity.RotationInterval = 0 // Never rotate for seed nodes
-		nodeCfg.SeedNodes = []string{}        // Don't try to connect to seeds (we ARE a seed)
-	}
 
 	node, err := p2p.NewNode(nodeCfg)
 	if err != nil {

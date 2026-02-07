@@ -9,7 +9,7 @@ import (
 	"blocknet/wallet"
 )
 
-const Version = "0.2.1"
+const Version = "0.2.2"
 
 func main() {
 	// Parse command line flags
@@ -18,7 +18,6 @@ func main() {
 	listen := flag.String("listen", "/ip4/0.0.0.0/tcp/28080", "P2P listen address")
 	testMode := flag.Bool("test", false, "Run in test mode (run crypto tests)")
 	recover := flag.Bool("recover", false, "Recover wallet from mnemonic seed")
-	seedNode := flag.Bool("seed", false, "Run as seed node (persistent identity)")
 	daemonMode := flag.Bool("daemon", false, "Run headless (no interactive shell)")
 	explorerAddr := flag.String("explorer", "", "HTTP address for block explorer (e.g. :8080)")
 	apiAddr := flag.String("api", "", "API listen address (e.g. 127.0.0.1:8332)")
@@ -60,7 +59,6 @@ func main() {
 		ListenAddrs:  []string{*listen},
 		SeedNodes:    seedNodes,
 		RecoverMode:  *recover,
-		SeedMode:     *seedNode,
 		DaemonMode:   *daemonMode,
 		ExplorerAddr: *explorerAddr,
 		APIAddr:      *apiAddr,
