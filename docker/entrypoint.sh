@@ -44,22 +44,24 @@ start_mining() {
     fi
     
     echo "Waiting for API to be ready..."
-    
-    # Wait for API to be available (up to 2 minutes)
+
+    # Wait for cookie file to appear (means API is up)
+    COOKIE_FILE="${BLOCKNET_DATA_DIR}/api.cookie"
     for i in {1..120}; do
-        if curl -sf "http://localhost:${BLOCKNET_API_ADDR##*:}/api/status" > /dev/null 2>&1; then
-            echo "API is ready!"
-            break
+        if [ -f "$COOKIE_FILE" ]; then
+            TOKEN=$(cat "$COOKIE_FILE")
+            # Verify API responds with auth
+            if curl -sf -H "Authorization: Bearer ${TOKEN}" \
+                "http://localhost:${BLOCKNET_API_ADDR##*:}/api/status" > /dev/null 2>&1; then
+                echo "API is ready!"
+                break
+            fi
         fi
         sleep 1
     done
-    
-    # Read auth token from cookie file
-    COOKIE_FILE="${BLOCKNET_DATA_DIR}/api.cookie"
-    if [ -f "$COOKIE_FILE" ]; then
-        TOKEN=$(cat "$COOKIE_FILE")
-    else
-        echo "Warning: No cookie file found, cannot authenticate to API"
+
+    if [ -z "$TOKEN" ]; then
+        echo "Warning: Could not authenticate to API after 120s"
         return
     fi
     
