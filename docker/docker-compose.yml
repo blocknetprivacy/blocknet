@@ -31,15 +31,8 @@ services:
       - blocknet-data:/data
       - blocknet-wallet:/wallet
     
-    # Resource limits (adjust based on mining threads)
-    # Each mining thread needs ~2GB RAM
-    deploy:
-      resources:
-        limits:
-          memory: 18G
-        reservations:
-          memory: 4G
-    
+    # No resource limits by default.
+    # If you start mining manually via the API, ensure the host has ~2GB RAM per mining thread.
     # Logging
     logging:
       driver: "json-file"

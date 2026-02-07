@@ -142,13 +142,15 @@ docker run --rm -v blocknet-wallet:/wallet -v $(pwd):/backup alpine \
 
 ## Resource Requirements
 
+`docker-compose.yml` does **not** set hard memory limits by default.
+
 | Component | RAM | CPU | Disk |
 |-----------|-----|-----|------|
 | Node only | 512MB | 1 core | 10GB+ |
 | + 1 miner thread | 2.5GB | 1 core | - |
 | + 2 miner threads | 4.5GB | 2 cores | - |
 
-Mining uses Argon2id with 2GB memory per thread for ASIC resistance.
+Mining uses Argon2id with ~2GB memory per thread for ASIC resistance.
 
 ## Troubleshooting
 
