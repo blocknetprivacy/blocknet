@@ -1,0 +1,142 @@
+services:
+  # ==========================================================================
+  # Blocknet Node
+  # Full node with wallet, API, explorer, and optional mining
+  # ==========================================================================
+  blocknet-node:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: blocknet-node
+    restart: unless-stopped
+    
+    # Environment configuration
+    environment:
+      - BLOCKNET_DATA_DIR=/data
+      - BLOCKNET_WALLET_FILE=/wallet/wallet.dat
+      - BLOCKNET_LISTEN=/ip4/0.0.0.0/tcp/28080
+      - BLOCKNET_API_ADDR=0.0.0.0:8332
+      - BLOCKNET_EXPLORER_ADDR=:8080
+      - BLOCKNET_WALLET_PASSWORD=${BLOCKNET_WALLET_PASSWORD:-changeme}
+      - BLOCKNET_AUTO_MINE=${BLOCKNET_AUTO_MINE:-false}
+      - BLOCKNET_MINE_THREADS=${BLOCKNET_MINE_THREADS:-1}
+      - BLOCKNET_SEED_MODE=false
+    
+    # Port mappings
+    ports:
+      - "28080:28080"   # P2P network
+      - "8332:8332"     # API server
+      - "8080:8080"     # Block explorer
+    
+    # Persistent storage
+    volumes:
+      - blocknet-data:/data
+      - blocknet-wallet:/wallet
+    
+    # Resource limits (adjust based on mining threads)
+    # Each mining thread needs ~2GB RAM
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+    
+    # Network
+    networks:
+      - blocknet-network
+
+  # ==========================================================================
+  # GitHub Updater (Watchtower-style)
+  # Monitors repo for updates and rebuilds the node
+  # ==========================================================================
+  blocknet-updater:
+    image: alpine:latest
+    container_name: blocknet-updater
+    restart: unless-stopped
+    
+    environment:
+      - GITHUB_REPO=blocknetprivacy/blocknet
+      - GITHUB_BRANCH=master
+      - CHECK_INTERVAL=300  # Check every 5 minutes
+      - COMPOSE_PROJECT_DIR=/compose
+    
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/compose:ro
+      - updater-state:/state
+    
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        apk add --no-cache curl docker-cli docker-cli-compose jq
+        
+        LAST_SHA_FILE="/state/last_sha"
+        
+        echo "Blocknet Updater starting..."
+        echo "Monitoring: $${GITHUB_REPO} ($${GITHUB_BRANCH})"
+        echo "Check interval: $${CHECK_INTERVAL}s"
+        
+        while true; do
+          # Get latest commit SHA from GitHub
+          LATEST_SHA=$$(curl -sf "https://api.github.com/repos/$${GITHUB_REPO}/commits/$${GITHUB_BRANCH}" | jq -r '.sha' 2>/dev/null)
+          
+          if [ -n "$$LATEST_SHA" ] && [ "$$LATEST_SHA" != "null" ]; then
+            LAST_SHA=""
+            if [ -f "$$LAST_SHA_FILE" ]; then
+              LAST_SHA=$$(cat "$$LAST_SHA_FILE")
+            fi
+            
+            if [ "$$LATEST_SHA" != "$$LAST_SHA" ]; then
+              echo "[$(date)] New commit detected: $${LATEST_SHA:0:8}"
+              echo "$$LATEST_SHA" > "$$LAST_SHA_FILE"
+              
+              if [ -n "$$LAST_SHA" ]; then
+                echo "Triggering rebuild..."
+                cd /compose
+                docker-compose build --no-cache blocknet-node
+                docker-compose up -d blocknet-node
+                echo "Rebuild complete!"
+              else
+                echo "First run, storing SHA (no rebuild)"
+              fi
+            fi
+          else
+            echo "[$(date)] Warning: Could not fetch latest SHA"
+          fi
+          
+          sleep $${CHECK_INTERVAL}
+        done
+    
+    networks:
+      - blocknet-network
+    
+    # Don't start updater by default (enable with --profile updater)
+    profiles:
+      - updater
+
+# ==========================================================================
+# Networks
+# ==========================================================================
+networks:
+  blocknet-network:
+    driver: bridge
+
+# ==========================================================================
+# Volumes
+# ==========================================================================
+volumes:
+  blocknet-data:
+    name: blocknet-data
+  blocknet-wallet:
+    name: blocknet-wallet
+  updater-state:
+    name: blocknet-updater-state

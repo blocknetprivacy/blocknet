@@ -53,3 +53,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Docker secrets (keep .env.example, ignore actual .env)
+docker/.env
+!docker/.env.example
