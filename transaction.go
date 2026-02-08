@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -87,6 +88,148 @@ func (tx *Transaction) TxID() ([32]byte, error) {
 // IsCoinbase returns true if this is a coinbase (mining reward) transaction
 func (tx *Transaction) IsCoinbase() bool {
 	return len(tx.Inputs) == 0
+}
+
+// DeserializeTx parses a transaction from the binary wire format produced by the wallet builder.
+// Format: version(1) | txPubKey(32) | inputCount(4) | outputCount(4) | fee(8)
+//
+//	then outputCount outputs, then inputCount inputs.
+func DeserializeTx(data []byte) (*Transaction, error) {
+	const (
+		maxInputs     = 256
+		maxOutputs    = 256
+		maxRingSize   = 128
+		maxProofSize  = 10240
+		maxSigSize    = 131072
+		minHeaderSize = 1 + 32 + 4 + 4 + 8 // 49 bytes
+	)
+
+	if len(data) < minHeaderSize {
+		return nil, fmt.Errorf("tx data too short: %d bytes", len(data))
+	}
+
+	off := 0
+
+	// Version
+	version := data[off]
+	off++
+
+	// Tx public key
+	var txPubKey [32]byte
+	copy(txPubKey[:], data[off:off+32])
+	off += 32
+
+	// Input count
+	inputCount := binary.LittleEndian.Uint32(data[off:])
+	off += 4
+	if inputCount > maxInputs {
+		return nil, fmt.Errorf("input count %d exceeds max %d", inputCount, maxInputs)
+	}
+
+	// Output count
+	outputCount := binary.LittleEndian.Uint32(data[off:])
+	off += 4
+	if outputCount > maxOutputs {
+		return nil, fmt.Errorf("output count %d exceeds max %d", outputCount, maxOutputs)
+	}
+
+	// Fee
+	fee := binary.LittleEndian.Uint64(data[off:])
+	off += 8
+
+	// Outputs
+	outputs := make([]TxOutput, outputCount)
+	for i := uint32(0); i < outputCount; i++ {
+		if off+32+32+8+4 > len(data) {
+			return nil, fmt.Errorf("unexpected end of data in output %d", i)
+		}
+
+		copy(outputs[i].PublicKey[:], data[off:off+32])
+		off += 32
+
+		copy(outputs[i].Commitment[:], data[off:off+32])
+		off += 32
+
+		copy(outputs[i].EncryptedAmount[:], data[off:off+8])
+		off += 8
+
+		proofLen := binary.LittleEndian.Uint32(data[off:])
+		off += 4
+		if proofLen > maxProofSize {
+			return nil, fmt.Errorf("range proof size %d exceeds max %d in output %d", proofLen, maxProofSize, i)
+		}
+		if off+int(proofLen) > len(data) {
+			return nil, fmt.Errorf("unexpected end of data in output %d range proof", i)
+		}
+		outputs[i].RangeProof = make([]byte, proofLen)
+		copy(outputs[i].RangeProof, data[off:off+int(proofLen)])
+		off += int(proofLen)
+	}
+
+	// Inputs
+	inputs := make([]TxInput, inputCount)
+	for i := uint32(0); i < inputCount; i++ {
+		if off+32+32+4 > len(data) {
+			return nil, fmt.Errorf("unexpected end of data in input %d", i)
+		}
+
+		copy(inputs[i].KeyImage[:], data[off:off+32])
+		off += 32
+
+		copy(inputs[i].PseudoOutput[:], data[off:off+32])
+		off += 32
+
+		ringSize := binary.LittleEndian.Uint32(data[off:])
+		off += 4
+		if ringSize > maxRingSize {
+			return nil, fmt.Errorf("ring size %d exceeds max %d in input %d", ringSize, maxRingSize, i)
+		}
+
+		// Ring member public keys
+		needed := int(ringSize) * 32
+		if off+needed > len(data) {
+			return nil, fmt.Errorf("unexpected end of data in input %d ring members", i)
+		}
+		inputs[i].RingMembers = make([][32]byte, ringSize)
+		for j := uint32(0); j < ringSize; j++ {
+			copy(inputs[i].RingMembers[j][:], data[off:off+32])
+			off += 32
+		}
+
+		// Ring member commitments
+		if off+needed > len(data) {
+			return nil, fmt.Errorf("unexpected end of data in input %d ring commitments", i)
+		}
+		inputs[i].RingCommitments = make([][32]byte, ringSize)
+		for j := uint32(0); j < ringSize; j++ {
+			copy(inputs[i].RingCommitments[j][:], data[off:off+32])
+			off += 32
+		}
+
+		// Signature
+		if off+4 > len(data) {
+			return nil, fmt.Errorf("unexpected end of data in input %d signature length", i)
+		}
+		sigLen := binary.LittleEndian.Uint32(data[off:])
+		off += 4
+		if sigLen > maxSigSize {
+			return nil, fmt.Errorf("signature size %d exceeds max %d in input %d", sigLen, maxSigSize, i)
+		}
+		if off+int(sigLen) > len(data) {
+			return nil, fmt.Errorf("unexpected end of data in input %d signature", i)
+		}
+		inputs[i].RingSignature = make([]byte, sigLen)
+		copy(inputs[i].RingSignature, data[off:off+int(sigLen)])
+		off += int(sigLen)
+	}
+
+	return &Transaction{
+		Version:     version,
+		TxPublicKey: txPubKey,
+		Inputs:      inputs,
+		Outputs:     outputs,
+		Fee:         fee,
+	}, nil
 }
 
 // UTXO represents an unspent transaction output in the UTXO set

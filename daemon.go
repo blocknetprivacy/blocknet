@@ -355,12 +355,12 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 
 // handleTx processes a transaction from a peer (fluff phase)
 func (d *Daemon) handleTx(from peer.ID, data []byte) {
-	var tx Transaction
-	if err := json.Unmarshal(data, &tx); err != nil {
+	tx, err := DeserializeTx(data)
+	if err != nil {
 		return
 	}
 
-	if err := d.mempool.AddTransaction(&tx, data); err != nil {
+	if err := d.mempool.AddTransaction(tx, data); err != nil {
 		// Invalid or duplicate, ignore
 		return
 	}
@@ -545,13 +545,13 @@ func (d *Daemon) MinerStats() MinerStats {
 
 // SubmitTransaction adds a transaction to mempool and broadcasts to peers
 func (d *Daemon) SubmitTransaction(txData []byte) error {
-	var tx Transaction
-	if err := json.Unmarshal(txData, &tx); err != nil {
+	tx, err := DeserializeTx(txData)
+	if err != nil {
 		return fmt.Errorf("invalid transaction data: %w", err)
 	}
 
 	// Validate and add to mempool
-	if err := d.mempool.AddTransaction(&tx, txData); err != nil {
+	if err := d.mempool.AddTransaction(tx, txData); err != nil {
 		return fmt.Errorf("mempool rejected: %w", err)
 	}
 
