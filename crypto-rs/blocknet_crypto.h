@@ -148,6 +148,26 @@ int32_t blocknet_sha256(
 //   [96..128] view public key
 int32_t blocknet_stealth_keygen(uint8_t* output);
 
+// Generate a tx keypair (sender side)
+// tx_privkey_out: 32-byte buffer for transaction private key
+// tx_pubkey_out: 32-byte buffer for transaction public key (include in tx)
+int32_t blocknet_stealth_tx_keygen(
+    uint8_t* tx_privkey_out,
+    uint8_t* tx_pubkey_out
+);
+
+// Derive one-time stealth public key using a provided tx private key (sender side)
+// spend_pubkey: receiver's 32-byte spend public key
+// view_pubkey: receiver's 32-byte view public key
+// tx_privkey: 32-byte transaction private key
+// onetime_pubkey_out: 32-byte buffer for one-time address
+int32_t blocknet_stealth_derive_onetime_pubkey(
+    const uint8_t* spend_pubkey,
+    const uint8_t* view_pubkey,
+    const uint8_t* tx_privkey,
+    uint8_t* onetime_pubkey_out
+);
+
 // Derive one-time stealth address (sender side)
 // spend_pubkey: receiver's 32-byte spend public key
 // view_pubkey: receiver's 32-byte view public key

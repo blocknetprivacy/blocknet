@@ -359,6 +359,46 @@ type StealthOutput struct {
 	OnetimePubKey [32]byte // The one-time address
 }
 
+// StealthTxKeypair is a transaction keypair (r,R) used for stealth outputs.
+// All outputs in the same transaction should share the same TxPubKey.
+type StealthTxKeypair struct {
+	TxPrivKey [32]byte
+	TxPubKey  [32]byte
+}
+
+// GenerateStealthTxKeypair generates a transaction keypair (sender side).
+func GenerateStealthTxKeypair() (*StealthTxKeypair, error) {
+	var txPriv, txPub [32]byte
+
+	ret := C.blocknet_stealth_tx_keygen(
+		(*C.uint8_t)(unsafe.Pointer(&txPriv[0])),
+		(*C.uint8_t)(unsafe.Pointer(&txPub[0])),
+	)
+	if ret != 0 {
+		return nil, fmt.Errorf("failed to generate stealth tx keypair")
+	}
+
+	return &StealthTxKeypair{TxPrivKey: txPriv, TxPubKey: txPub}, nil
+}
+
+// DeriveStealthOnetimePubKey derives the one-time public key for a recipient
+// using an existing tx private key.
+func DeriveStealthOnetimePubKey(spendPubKey, viewPubKey, txPrivKey [32]byte) ([32]byte, error) {
+	var onetimePub [32]byte
+
+	ret := C.blocknet_stealth_derive_onetime_pubkey(
+		(*C.uint8_t)(unsafe.Pointer(&spendPubKey[0])),
+		(*C.uint8_t)(unsafe.Pointer(&viewPubKey[0])),
+		(*C.uint8_t)(unsafe.Pointer(&txPrivKey[0])),
+		(*C.uint8_t)(unsafe.Pointer(&onetimePub[0])),
+	)
+	if ret != 0 {
+		return onetimePub, fmt.Errorf("failed to derive stealth onetime pubkey")
+	}
+
+	return onetimePub, nil
+}
+
 // DeriveStealthAddress creates a one-time address for a recipient (sender side)
 func DeriveStealthAddress(spendPubKey, viewPubKey [32]byte) (*StealthOutput, error) {
 	var txPriv, txPub, onetimePub [32]byte

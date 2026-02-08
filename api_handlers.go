@@ -547,13 +547,17 @@ func (s *APIServer) createTxBuilder() *wallet.Builder {
 			txID, _ := tx.TxID()
 			return txID
 		},
-		DeriveStealthAddress: func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error) {
-			output, err := DeriveStealthAddress(spendPub, viewPub)
+		GenerateStealthTxKeypair: func() (txPriv, txPub [32]byte, err error) {
+			kp, err := GenerateStealthTxKeypair()
 			if err != nil {
-				return txPriv, txPub, oneTimePub, err
+				return txPriv, txPub, err
 			}
-			return output.TxPrivKey, output.TxPubKey, output.OnetimePubKey, nil
+			return kp.TxPrivKey, kp.TxPubKey, nil
 		},
+		DeriveStealthOnetimePubKey: func(spendPub, viewPub, txPriv [32]byte) (oneTimePub [32]byte, err error) {
+			return DeriveStealthOnetimePubKey(spendPub, viewPub, txPriv)
+		},
+		DeriveStealthSecretSender: DeriveStealthSecretSender,
 		BlindingAdd: BlindingAdd,
 		BlindingSub: BlindingSub,
 		RingSize:    RingSize,

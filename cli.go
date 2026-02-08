@@ -191,6 +191,9 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 	cli.wallet = w
 	cli.scanner = wallet.NewScanner(w, wallet.ScannerConfig{
 		GenerateKeyImage: GenerateKeyImage,
+		CreateCommitment: func(amount uint64, blinding [32]byte) ([32]byte, error) {
+			return CreatePedersenCommitmentWithBlinding(amount, blinding)
+		},
 	})
 
 	// Create daemon config
@@ -1042,13 +1045,17 @@ func (c *CLI) createTxBuilder() *wallet.Builder {
 			txID, _ := tx.TxID()
 			return txID
 		},
-		DeriveStealthAddress: func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error) {
-			output, err := DeriveStealthAddress(spendPub, viewPub)
+		GenerateStealthTxKeypair: func() (txPriv, txPub [32]byte, err error) {
+			kp, err := GenerateStealthTxKeypair()
 			if err != nil {
-				return txPriv, txPub, oneTimePub, err
+				return txPriv, txPub, err
 			}
-			return output.TxPrivKey, output.TxPubKey, output.OnetimePubKey, nil
+			return kp.TxPrivKey, kp.TxPubKey, nil
 		},
+		DeriveStealthOnetimePubKey: func(spendPub, viewPub, txPriv [32]byte) (oneTimePub [32]byte, err error) {
+			return DeriveStealthOnetimePubKey(spendPub, viewPub, txPriv)
+		},
+		DeriveStealthSecretSender: DeriveStealthSecretSender,
 		BlindingAdd: BlindingAdd,
 		BlindingSub: BlindingSub,
 		RingSize:    RingSize,
