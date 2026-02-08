@@ -760,6 +760,10 @@ func (c *Chain) reorganizeTo(newTip [32]byte) error {
 	currentPath := c.getAncestorPath(c.bestHash)
 	newPath := c.getAncestorPath(newTip)
 
+	if currentPath == nil || newPath == nil {
+		return fmt.Errorf("incomplete chain: cannot build ancestor path for reorg")
+	}
+
 	// Find where they diverge
 	commonHeight := uint64(0)
 	for h := uint64(0); h <= min(c.height, c.blocks[newTip].Header.Height); h++ {
@@ -842,7 +846,12 @@ func (c *Chain) reorganizeTo(newTip [32]byte) error {
 func (c *Chain) getAncestorPath(tip [32]byte) [][32]byte {
 	block, exists := c.blocks[tip]
 	if !exists {
-		return nil
+		if b, _ := c.storage.GetBlock(tip); b != nil {
+			c.blocks[tip] = b
+			block = b
+		} else {
+			return nil
+		}
 	}
 
 	path := make([][32]byte, block.Header.Height+1)
@@ -850,8 +859,12 @@ func (c *Chain) getAncestorPath(tip [32]byte) [][32]byte {
 	for {
 		b, exists := c.blocks[current]
 		if !exists {
-			// Parent block not found - chain is incomplete
-			return nil
+			if loaded, _ := c.storage.GetBlock(current); loaded != nil {
+				c.blocks[current] = loaded
+				b = loaded
+			} else {
+				return nil
+			}
 		}
 		path[b.Header.Height] = current
 		if b.Header.Height == 0 {
