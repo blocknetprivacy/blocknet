@@ -128,7 +128,6 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 	}
 	miner := NewMiner(chain, mempool, minerCfg)
 
-
 	// Create P2P node
 	nodeCfg := p2p.DefaultNodeConfig()
 	nodeCfg.ListenAddrs = cfg.ListenAddrs
@@ -366,24 +365,6 @@ func (d *Daemon) handleTx(from peer.ID, data []byte) {
 	}
 
 	log.Printf("Received transaction from %s", from.String()[:8])
-}
-
-// BroadcastTransaction broadcasts a transaction via Dandelion++
-func (d *Daemon) BroadcastTransaction(tx *Transaction) error {
-	txData, err := json.Marshal(tx)
-	if err != nil {
-		return err
-	}
-
-	// Add to our mempool first
-	if err := d.mempool.AddTransaction(tx, txData); err != nil {
-		return err
-	}
-
-	// Broadcast via Dandelion++
-	d.node.BroadcastTx(txData)
-
-	return nil
 }
 
 // Chain status callbacks for sync manager
