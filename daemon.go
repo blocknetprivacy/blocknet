@@ -63,7 +63,12 @@ type DaemonConfig struct {
 
 // DefaultSeedNodes are the hardcoded bootstrap nodes
 var DefaultSeedNodes = []string{
-	"/ip4/46.62.203.242/tcp/28080/p2p/12D3KooWBLUPjZgAoizTkbNJvHxgHkb2tF1saUhmKBzFfo8zZLfj",
+	"/ip4/46.62.203.242/tcp/28080/p2p/12D3KooWB4FY5fLRpwMsYXoVSYb3hWmiDCSJLysVSX3Z38mnkpX6",
+	"/ip4/46.62.243.192/tcp/28080/p2p/12D3KooWSc7bV4H7V8pUeKphJ9G2c67rLbiHUuzYj3HHV5Wtf3NS",
+	"/ip4/46.62.252.254/tcp/28080/p2p/12D3KooWHXC9xcREsVpcukZdqXyL83k2vKrdNdfsBpuZ7P9Hpmqd",
+	"/ip4/46.62.202.165/tcp/28080/p2p/12D3KooWPaMpej16rnr8CC1ALydc4ECkDmwzAcNddS2XDRV8JYNr",
+	"/ip4/46.62.249.240/tcp/28080/p2p/12D3KooWSC4Gezy61GViYAAAMrz4Vv2id4YFsUtFR4qZrb5QtL6F",
+	"/ip4/46.62.201.220/tcp/28080/p2p/12D3KooWPjygAsXysJgr4kdmHGdUmwwPX6jbrdszGBhjRZv2g5w8",
 }
 
 // DefaultDaemonConfig returns sensible defaults
