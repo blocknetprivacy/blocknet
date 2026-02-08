@@ -76,7 +76,8 @@ type Transaction struct {
 	TxPublicKey [32]byte `json:"tx_public_key"`
 }
 
-// TxID returns the transaction ID (hash of transaction)
+// TxID returns the transaction ID (sha3-256 of the JSON serialization).
+// This must stay JSON-based to preserve compatibility with the existing chain.
 func (tx *Transaction) TxID() ([32]byte, error) {
 	data, err := json.Marshal(tx)
 	if err != nil {
@@ -88,6 +89,136 @@ func (tx *Transaction) TxID() ([32]byte, error) {
 // IsCoinbase returns true if this is a coinbase (mining reward) transaction
 func (tx *Transaction) IsCoinbase() bool {
 	return len(tx.Inputs) == 0
+}
+
+// Serialize encodes the transaction into the canonical binary wire format.
+// This matches serializeTx in wallet/builder.go exactly.
+func (tx *Transaction) Serialize() []byte {
+	// Calculate prefix size
+	size := 1 + 32 + 4 + 4 + 8 // version + txPubKey + inputCount + outputCount + fee
+	for _, out := range tx.Outputs {
+		size += 32 + 32 + 8 + 4 + len(out.RangeProof)
+	}
+	// Calculate input sizes
+	for _, inp := range tx.Inputs {
+		ringSize := len(inp.RingMembers)
+		size += 32 + 32 + 4 + ringSize*32 + ringSize*32 + 4 + len(inp.RingSignature)
+	}
+
+	buf := make([]byte, size)
+	off := 0
+
+	// -- Prefix --
+	buf[off] = tx.Version
+	off++
+
+	copy(buf[off:], tx.TxPublicKey[:])
+	off += 32
+
+	binary.LittleEndian.PutUint32(buf[off:], uint32(len(tx.Inputs)))
+	off += 4
+
+	binary.LittleEndian.PutUint32(buf[off:], uint32(len(tx.Outputs)))
+	off += 4
+
+	binary.LittleEndian.PutUint64(buf[off:], tx.Fee)
+	off += 8
+
+	for _, out := range tx.Outputs {
+		copy(buf[off:], out.PublicKey[:])
+		off += 32
+
+		copy(buf[off:], out.Commitment[:])
+		off += 32
+
+		copy(buf[off:], out.EncryptedAmount[:])
+		off += 8
+
+		binary.LittleEndian.PutUint32(buf[off:], uint32(len(out.RangeProof)))
+		off += 4
+
+		copy(buf[off:], out.RangeProof)
+		off += len(out.RangeProof)
+	}
+
+	// -- Inputs --
+	for _, inp := range tx.Inputs {
+		copy(buf[off:], inp.KeyImage[:])
+		off += 32
+
+		copy(buf[off:], inp.PseudoOutput[:])
+		off += 32
+
+		ringSize := len(inp.RingMembers)
+		binary.LittleEndian.PutUint32(buf[off:], uint32(ringSize))
+		off += 4
+
+		for _, pk := range inp.RingMembers {
+			copy(buf[off:], pk[:])
+			off += 32
+		}
+
+		for _, c := range inp.RingCommitments {
+			copy(buf[off:], c[:])
+			off += 32
+		}
+
+		binary.LittleEndian.PutUint32(buf[off:], uint32(len(inp.RingSignature)))
+		off += 4
+
+		copy(buf[off:], inp.RingSignature)
+		off += len(inp.RingSignature)
+	}
+
+	return buf
+}
+
+// SigningHash returns the sha3-256 hash of the binary tx prefix (everything
+// except input signatures). This is the message that RingCT signatures are
+// created and verified against. The encoding mirrors serializeTxPrefix in
+// wallet/builder.go exactly.
+func (tx *Transaction) SigningHash() [32]byte {
+	size := 1 + 32 + 4 + 4 + 8 // version + txPubKey + inputCount + outputCount + fee
+	for _, out := range tx.Outputs {
+		size += 32 + 32 + 8 + 4 + len(out.RangeProof)
+	}
+
+	buf := make([]byte, size)
+	off := 0
+
+	buf[off] = tx.Version
+	off++
+
+	copy(buf[off:], tx.TxPublicKey[:])
+	off += 32
+
+	binary.LittleEndian.PutUint32(buf[off:], uint32(len(tx.Inputs)))
+	off += 4
+
+	binary.LittleEndian.PutUint32(buf[off:], uint32(len(tx.Outputs)))
+	off += 4
+
+	binary.LittleEndian.PutUint64(buf[off:], tx.Fee)
+	off += 8
+
+	for _, out := range tx.Outputs {
+		copy(buf[off:], out.PublicKey[:])
+		off += 32
+
+		copy(buf[off:], out.Commitment[:])
+		off += 32
+
+		copy(buf[off:], out.EncryptedAmount[:])
+		off += 8
+
+		binary.LittleEndian.PutUint32(buf[off:], uint32(len(out.RangeProof)))
+		off += 4
+
+		copy(buf[off:], out.RangeProof)
+		off += len(out.RangeProof)
+	}
+
+	return sha3.Sum256(buf)
 }
 
 // DeserializeTx parses a transaction from the binary wire format produced by the wallet builder.
@@ -137,8 +268,11 @@ func DeserializeTx(data []byte) (*Transaction, error) {
 	fee := binary.LittleEndian.Uint64(data[off:])
 	off += 8
 
-	// Outputs
-	outputs := make([]TxOutput, outputCount)
+	// Outputs (nil when count is 0 to preserve JSON encoding compatibility)
+	var outputs []TxOutput
+	if outputCount > 0 {
+		outputs = make([]TxOutput, outputCount)
+	}
 	for i := uint32(0); i < outputCount; i++ {
 		if off+32+32+8+4 > len(data) {
 			return nil, fmt.Errorf("unexpected end of data in output %d", i)
@@ -161,13 +295,18 @@ func DeserializeTx(data []byte) (*Transaction, error) {
 		if off+int(proofLen) > len(data) {
 			return nil, fmt.Errorf("unexpected end of data in output %d range proof", i)
 		}
-		outputs[i].RangeProof = make([]byte, proofLen)
-		copy(outputs[i].RangeProof, data[off:off+int(proofLen)])
+		if proofLen > 0 {
+			outputs[i].RangeProof = make([]byte, proofLen)
+			copy(outputs[i].RangeProof, data[off:off+int(proofLen)])
+		}
 		off += int(proofLen)
 	}
 
-	// Inputs
-	inputs := make([]TxInput, inputCount)
+	// Inputs (nil when count is 0 to preserve JSON encoding compatibility)
+	var inputs []TxInput
+	if inputCount > 0 {
+		inputs = make([]TxInput, inputCount)
+	}
 	for i := uint32(0); i < inputCount; i++ {
 		if off+32+32+4 > len(data) {
 			return nil, fmt.Errorf("unexpected end of data in input %d", i)
@@ -218,8 +357,10 @@ func DeserializeTx(data []byte) (*Transaction, error) {
 		if off+int(sigLen) > len(data) {
 			return nil, fmt.Errorf("unexpected end of data in input %d signature", i)
 		}
-		inputs[i].RingSignature = make([]byte, sigLen)
-		copy(inputs[i].RingSignature, data[off:off+int(sigLen)])
+		if sigLen > 0 {
+			inputs[i].RingSignature = make([]byte, sigLen)
+			copy(inputs[i].RingSignature, data[off:off+int(sigLen)])
+		}
 		off += int(sigLen)
 	}
 
@@ -725,7 +866,7 @@ func (b *TxBuilder) Build(utxoSet *UTXOSet) (*Transaction, error) {
 		ring := ringData[i]
 
 		// Sign with RingCT (proves key ownership AND amount equality)
-		txData, _ := json.Marshal(tx)
+		sigHash := tx.SigningHash()
 		ringSig, err := SignRingCT(
 			ring.Keys,
 			ring.Commitments,
@@ -734,7 +875,7 @@ func (b *TxBuilder) Build(utxoSet *UTXOSet) (*Transaction, error) {
 			owned.Blinding,            // Real input blinding
 			tx.Inputs[i].PseudoOutput, // Pseudo-output commitment
 			pseudoBlindings[i],        // Pseudo-output blinding
-			txData,
+			sigHash[:],
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create RingCT signature: %w", err)
@@ -776,14 +917,14 @@ func ValidateTransaction(tx *Transaction, isSpent KeyImageChecker) error {
 		}
 
 		// Verify RingCT signature (proves key ownership AND amount equality)
-		txData, _ := json.Marshal(tx)
+		sigHash := tx.SigningHash()
 		ringSig := &RingCTSignature{
 			Signature:    input.RingSignature,
 			RingSize:     len(input.RingMembers),
 			PseudoOutput: input.PseudoOutput,
 		}
 
-		if err := VerifyRingCT(input.RingMembers, input.RingCommitments, txData, ringSig); err != nil {
+		if err := VerifyRingCT(input.RingMembers, input.RingCommitments, sigHash[:], ringSig); err != nil {
 			return fmt.Errorf("input %d: invalid RingCT signature: %w", i, err)
 		}
 	}

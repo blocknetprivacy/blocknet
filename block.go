@@ -1000,10 +1000,7 @@ func (c *Chain) FindTxByHashStr(hashStr string) (*Transaction, uint64, bool) {
 		}
 
 		for _, tx := range block.Transactions {
-			txID, err := tx.TxID()
-			if err != nil {
-				continue
-			}
+			txID, _ := tx.TxID()
 			if fmt.Sprintf("%x", txID) == hashStr {
 				return tx, h, true
 			}

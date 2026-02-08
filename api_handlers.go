@@ -472,8 +472,7 @@ func blockToJSON(block *Block, chainHeight uint64) map[string]any {
 
 	txs := make([]map[string]any, len(block.Transactions))
 	for i, tx := range block.Transactions {
-		txData, _ := json.Marshal(tx)
-		txHash := ComputeTxHash(txData)
+		txHash, _ := tx.TxID()
 		txs[i] = map[string]any{
 			"hash":        fmt.Sprintf("%x", txHash),
 			"is_coinbase": i == 0 && block.Header.Height > 0,
@@ -541,7 +540,12 @@ func (s *APIServer) createTxBuilder() *wallet.Builder {
 			return blinding
 		},
 		ComputeTxID: func(txData []byte) [32]byte {
-			return ComputeTxHash(txData)
+			tx, err := DeserializeTx(txData)
+			if err != nil {
+				return ComputeTxHash(txData)
+			}
+			txID, _ := tx.TxID()
+			return txID
 		},
 		DeriveStealthAddress: func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error) {
 			output, err := DeriveStealthAddress(spendPub, viewPub)

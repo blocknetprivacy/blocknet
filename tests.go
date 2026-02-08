@@ -166,6 +166,9 @@ func runTests() {
 	fmt.Println("\n--- Testing RingCT (Amount Verification) ---")
 	testRingCT()
 
+	// Test Transaction Serialization
+	testSerialization()
+
 	fmt.Println("\n✓ All tests passed!")
 }
 
@@ -573,4 +576,194 @@ func testOrphanBlocks(chain *Chain, keys *StealthKeys) {
 		log.Fatalf("processBlockData should return nil for orphans, got: %v", err)
 	}
 	fmt.Printf("processBlockData handles orphan gracefully (returns nil) ✓\n")
+}
+
+func testSerialization() {
+	fmt.Println("\n--- Testing Transaction Serialization ---")
+
+	// Build a realistic transaction with all fields populated
+	testTx := &Transaction{
+		Version: 1,
+		Fee:     5000,
+	}
+	// Generate a tx public key
+	txKp, _ := GenerateRistrettoKeypair()
+	testTx.TxPublicKey = txKp.PublicKey
+
+	// Create outputs with range proofs
+	for i := 0; i < 2; i++ {
+		outKp, _ := GenerateRistrettoKeypair()
+		commitKp, _ := GenerateRistrettoKeypair()
+		var encAmt [8]byte
+		copy(encAmt[:], []byte{byte(i + 1), 0, 0, 0, 0, 0, 0, 0})
+		testTx.Outputs = append(testTx.Outputs, TxOutput{
+			PublicKey:       outKp.PublicKey,
+			Commitment:      commitKp.PublicKey,
+			EncryptedAmount: encAmt,
+			RangeProof:      []byte("fake-range-proof-data-for-testing"),
+		})
+	}
+
+	// Create an input with ring members
+	kiKp, _ := GenerateRistrettoKeypair()
+	pseudoKp, _ := GenerateRistrettoKeypair()
+	var ringMemberKeys [][32]byte
+	var ringCommitKeys [][32]byte
+	for i := 0; i < RingSize; i++ {
+		mk, _ := GenerateRistrettoKeypair()
+		ck, _ := GenerateRistrettoKeypair()
+		ringMemberKeys = append(ringMemberKeys, mk.PublicKey)
+		ringCommitKeys = append(ringCommitKeys, ck.PublicKey)
+	}
+	testTx.Inputs = append(testTx.Inputs, TxInput{
+		KeyImage:        kiKp.PublicKey,
+		PseudoOutput:    pseudoKp.PublicKey,
+		RingMembers:     ringMemberKeys,
+		RingCommitments: ringCommitKeys,
+		RingSignature:   []byte("fake-ring-signature-for-testing"),
+	})
+
+	// Test 1: Binary round-trip preserves all fields
+	serialized := testTx.Serialize()
+	fmt.Printf("Serialized tx: %d bytes\n", len(serialized))
+
+	deserialized, err := DeserializeTx(serialized)
+	if err != nil {
+		log.Fatalf("DeserializeTx failed: %v", err)
+	}
+
+	if deserialized.Version != testTx.Version {
+		log.Fatalf("Version mismatch: %d != %d", deserialized.Version, testTx.Version)
+	}
+	if deserialized.Fee != testTx.Fee {
+		log.Fatalf("Fee mismatch: %d != %d", deserialized.Fee, testTx.Fee)
+	}
+	if deserialized.TxPublicKey != testTx.TxPublicKey {
+		log.Fatalf("TxPublicKey mismatch")
+	}
+	if len(deserialized.Outputs) != len(testTx.Outputs) {
+		log.Fatalf("Output count mismatch: %d != %d", len(deserialized.Outputs), len(testTx.Outputs))
+	}
+	for i := range testTx.Outputs {
+		if deserialized.Outputs[i].PublicKey != testTx.Outputs[i].PublicKey {
+			log.Fatalf("Output %d PublicKey mismatch", i)
+		}
+		if deserialized.Outputs[i].Commitment != testTx.Outputs[i].Commitment {
+			log.Fatalf("Output %d Commitment mismatch", i)
+		}
+		if deserialized.Outputs[i].EncryptedAmount != testTx.Outputs[i].EncryptedAmount {
+			log.Fatalf("Output %d EncryptedAmount mismatch", i)
+		}
+		if string(deserialized.Outputs[i].RangeProof) != string(testTx.Outputs[i].RangeProof) {
+			log.Fatalf("Output %d RangeProof mismatch", i)
+		}
+	}
+	if len(deserialized.Inputs) != len(testTx.Inputs) {
+		log.Fatalf("Input count mismatch: %d != %d", len(deserialized.Inputs), len(testTx.Inputs))
+	}
+	for i := range testTx.Inputs {
+		if deserialized.Inputs[i].KeyImage != testTx.Inputs[i].KeyImage {
+			log.Fatalf("Input %d KeyImage mismatch", i)
+		}
+		if deserialized.Inputs[i].PseudoOutput != testTx.Inputs[i].PseudoOutput {
+			log.Fatalf("Input %d PseudoOutput mismatch", i)
+		}
+		if len(deserialized.Inputs[i].RingMembers) != len(testTx.Inputs[i].RingMembers) {
+			log.Fatalf("Input %d RingMembers count mismatch", i)
+		}
+		for j := range testTx.Inputs[i].RingMembers {
+			if deserialized.Inputs[i].RingMembers[j] != testTx.Inputs[i].RingMembers[j] {
+				log.Fatalf("Input %d RingMember %d mismatch", i, j)
+			}
+		}
+		for j := range testTx.Inputs[i].RingCommitments {
+			if deserialized.Inputs[i].RingCommitments[j] != testTx.Inputs[i].RingCommitments[j] {
+				log.Fatalf("Input %d RingCommitment %d mismatch", i, j)
+			}
+		}
+		if string(deserialized.Inputs[i].RingSignature) != string(testTx.Inputs[i].RingSignature) {
+			log.Fatalf("Input %d RingSignature mismatch", i)
+		}
+	}
+	fmt.Printf("Binary round-trip preserves all fields ✓\n")
+
+	// Test 2: Serialize() is deterministic
+	serialized2 := testTx.Serialize()
+	if string(serialized) != string(serialized2) {
+		log.Fatalf("Serialize() not deterministic")
+	}
+	fmt.Printf("Serialize() is deterministic ✓\n")
+
+	// Test 3: TxID is stable through JSON round-trip (chain data safety)
+	txID1, err := testTx.TxID()
+	if err != nil {
+		log.Fatalf("TxID failed: %v", err)
+	}
+
+	jsonBytes, _ := json.Marshal(testTx)
+	var jsonTx Transaction
+	if err := json.Unmarshal(jsonBytes, &jsonTx); err != nil {
+		log.Fatalf("JSON round-trip failed: %v", err)
+	}
+	txID2, err := jsonTx.TxID()
+	if err != nil {
+		log.Fatalf("TxID after JSON round-trip failed: %v", err)
+	}
+	if txID1 != txID2 {
+		log.Fatalf("TxID changed after JSON round-trip: %x != %x", txID1[:8], txID2[:8])
+	}
+	fmt.Printf("TxID stable through JSON round-trip (chain data safe) ✓\n")
+
+	// Test 4: TxID is stable through binary round-trip
+	txID3, err := deserialized.TxID()
+	if err != nil {
+		log.Fatalf("TxID after binary round-trip failed: %v", err)
+	}
+	if txID1 != txID3 {
+		log.Fatalf("TxID changed after binary round-trip: %x != %x", txID1[:8], txID3[:8])
+	}
+	fmt.Printf("TxID stable through binary round-trip ✓\n")
+
+	// Test 5: SigningHash is stable through binary round-trip
+	sigHash1 := testTx.SigningHash()
+	sigHash2 := deserialized.SigningHash()
+	if sigHash1 != sigHash2 {
+		log.Fatalf("SigningHash changed after binary round-trip: %x != %x", sigHash1[:8], sigHash2[:8])
+	}
+	fmt.Printf("SigningHash stable through binary round-trip ✓\n")
+
+	// Test 6: Coinbase tx round-trip (no inputs)
+	coinbaseTx := &Transaction{
+		Version:     1,
+		TxPublicKey: txKp.PublicKey,
+		Fee:         0,
+		Outputs:     testTx.Outputs,
+	}
+	cbSerialized := coinbaseTx.Serialize()
+	cbDeserialized, err := DeserializeTx(cbSerialized)
+	if err != nil {
+		log.Fatalf("Coinbase DeserializeTx failed: %v", err)
+	}
+	cbTxID1, _ := coinbaseTx.TxID()
+	cbTxID2, _ := cbDeserialized.TxID()
+	if cbTxID1 != cbTxID2 {
+		log.Fatalf("Coinbase TxID changed after binary round-trip")
+	}
+	fmt.Printf("Coinbase tx round-trip preserves TxID ✓\n")
+
+	// Test 7: DeserializeTx rejects truncated data
+	_, err = DeserializeTx([]byte{0x01, 0x02, 0x03})
+	if err == nil {
+		log.Fatalf("DeserializeTx should reject truncated data")
+	}
+	fmt.Printf("DeserializeTx rejects truncated data ✓\n")
+
+	// Test 8: DeserializeTx rejects empty data
+	_, err = DeserializeTx([]byte{})
+	if err == nil {
+		log.Fatalf("DeserializeTx should reject empty data")
+	}
+	fmt.Printf("DeserializeTx rejects empty data ✓\n")
+
+	fmt.Println("\n--- All serialization tests passed ---")
 }

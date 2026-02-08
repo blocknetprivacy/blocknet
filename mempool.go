@@ -385,11 +385,7 @@ func (m *Mempool) OnBlockDisconnected(block *Block, txDataMap map[[32]byte][]byt
 		// Get serialized tx data if available
 		txData, ok := txDataMap[txID]
 		if !ok {
-			// Marshal it ourselves
-			txData, err = json.Marshal(tx)
-			if err != nil {
-				continue
-			}
+			txData = tx.Serialize()
 		}
 
 		// Check if any inputs are now spent (by another chain)

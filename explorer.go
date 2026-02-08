@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -176,9 +175,7 @@ func (e *Explorer) handleBlock(w http.ResponseWriter, r *http.Request) {
 
 	var txs []txSummary
 	for i, tx := range block.Transactions {
-		// Compute tx hash from serialized data
-		txData, _ := json.Marshal(tx)
-		txHash := ComputeTxHash(txData)
+		txHash, _ := tx.TxID()
 		txs = append(txs, txSummary{
 			Hash:       fmt.Sprintf("%x", txHash[:]),
 			IsCoinbase: i == 0 && block.Header.Height > 0,
