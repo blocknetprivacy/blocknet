@@ -206,23 +206,23 @@ func (m *Miner) Start(ctx context.Context, blockChan chan<- *Block) {
 			default:
 			}
 
-		// Wait for peers before mining (avoid divergent chains)
-		if m.config.PeerCount != nil {
-			for m.config.PeerCount() == 0 {
-				select {
-				case <-mineCtx.Done():
-					return
-				case <-time.After(5 * time.Second):
-					fmt.Println("Waiting for peers before mining...")
+			// Wait for peers before mining (avoid divergent chains)
+			if m.config.PeerCount != nil {
+				for m.config.PeerCount() == 0 {
+					select {
+					case <-mineCtx.Done():
+						return
+					case <-time.After(5 * time.Second):
+						fmt.Println("Waiting for peers before mining...")
+					}
 				}
 			}
-		}
 
-		// Get transactions from mempool
-		var txs []*Transaction
-		if m.mempool != nil {
-			txs = m.mempool.GetTransactionsForBlock(MaxBlockSize-1000, 1000) // Leave room for coinbase, max 1000 txs
-		}
+			// Get transactions from mempool
+			var txs []*Transaction
+			if m.mempool != nil {
+				txs = m.mempool.GetTransactionsForBlock(MaxBlockSize-1000, 1000) // Leave room for coinbase, max 1000 txs
+			}
 
 			block, err := m.MineBlock(mineCtx, txs)
 			if err != nil {

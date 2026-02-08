@@ -297,8 +297,8 @@ func (w *Wallet) ViewPubKey() [32]byte {
 
 // Maturity constants (must match block.go)
 const (
-	CoinbaseMaturity    = 60 // Mined coins locked for 60 blocks
-	SafeConfirmations   = 10 // Regular coins need 10 confirmations
+	CoinbaseMaturity  = 60 // Mined coins locked for 60 blocks
+	SafeConfirmations = 10 // Regular coins need 10 confirmations
 )
 
 // IsOutputMature checks if an output is mature enough to spend
@@ -306,12 +306,12 @@ func IsOutputMature(out *OwnedOutput, currentHeight uint64) bool {
 	if out.Spent {
 		return false
 	}
-	
+
 	confirmations := uint64(0)
 	if currentHeight >= out.BlockHeight {
 		confirmations = currentHeight - out.BlockHeight
 	}
-	
+
 	if out.IsCoinbase {
 		return confirmations >= CoinbaseMaturity
 	}
