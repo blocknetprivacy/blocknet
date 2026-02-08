@@ -9,7 +9,7 @@ import (
 	"blocknet/wallet"
 )
 
-const Version = "0.2.3"
+const Version = "0.2.4"
 
 func main() {
 	// Parse command line flags
