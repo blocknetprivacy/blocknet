@@ -130,7 +130,7 @@ func (pex *PeerExchange) connectToSeeds() error {
 	}
 
 	ourID := pex.node.PeerID()
-	
+
 	// Retry logic: try 3 times with 2 second delays
 	maxRetries := 3
 	for attempt := 1; attempt <= maxRetries; attempt++ {
@@ -578,7 +578,7 @@ func (pex *PeerExchange) reconnectLoop() {
 		case <-ticker.C:
 			peers := pex.node.host.Network().Peers()
 			if len(peers) == 0 {
-				log.Printf("No connected peers, reconnecting to seeds...")
+				// log.Printf("No connected peers, reconnecting to seeds...")
 				pex.connectToSeeds()
 			}
 		}
