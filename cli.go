@@ -502,15 +502,13 @@ func (c *CLI) cmdBalance() {
 	pending := c.wallet.PendingBalance(height)
 	total, unspent := c.wallet.OutputCount()
 
-	fmt.Printf("%s spendable", formatAmount(spendable))
-	if pending > 0 {
-		fmt.Printf(" + %s pending", formatAmount(pending))
-	}
-	fmt.Printf(" (%d outputs)\n", unspent)
-
+	fmt.Printf("  unlocked: %s BNT\n", formatAmount(spendable))
+	fmt.Printf("  locked:   %s BNT\n", formatAmount(pending))
+	fmt.Printf("  (%d unspent outputs", unspent)
 	if total > unspent {
-		fmt.Printf("  + %d spent outputs in history\n", total-unspent)
+		fmt.Printf(", %d spent", total-unspent)
 	}
+	fmt.Println(")")
 }
 
 func (c *CLI) cmdAddress() {

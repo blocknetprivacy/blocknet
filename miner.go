@@ -46,22 +46,40 @@ type MinerStats struct {
 
 // Miner handles proof of work mining
 type Miner struct {
-	config  MinerConfig
-	chain   *Chain
-	mempool *Mempool
-	stats   MinerStats
-	running atomic.Bool
-	cancel  context.CancelFunc
+	config   MinerConfig
+	chain    *Chain
+	mempool  *Mempool
+	stats    MinerStats
+	running  atomic.Bool
+	cancel   context.CancelFunc
+	newBlock chan struct{} // signals miner to restart on new chain tip
 }
 
 // NewMiner creates a new miner
 func NewMiner(chain *Chain, mempool *Mempool, config MinerConfig) *Miner {
 	return &Miner{
-		config:  config,
-		chain:   chain,
-		mempool: mempool,
+		config:   config,
+		chain:    chain,
+		mempool:  mempool,
+		newBlock: make(chan struct{}, 1),
+		stats: MinerStats{
+			StartTime: time.Now(),
+		},
 	}
 }
+
+// NotifyNewBlock tells the miner a new block arrived so it should
+// abandon the current stale solve and rebuild against the new tip.
+func (m *Miner) NotifyNewBlock() {
+	select {
+	case m.newBlock <- struct{}{}:
+	default: // already signalled, don't block
+	}
+}
+
+// errNewBlock is returned by MineBlock when a new block arrived and
+// the current solve should be abandoned in favour of a fresh template.
+var errNewBlock = fmt.Errorf("new block received, restarting")
 
 // MineBlock attempts to mine a single block
 // Returns the mined block or nil if cancelled
@@ -170,10 +188,13 @@ func (m *Miner) MineBlock(ctx context.Context, mempool []*Transaction) (*Block, 
 		}(t)
 	}
 
-	// Wait for result or cancellation
+	// Wait for result, new-block signal, or cancellation
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	case <-m.newBlock:
+		// Chain tip changed -- abandon this stale solve
+		return nil, errNewBlock
 	case winningNonce := <-resultChan:
 		block.Header.Nonce = winningNonce
 		atomic.AddUint64(&m.stats.BlocksFound, 1)
@@ -221,6 +242,12 @@ func (m *Miner) Start(ctx context.Context, blockChan chan<- *Block) {
 				}
 			}
 
+			// Drain any pending new-block signal before grabbing mempool
+			select {
+			case <-m.newBlock:
+			default:
+			}
+
 			// Get transactions from mempool
 			var txs []*Transaction
 			if m.mempool != nil {
@@ -231,6 +258,10 @@ func (m *Miner) Start(ctx context.Context, blockChan chan<- *Block) {
 			if err != nil {
 				if mineCtx.Err() != nil {
 					return // Context cancelled
+				}
+				if err == errNewBlock {
+					// New tip arrived -- loop back and rebuild template
+					continue
 				}
 				fmt.Printf("Mining error: %v\n", err)
 				time.Sleep(time.Second)

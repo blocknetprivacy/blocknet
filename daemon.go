@@ -296,13 +296,20 @@ func (d *Daemon) handleMinedBlock(block *Block) {
 	defer d.mu.Unlock()
 
 	// Add to our chain
-	accepted, _, err := d.chain.ProcessBlock(block)
+	accepted, isMainChain, err := d.chain.ProcessBlock(block)
 	if err != nil || !accepted {
 		log.Printf("Failed to add mined block: %v", err)
 		return
 	}
 
-	// Update mempool
+	if !isMainChain {
+		// Lost race to a peer block at the same height.
+		// Do NOT touch the mempool -- our transactions are still valid
+		// and should be included in the next block attempt.
+		return
+	}
+
+	// Update mempool (only for main-chain blocks)
 	d.mempool.OnBlockConnected(block)
 
 	// Broadcast to peers
@@ -314,16 +321,9 @@ func (d *Daemon) handleMinedBlock(block *Block) {
 
 	d.syncMgr.BroadcastBlock(blockData)
 
-	// Notify wallet subscribers (all blocks)
+	// Notify wallet subscribers
 	d.notifyBlock(block)
-
-	// Only notify mined block if it's actually the chain tip
-	// (not orphaned by a competing block at same height)
-	blockHash := block.Hash()
-	tipHash := d.chain.BestHash()
-	if blockHash == tipHash {
-		d.notifyMinedBlock(block)
-	}
+	d.notifyMinedBlock(block)
 }
 
 // handleBlock processes a block from a peer
@@ -336,9 +336,14 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	accepted, _, err := d.chain.ProcessBlock(&block)
+	accepted, isMainChain, err := d.chain.ProcessBlock(&block)
 	if err != nil || !accepted {
 		// May be orphan or invalid, ignore silently
+		return
+	}
+
+	if !isMainChain {
+		// Fork block -- don't touch mempool or relay
 		return
 	}
 
@@ -350,6 +355,9 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 
 	// Notify wallet subscribers
 	d.notifyBlock(&block)
+
+	// Signal miner to restart with new tip
+	d.miner.NotifyNewBlock()
 }
 
 // handleTx processes a transaction from a peer (fluff phase)
