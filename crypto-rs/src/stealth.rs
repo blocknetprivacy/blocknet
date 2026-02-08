@@ -46,6 +46,97 @@ pub extern "C" fn blocknet_stealth_keygen(output: *mut u8) -> i32 {
     0
 }
 
+/// Generate a transaction keypair (sender side)
+///
+/// tx_privkey_out: 32-byte buffer for transaction private key (r)
+/// tx_pubkey_out: 32-byte buffer for transaction public key (R = r*G)
+#[no_mangle]
+pub extern "C" fn blocknet_stealth_tx_keygen(
+    tx_privkey_out: *mut u8,
+    tx_pubkey_out: *mut u8,
+) -> i32 {
+    if tx_privkey_out.is_null() || tx_pubkey_out.is_null() {
+        return -1;
+    }
+
+    // Generate random transaction private key
+    let r = Scalar::random(&mut rand::thread_rng());
+
+    // R = r * G (transaction public key)
+    let tx_pub = &r * RISTRETTO_BASEPOINT_TABLE;
+
+    unsafe {
+        let tx_priv_out = slice::from_raw_parts_mut(tx_privkey_out, 32);
+        tx_priv_out.copy_from_slice(r.as_bytes());
+
+        let tx_pub_out = slice::from_raw_parts_mut(tx_pubkey_out, 32);
+        tx_pub_out.copy_from_slice(tx_pub.compress().as_bytes());
+    }
+
+    0
+}
+
+/// Derive a one-time stealth public key using a provided tx private key (sender side)
+///
+/// spend_pubkey: receiver's 32-byte spend public key
+/// view_pubkey: receiver's 32-byte view public key
+/// tx_privkey: 32-byte transaction private key (r)
+/// onetime_pubkey_out: 32-byte buffer for one-time public key
+#[no_mangle]
+pub extern "C" fn blocknet_stealth_derive_onetime_pubkey(
+    spend_pubkey: *const u8,
+    view_pubkey: *const u8,
+    tx_privkey: *const u8,
+    onetime_pubkey_out: *mut u8,
+) -> i32 {
+    if spend_pubkey.is_null() || view_pubkey.is_null() || tx_privkey.is_null() || onetime_pubkey_out.is_null() {
+        return -1;
+    }
+
+    unsafe {
+        let spend_bytes = slice::from_raw_parts(spend_pubkey, 32);
+        let view_bytes = slice::from_raw_parts(view_pubkey, 32);
+        let tx_priv_bytes = slice::from_raw_parts(tx_privkey, 32);
+
+        // Decompress public keys
+        let spend_pub = match CompressedRistretto::from_slice(spend_bytes)
+            .expect("slice length")
+            .decompress()
+        {
+            Some(p) => p,
+            None => return -1,
+        };
+
+        let view_pub = match CompressedRistretto::from_slice(view_bytes)
+            .expect("slice length")
+            .decompress()
+        {
+            Some(p) => p,
+            None => return -1,
+        };
+
+        // Parse tx privkey as scalar
+        let r = match Scalar::from_canonical_bytes(tx_priv_bytes.try_into().expect("slice length"))
+            .into_option()
+        {
+            Some(s) => s,
+            None => return -1,
+        };
+
+        // shared_secret = H(r * view_pubkey)
+        let shared_point = r * view_pub;
+        let shared_secret = hash_to_scalar(shared_point.compress().as_bytes());
+
+        // one_time_pubkey = shared_secret * G + spend_pubkey
+        let onetime_pub = &shared_secret * RISTRETTO_BASEPOINT_TABLE + spend_pub;
+
+        let onetime_out = slice::from_raw_parts_mut(onetime_pubkey_out, 32);
+        onetime_out.copy_from_slice(onetime_pub.compress().as_bytes());
+    }
+
+    0
+}
+
 /// Derive a one-time stealth address (sender side)
 ///
 /// spend_pubkey: receiver's 32-byte spend public key
@@ -91,10 +182,8 @@ pub extern "C" fn blocknet_stealth_derive_address(
             None => return -1,
         };
 
-        // Generate random transaction private key
+        // Generate transaction keypair
         let r = Scalar::random(&mut rand::thread_rng());
-
-        // R = r * G (transaction public key)
         let tx_pub = &r * RISTRETTO_BASEPOINT_TABLE;
 
         // shared_secret = H(r * view_pubkey)

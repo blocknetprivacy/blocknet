@@ -46,8 +46,10 @@ type TransferConfig struct {
 	BlindingAdd func(a, b [32]byte) ([32]byte, error)
 	BlindingSub func(a, b [32]byte) ([32]byte, error)
 
-	// Stealth address derivation
-	DeriveStealthAddress func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error)
+	// Stealth derivation (sender side)
+	GenerateStealthTxKeypair    func() (txPriv, txPub [32]byte, err error)
+	DeriveStealthOnetimePubKey  func(spendPub, viewPub, txPriv [32]byte) (oneTimePub [32]byte, err error)
+	DeriveStealthSecretSender   func(txPriv, viewPub [32]byte) ([32]byte, error)
 
 	// Constants
 	RingSize   int
@@ -101,29 +103,33 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 	// Build outputs
 	outputs := make([]outputData, 0, len(recipients)+1)
 
-	// Generate tx keypair for stealth derivation
-	var txPubKey [32]byte
+	// Generate a single tx keypair (r,R) shared across all outputs in this tx
+	txPrivKey, txPubKey, err := b.config.GenerateStealthTxKeypair()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate tx keypair: %w", err)
+	}
+
 	var allBlindings [][32]byte
-	var allAmounts []uint64
 
 	for i, r := range recipients {
-		_, txPub, oneTimePub, err := b.config.DeriveStealthAddress(r.SpendPubKey, r.ViewPubKey)
+		oneTimePub, err := b.config.DeriveStealthOnetimePubKey(r.SpendPubKey, r.ViewPubKey, txPrivKey)
 		if err != nil {
-			return nil, fmt.Errorf("failed to derive stealth address for recipient %d: %w", i, err)
+			return nil, fmt.Errorf("failed to derive stealth output for recipient %d: %w", i, err)
 		}
 
-		if i == 0 {
-			txPubKey = txPub // Use first derivation's tx pubkey
+		sharedSecret, err := b.config.DeriveStealthSecretSender(txPrivKey, r.ViewPubKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to derive stealth secret for recipient %d: %w", i, err)
 		}
 
-		blinding := b.config.GenerateBlinding()
+		// Derive blinding deterministically so the recipient can decrypt amount and recover commitments.
+		blinding := DeriveBlinding(sharedSecret, i)
 		commitment := b.config.CreateCommitment(r.Amount, blinding)
 		rangeProof, err := b.config.CreateRangeProof(r.Amount, blinding)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create range proof: %w", err)
 		}
 
-		// Encrypt amount for recipient
 		encryptedAmount := encryptAmount(r.Amount, blinding, i)
 
 		outputs = append(outputs, outputData{
@@ -135,26 +141,31 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 			amount:          r.Amount,
 		})
 		allBlindings = append(allBlindings, blinding)
-		allAmounts = append(allAmounts, r.Amount)
 	}
 
 	// Add change output to self if needed
 	if change > 0 {
 		keys := b.wallet.Keys()
-		_, _, oneTimePub, err := b.config.DeriveStealthAddress(keys.SpendPubKey, keys.ViewPubKey)
+		outputIndex := len(outputs)
+
+		oneTimePub, err := b.config.DeriveStealthOnetimePubKey(keys.SpendPubKey, keys.ViewPubKey, txPrivKey)
 		if err != nil {
 			return nil, fmt.Errorf("failed to derive change address: %w", err)
 		}
 
-		blinding := b.config.GenerateBlinding()
+		sharedSecret, err := b.config.DeriveStealthSecretSender(txPrivKey, keys.ViewPubKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to derive stealth secret for change: %w", err)
+		}
+
+		blinding := DeriveBlinding(sharedSecret, outputIndex)
 		commitment := b.config.CreateCommitment(change, blinding)
 		rangeProof, err := b.config.CreateRangeProof(change, blinding)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create change range proof: %w", err)
 		}
 
-		// Encrypt amount
-		encryptedAmount := encryptAmount(change, blinding, len(outputs))
+		encryptedAmount := encryptAmount(change, blinding, outputIndex)
 
 		outputs = append(outputs, outputData{
 			pubKey:          oneTimePub,
@@ -165,7 +176,6 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 			amount:          change,
 		})
 		allBlindings = append(allBlindings, blinding)
-		allAmounts = append(allAmounts, change)
 	}
 
 	// Calculate total output blinding using proper scalar arithmetic

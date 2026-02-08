@@ -34,6 +34,10 @@ type OutputData struct {
 // ScannerConfig holds callbacks for cryptographic operations
 type ScannerConfig struct {
 	GenerateKeyImage func(privKey [32]byte) ([32]byte, error)
+
+	// CreateCommitment should return a Pedersen commitment for (amount, blinding).
+	// If nil, the scanner will not verify that decrypted amounts match commitments.
+	CreateCommitment func(amount uint64, blinding [32]byte) ([32]byte, error)
 }
 
 // Scanner scans blocks for wallet-relevant transactions
@@ -72,13 +76,23 @@ func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
 				}
 
 				// Derive the blinding factor from shared secret
-				blinding := deriveBlinding(outputSecret, out.Index)
+				blinding := DeriveBlinding(outputSecret, out.Index)
 
 				// Decrypt the amount
 				amount := DecryptAmount(out.EncryptedAmount, blinding, out.Index)
 
-				// Verify commitment: amount * H + blinding * G should equal out.Commitment
-				// This is done by the wallet when spending, but we trust the network validated it
+				// Verify commitment matches decrypted amount/blinding.
+				// This prevents bogus balances if an output is detected as ours but the amount
+				// decryption key is wrong (e.g. legacy/broken tx construction).
+				if s.config.CreateCommitment != nil {
+					commitment, err := s.config.CreateCommitment(amount, blinding)
+					if err != nil {
+						continue
+					}
+					if commitment != out.Commitment {
+						continue
+					}
+				}
 
 				owned := &OwnedOutput{
 					TxID:           tx.TxID,
@@ -130,9 +144,9 @@ func (s *Scanner) ScanBlocks(blocks []*BlockData) (totalFound, totalSpent int) {
 	return totalFound, totalSpent
 }
 
-// deriveBlinding derives a blinding factor from the shared secret and output index
+// DeriveBlinding derives a blinding factor from the shared secret and output index.
 // blinding = Hash("blocknet_blinding" || shared_secret || output_index)
-func deriveBlinding(sharedSecret [32]byte, outputIndex int) [32]byte {
+func DeriveBlinding(sharedSecret [32]byte, outputIndex int) [32]byte {
 	h := sha3.New256()
 	h.Write([]byte("blocknet_blinding"))
 	h.Write(sharedSecret[:])

@@ -388,10 +388,19 @@ func (w *Wallet) MatureOutputs(currentHeight uint64) []*OwnedOutput {
 	return outputs
 }
 
-// AddOutput adds a newly discovered output
+// AddOutput adds a newly discovered output.
+// Dedupes by (txid, output_index) so rescans or repeated block notifications
+// don't inflate balances.
 func (w *Wallet) AddOutput(out *OwnedOutput) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	for _, existing := range w.data.Outputs {
+		if existing.TxID == out.TxID && existing.OutputIndex == out.OutputIndex {
+			return
+		}
+	}
+
 	w.data.Outputs = append(w.data.Outputs, out)
 }
 
