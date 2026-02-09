@@ -47,6 +47,16 @@ type OwnedOutput struct {
 	SpentHeight    uint64   `json:"spent_height,omitempty"`
 }
 
+// SendRecord tracks outgoing transaction details
+type SendRecord struct {
+	TxID        [32]byte `json:"txid"`
+	Timestamp   int64    `json:"timestamp"`
+	Recipient   string   `json:"recipient"`   // base58 address
+	Amount      uint64   `json:"amount"`      // actual amount sent (not including fee)
+	Fee         uint64   `json:"fee"`
+	BlockHeight uint64   `json:"block_height"` // when confirmed
+}
+
 // WalletData is the serializable wallet state
 type WalletData struct {
 	Version      uint32         `json:"version"`
@@ -54,6 +64,7 @@ type WalletData struct {
 	Mnemonic     string         `json:"mnemonic,omitempty"` // BIP39 12-word recovery phrase (empty for view-only)
 	Keys         StealthKeys    `json:"keys"`
 	Outputs      []*OwnedOutput `json:"outputs"`
+	SendHistory  []*SendRecord  `json:"send_history,omitempty"` // Track outgoing transactions
 	SyncedHeight uint64         `json:"synced_height"`
 	CreatedAt    int64          `json:"created_at"`
 }
@@ -360,6 +371,16 @@ func (w *Wallet) PendingBalance(currentHeight uint64) uint64 {
 	return total
 }
 
+// AllOutputs returns all outputs (spent and unspent)
+func (w *Wallet) AllOutputs() []*OwnedOutput {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	outputs := make([]*OwnedOutput, len(w.data.Outputs))
+	copy(outputs, w.data.Outputs)
+	return outputs
+}
+
 // SpendableOutputs returns all unspent outputs (regardless of maturity)
 func (w *Wallet) SpendableOutputs() []*OwnedOutput {
 	w.mu.RLock()
@@ -463,6 +484,26 @@ func (w *Wallet) OutputCount() (total, unspent int) {
 		}
 	}
 	return
+}
+
+// RecordSend stores metadata about an outgoing transaction
+func (w *Wallet) RecordSend(record *SendRecord) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.data.SendHistory = append(w.data.SendHistory, record)
+}
+
+// GetSendRecord retrieves send metadata by TxID, returns nil if not found
+func (w *Wallet) GetSendRecord(txID [32]byte) *SendRecord {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	for _, record := range w.data.SendHistory {
+		if record.TxID == txID {
+			return record
+		}
+	}
+	return nil
 }
 
 // ============================================================================

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -591,6 +592,16 @@ func (c *CLI) cmdSend(args []string) error {
 		c.wallet.MarkSpent(spent.OneTimePubKey, c.daemon.Chain().Height())
 	}
 
+	// Record send for history tracking
+	c.wallet.RecordSend(&wallet.SendRecord{
+		TxID:        result.TxID,
+		Timestamp:   time.Now().Unix(),
+		Recipient:   recipientAddr,
+		Amount:      amount,
+		Fee:         result.Fee,
+		BlockHeight: c.daemon.Chain().Height(),
+	})
+
 	fmt.Printf("Transaction sent: %x\n", result.TxID[:16])
 	fmt.Printf("  Fee: %s\n", formatAmount(result.Fee))
 	if result.Change > 0 {
@@ -601,31 +612,102 @@ func (c *CLI) cmdSend(args []string) error {
 }
 
 func (c *CLI) cmdHistory() {
-	outputs := c.wallet.SpendableOutputs()
+	// Get all outputs (both spent and unspent)
+	outputs := c.wallet.AllOutputs()
+	
 	if len(outputs) == 0 {
 		fmt.Println("No transaction history")
 		return
 	}
 
-	fmt.Println("\nRecent outputs:")
-	fmt.Println("  Height    Amount          Status")
-	fmt.Println("  ------    ------          ------")
-
-	// Show last 10
-	start := 0
-	if len(outputs) > 10 {
-		start = len(outputs) - 10
+	// Color codes
+	green := "\033[38;2;170;255;0m"   // #AAFF00 - incoming
+	red := "\033[38;2;255;68;68m"     // #FF4444 - outgoing
+	reset := "\033[0m"
+	
+	if c.noColor {
+		green = ""
+		red = ""
+		reset = ""
 	}
 
-	for _, out := range outputs[start:] {
-		status := "spendable"
-		if out.Spent {
-			status = fmt.Sprintf("spent@%d", out.SpentHeight)
+	// Build history events (both IN and OUT)
+	type historyEvent struct {
+		timestamp int64
+		direction string
+		amount    uint64
+		height    uint64
+		color     string
+		txHash    [32]byte
+	}
+
+	var events []historyEvent
+
+	// Add incoming events
+	for _, out := range outputs {
+		block := c.daemon.Chain().GetBlockByHeight(out.BlockHeight)
+		if block == nil {
+			continue
 		}
-		fmt.Printf("  %-8d  %-14s  %s\n",
-			out.BlockHeight,
-			formatAmount(out.Amount),
-			status,
+		events = append(events, historyEvent{
+			timestamp: block.Header.Timestamp,
+			direction: "IN",
+			amount:    out.Amount,
+			height:    out.BlockHeight,
+			color:     green,
+			txHash:    out.TxID,
+		})
+	}
+
+	// Add outgoing events (from send history)
+	// Track which TxIDs we've already added to avoid duplicates
+	seenTxIDs := make(map[[32]byte]bool)
+	for _, out := range outputs {
+		if out.Spent && out.SpentHeight > 0 {
+			// Check if we have send metadata for this transaction
+			sendRecord := c.wallet.GetSendRecord(out.TxID)
+			if sendRecord != nil && !seenTxIDs[out.TxID] {
+				block := c.daemon.Chain().GetBlockByHeight(out.SpentHeight)
+				if block == nil {
+					continue
+				}
+				events = append(events, historyEvent{
+					timestamp: block.Header.Timestamp,
+					direction: "OUT",
+					amount:    sendRecord.Amount, // Use actual sent amount
+					height:    out.SpentHeight,
+					color:     red,
+					txHash:    out.TxID,
+				})
+				seenTxIDs[out.TxID] = true
+			}
+		}
+	}
+
+	// Sort by timestamp (oldest first)
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].timestamp < events[j].timestamp
+	})
+
+	fmt.Println("\nTransaction History:")
+	for _, evt := range events {
+		tm := time.Unix(evt.timestamp, 0)
+		dateStr := tm.Format("060102-15:04:05")
+		
+		// Format: YYMMDD-HH:mm:ss DIR (color) NN.NN txhash
+		amountStr := formatAmount(evt.amount)
+		if evt.amount == 0 && evt.direction == "OUT" {
+			// Unknown amount for old transactions without send metadata
+			amountStr = "??? BNT"
+		}
+		
+		fmt.Printf("%s %s%-3s%s %-16s %x\n",
+			dateStr,
+			evt.color,
+			evt.direction,
+			reset,
+			amountStr,
+			evt.txHash,
 		)
 	}
 }
@@ -694,7 +776,6 @@ func (c *CLI) cmdMining(args []string) error {
 			fmt.Printf("Mining: active (%s)\n", elapsed)
 			fmt.Printf("  Hashrate:     %.2f H/s\n", hashRate)
 			fmt.Printf("  Total hashes: %d\n", stats.HashCount)
-			fmt.Printf("  Blocks found: %d\n", stats.BlocksFound)
 			fmt.Printf("  Chain height: %d\n", c.daemon.Chain().Height())
 		} else {
 			fmt.Println("Mining: stopped")
