@@ -706,15 +706,15 @@ func (c *CLI) cmdHistory() {
 				if block == nil {
 					continue
 				}
-			events = append(events, historyEvent{
-				timestamp: block.Header.Timestamp,
-				direction: "OUT",
-				amount:    sendRecord.Amount, // Use actual sent amount
-				height:    out.SpentHeight,
-				color:     red,
-				txHash:    out.TxID,
-				paymentID: sendRecord.PaymentID,
-			})
+				events = append(events, historyEvent{
+					timestamp: block.Header.Timestamp,
+					direction: "OUT",
+					amount:    sendRecord.Amount, // Use actual sent amount
+					height:    out.SpentHeight,
+					color:     red,
+					txHash:    out.TxID,
+					paymentID: sendRecord.PaymentID,
+				})
 				seenTxIDs[out.TxID] = true
 			}
 		}
@@ -729,12 +729,12 @@ func (c *CLI) cmdHistory() {
 	for _, evt := range events {
 		tm := time.Unix(evt.timestamp, 0)
 		dateStr := tm.Format("060102-15:04:05")
-		
+
 		amountStr := formatAmount(evt.amount)
 		if evt.amount == 0 && evt.direction == "OUT" {
 			amountStr = "??? BNT"
 		}
-		
+
 		pidStr := ""
 		if len(evt.paymentID) > 0 {
 			pidStr = " " + hex.EncodeToString(evt.paymentID)
@@ -867,11 +867,10 @@ func (c *CLI) cmdSync() {
 	chainHeight := c.daemon.Chain().Height()
 	walletHeight := c.wallet.SyncedHeight()
 
-	fmt.Printf("Chain height:  %d\n", chainHeight)
-	fmt.Printf("Wallet synced: %d\n", walletHeight)
+	fmt.Printf("Known blocks:  %d\n", chainHeight)
+	fmt.Printf("Blocks scanned: %d\n", walletHeight)
 
 	if walletHeight >= chainHeight {
-		fmt.Println("Wallet is fully synced")
 		return
 	}
 
