@@ -1038,7 +1038,7 @@ func validateCoinbase(tx *Transaction) error {
 // ============================================================================
 
 // deriveAmountKey derives the key for amount encryption from shared secret
-// Must match wallet/scanner.go's deriveBlinding function
+// Must match wallet.DeriveBlinding
 func deriveAmountKey(sharedSecret [32]byte, outputIndex int) [32]byte {
 	h := sha3.New256()
 	h.Write([]byte("blocknet_blinding"))
@@ -1080,7 +1080,7 @@ func CreateCoinbase(recipientSpendPub, recipientViewPub [32]byte, reward uint64)
 		return nil, fmt.Errorf("failed to derive shared secret: %w", err)
 	}
 
-	// Derive blinding factor from shared secret (must match scanner's deriveBlinding)
+	// Derive blinding factor from shared secret (must match wallet.DeriveBlinding)
 	blinding := deriveAmountKey(sharedSecret, 0)
 
 	// Create commitment with derived blinding (so scanner can reproduce it)

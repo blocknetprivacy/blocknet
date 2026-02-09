@@ -37,6 +37,12 @@ type OutputData struct {
 // ScannerConfig holds callbacks for cryptographic operations
 type ScannerConfig struct {
 	GenerateKeyImage func(privKey [32]byte) ([32]byte, error)
+
+	// CreateCommitment recomputes a Pedersen commitment for (amount, blinding).
+	// If non-nil, the scanner verifies the decrypted amount matches the on-chain
+	// commitment before recording the output. This prevents garbage balances when
+	// amount decryption produces wrong results (e.g. legacy broken transactions).
+	CreateCommitment func(amount uint64, blinding [32]byte) ([32]byte, error)
 }
 
 // Scanner scans blocks for wallet-relevant transactions
@@ -74,14 +80,25 @@ func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
 					continue
 				}
 
-				// Derive the blinding factor from shared secret
-				blinding := deriveBlinding(outputSecret, out.Index)
+			// Derive the blinding factor from shared secret
+			blinding := DeriveBlinding(outputSecret, out.Index)
 
 				// Decrypt the amount
 				amount := DecryptAmount(out.EncryptedAmount, blinding, out.Index)
 
-				// Verify commitment: amount * H + blinding * G should equal out.Commitment
-				// This is done by the wallet when spending, but we trust the network validated it
+				// Verify the decrypted amount and derived blinding reopen the
+				// on-chain Pedersen commitment. This catches cases where the
+				// derivation path is wrong (e.g. legacy broken transactions)
+				// and prevents garbage amounts from polluting the balance.
+				if s.config.CreateCommitment != nil {
+					commitment, err := s.config.CreateCommitment(amount, blinding)
+					if err != nil {
+						continue
+					}
+					if commitment != out.Commitment {
+						continue
+					}
+				}
 
 			owned := &OwnedOutput{
 				TxID:           tx.TxID,
@@ -141,9 +158,9 @@ func (s *Scanner) ScanBlocks(blocks []*BlockData) (totalFound, totalSpent int) {
 	return totalFound, totalSpent
 }
 
-// deriveBlinding derives a blinding factor from the shared secret and output index
+// DeriveBlinding derives a blinding factor from the shared secret and output index.
 // blinding = Hash("blocknet_blinding" || shared_secret || output_index)
-func deriveBlinding(sharedSecret [32]byte, outputIndex int) [32]byte {
+func DeriveBlinding(sharedSecret [32]byte, outputIndex int) [32]byte {
 	h := sha3.New256()
 	h.Write([]byte("blocknet_blinding"))
 	h.Write(sharedSecret[:])

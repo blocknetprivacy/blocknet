@@ -50,6 +50,13 @@ type TransferConfig struct {
 	// Stealth address derivation
 	DeriveStealthAddress func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error)
 
+	// ECDH shared secret derivation (sender side): H(txPriv * viewPub)
+	DeriveSharedSecret func(txPriv, viewPub [32]byte) ([32]byte, error)
+
+	// Point operations for deriving one-time keys from an existing txPriv
+	ScalarToPoint func(scalar [32]byte) ([32]byte, error) // scalar * G
+	PointAdd      func(p1, p2 [32]byte) ([32]byte, error) // p1 + p2
+
 	// Constants
 	RingSize   int
 	MinFee     uint64
@@ -102,31 +109,51 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 	// Build outputs
 	outputs := make([]outputData, 0, len(recipients)+1)
 
-	// Generate tx keypair for stealth derivation
-	var txPubKey [32]byte
+	// Generate a single tx keypair (r, R) shared across all outputs.
+	// Use DeriveStealthAddress for the first recipient to obtain txPriv/txPub,
+	// then reuse txPriv with each recipient's view key to derive shared secrets
+	// and one-time keys for all subsequent outputs (including change).
+	txPrivKey, txPubKey, firstOneTimePub, err := b.config.DeriveStealthAddress(
+		recipients[0].SpendPubKey, recipients[0].ViewPubKey,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive stealth address: %w", err)
+	}
+
 	var allBlindings [][32]byte
-	var allAmounts []uint64
 
-	var txPrivKey [32]byte // stored for payment ID encryption
 	for i, r := range recipients {
-		txPriv, txPub, oneTimePub, err := b.config.DeriveStealthAddress(r.SpendPubKey, r.ViewPubKey)
+		// Derive ECDH shared secret from the single txPriv and recipient's view key
+		sharedSecret, err := b.config.DeriveSharedSecret(txPrivKey, r.ViewPubKey)
 		if err != nil {
-			return nil, fmt.Errorf("failed to derive stealth address for recipient %d: %w", i, err)
+			return nil, fmt.Errorf("failed to derive shared secret for recipient %d: %w", i, err)
 		}
 
+		var oneTimePub [32]byte
 		if i == 0 {
-			txPubKey = txPub   // Use first derivation's tx pubkey
-			txPrivKey = txPriv // Keep for payment ID encryption
+			// First recipient already derived via DeriveStealthAddress
+			oneTimePub = firstOneTimePub
+		} else {
+			// Compose from existing primitives: oneTimePub = H(r*V)*G + S
+			sharedPoint, err := b.config.ScalarToPoint(sharedSecret)
+			if err != nil {
+				return nil, fmt.Errorf("failed to derive shared point for recipient %d: %w", i, err)
+			}
+			oneTimePub, err = b.config.PointAdd(sharedPoint, r.SpendPubKey)
+			if err != nil {
+				return nil, fmt.Errorf("failed to derive one-time key for recipient %d: %w", i, err)
+			}
 		}
 
-		blinding := b.config.GenerateBlinding()
+		// Derive blinding deterministically from shared secret so the
+		// recipient's scanner can reproduce it for amount decryption.
+		blinding := DeriveBlinding(sharedSecret, i)
 		commitment := b.config.CreateCommitment(r.Amount, blinding)
 		rangeProof, err := b.config.CreateRangeProof(r.Amount, blinding)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create range proof: %w", err)
 		}
 
-		// Encrypt amount for recipient
 		encryptedAmount := encryptAmount(r.Amount, blinding, i)
 
 		outputs = append(outputs, outputData{
@@ -138,26 +165,37 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 			amount:          r.Amount,
 		})
 		allBlindings = append(allBlindings, blinding)
-		allAmounts = append(allAmounts, r.Amount)
 	}
 
 	// Add change output to self if needed
 	if change > 0 {
 		keys := b.wallet.Keys()
-		_, _, oneTimePub, err := b.config.DeriveStealthAddress(keys.SpendPubKey, keys.ViewPubKey)
+		outputIndex := len(outputs)
+
+		// Derive shared secret from same txPriv and our own view key
+		changeSecret, err := b.config.DeriveSharedSecret(txPrivKey, keys.ViewPubKey)
 		if err != nil {
-			return nil, fmt.Errorf("failed to derive change address: %w", err)
+			return nil, fmt.Errorf("failed to derive shared secret for change: %w", err)
 		}
 
-		blinding := b.config.GenerateBlinding()
+		// Derive one-time key: H(r*V)*G + S
+		sharedPoint, err := b.config.ScalarToPoint(changeSecret)
+		if err != nil {
+			return nil, fmt.Errorf("failed to derive shared point for change: %w", err)
+		}
+		oneTimePub, err := b.config.PointAdd(sharedPoint, keys.SpendPubKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to derive one-time key for change: %w", err)
+		}
+
+		blinding := DeriveBlinding(changeSecret, outputIndex)
 		commitment := b.config.CreateCommitment(change, blinding)
 		rangeProof, err := b.config.CreateRangeProof(change, blinding)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create change range proof: %w", err)
 		}
 
-		// Encrypt amount
-		encryptedAmount := encryptAmount(change, blinding, len(outputs))
+		encryptedAmount := encryptAmount(change, blinding, outputIndex)
 
 		outputs = append(outputs, outputData{
 			pubKey:          oneTimePub,
@@ -168,7 +206,6 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 			amount:          change,
 		})
 		allBlindings = append(allBlindings, blinding)
-		allAmounts = append(allAmounts, change)
 	}
 
 	// Calculate total output blinding using proper scalar arithmetic
