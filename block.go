@@ -427,6 +427,15 @@ func (c *Chain) loadFromStorage() error {
 		}
 	}
 
+	// Fix cumulative work: the loop above computed workAt relative to 0
+	// because the parent of startHeight wasn't loaded. Offset every entry
+	// so workAt[tipHash] == totalWork (the real value from storage).
+	if offset := c.totalWork - c.workAt[c.bestHash]; offset > 0 {
+		for h := range c.workAt {
+			c.workAt[h] += offset
+		}
+	}
+
 	return nil
 }
 
