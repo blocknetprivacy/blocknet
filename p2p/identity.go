@@ -262,9 +262,12 @@ func (im *IdentityManager) StartRotationLoop() func() {
 		}
 	}()
 
+	var once sync.Once
 	return func() {
-		close(stop)
-		<-done
+		once.Do(func() {
+			close(stop)
+			<-done
+		})
 	}
 }
 
