@@ -411,17 +411,28 @@ func (m *Mempool) OnBlockDisconnected(block *Block, txDataMap map[[32]byte][]byt
 		if err != nil {
 			continue
 		}
+		// Already present (e.g. gossiped while block was on-chain) - keep existing
+		// entry/heap state unchanged.
+		if _, exists := m.txByID[txID]; exists {
+			continue
+		}
 
 		// Get serialized tx data if available
 		txData, ok := txDataMap[txID]
 		if !ok {
 			txData = tx.Serialize()
 		}
+		txData, aux := DecodeTxWithAux(txData)
 
 		// Check if any inputs are now spent (by another chain)
 		// Skip if key images are spent
 		valid := true
 		for _, input := range tx.Inputs {
+			// Keep mempool free of double-spends.
+			if existingTxID, exists := m.txByImage[input.KeyImage]; exists && existingTxID != txID {
+				valid = false
+				break
+			}
 			if m.isKeyImageSpent(input.KeyImage) {
 				valid = false
 				break
@@ -431,6 +442,9 @@ func (m *Mempool) OnBlockDisconnected(block *Block, txDataMap map[[32]byte][]byt
 		if valid {
 			// Re-add to mempool (using internal method to avoid double-lock)
 			size := len(txData)
+			if size == 0 {
+				continue
+			}
 			feeRate := tx.Fee / uint64(size)
 
 			entry := &MempoolEntry{
@@ -441,12 +455,14 @@ func (m *Mempool) OnBlockDisconnected(block *Block, txDataMap map[[32]byte][]byt
 				FeeRate: feeRate,
 				Size:    size,
 				AddedAt: time.Now(),
+				Aux:     aux,
 			}
 
 			m.txByID[txID] = entry
 			for _, input := range tx.Inputs {
 				m.txByImage[input.KeyImage] = txID
 			}
+			heap.Push(&m.priorityQueue, entry)
 			m.totalSize += size
 		}
 	}

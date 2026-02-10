@@ -91,6 +91,10 @@ type SyncManager struct {
 	getMempool        func() [][]byte
 	processTx         func(data []byte) error
 	onBlockAccepted   func(data []byte)
+	isOrphanError     func(error) bool
+	getBlockMeta      func(data []byte) (height uint64, prevHash [32]byte, err error)
+	getBlockHash      func(data []byte) (hash [32]byte, err error)
+	fetchBlocksByHash func(context.Context, peer.ID, [][32]byte) ([][]byte, error)
 
 	// Sync state
 	syncing        bool
@@ -112,14 +116,18 @@ type SyncConfig struct {
 	GetBlocksByHeight func(startHeight uint64, max int) ([][]byte, error)
 	ProcessBlock      func(data []byte) error
 	ProcessHeader     func(data []byte) error
-	GetMempool        func() [][]byte         // Get all mempool transactions
-	ProcessTx         func(data []byte) error // Process a mempool transaction
-	OnBlockAccepted   func(data []byte)       // Called when a new block announcement is accepted
+	GetMempool        func() [][]byte                                              // Get all mempool transactions
+	ProcessTx         func(data []byte) error                                      // Process a mempool transaction
+	OnBlockAccepted   func(data []byte)                                            // Called when a new block announcement is accepted
+	IsOrphanError     func(error) bool                                             // Orphan classifier for sync recovery (required for recovery to work)
+	GetBlockMeta      func(data []byte) (uint64, [32]byte, error)                  // Extract (height, prevHash) from serialized block; required for orphan recovery
+	GetBlockHash      func(data []byte) ([32]byte, error)                          // Extract block hash from serialized block; required for parent hash verification in orphan recovery
+	FetchBlocksByHash func(context.Context, peer.ID, [][32]byte) ([][]byte, error) // Override block-by-hash fetching (default: p2p FetchBlocks)
 }
 
 // NewSyncManager creates a new sync manager
 func NewSyncManager(node *Node, cfg SyncConfig) *SyncManager {
-	return &SyncManager{
+	sm := &SyncManager{
 		node:              node,
 		getStatus:         cfg.GetStatus,
 		getHeaders:        cfg.GetHeaders,
@@ -130,8 +138,17 @@ func NewSyncManager(node *Node, cfg SyncConfig) *SyncManager {
 		getMempool:        cfg.GetMempool,
 		processTx:         cfg.ProcessTx,
 		onBlockAccepted:   cfg.OnBlockAccepted,
+		isOrphanError:     cfg.IsOrphanError,
+		getBlockMeta:      cfg.GetBlockMeta,
+		getBlockHash:      cfg.GetBlockHash,
 		downloadBuffer:    make(map[uint64][]byte),
 	}
+	if cfg.FetchBlocksByHash != nil {
+		sm.fetchBlocksByHash = cfg.FetchBlocksByHash
+	} else if node != nil {
+		sm.fetchBlocksByHash = sm.FetchBlocks
+	}
+	return sm
 }
 
 // Start begins sync operations
@@ -614,8 +631,8 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 				}
 			}
 
-			// Process block
-			if err := sm.processBlock(blockData); err != nil {
+			// Process block (with orphan recovery for reorg sync).
+			if err := sm.ProcessBlockWithRecoveryCtx(ctx, blockData, peers); err != nil {
 				log.Printf("[sync] block %d failed: %v", nextHeight, err)
 				return
 			}
@@ -716,6 +733,224 @@ func (sm *SyncManager) downloader(ctx context.Context, p peer.ID, workChan <-cha
 	}
 }
 
+func (sm *SyncManager) isOrphanErr(err error) bool {
+	if err == nil || sm.isOrphanError == nil {
+		return false
+	}
+	return sm.isOrphanError(err)
+}
+
+func (sm *SyncManager) ProcessBlockWithRecovery(blockData []byte, peers []PeerStatus) error {
+	return sm.ProcessBlockWithRecoveryCtx(sm.ctx, blockData, peers)
+}
+
+func (sm *SyncManager) ProcessBlockWithRecoveryCtx(ctx context.Context, blockData []byte, peers []PeerStatus) error {
+	if sm.processBlock == nil {
+		return nil
+	}
+
+	err := sm.processBlock(blockData)
+	if err == nil {
+		return nil
+	}
+	if !sm.isOrphanErr(err) {
+		return err
+	}
+
+	// Recover by fetching and connecting the missing parent chain by hash.
+	if recErr := sm.recoverOrphanChain(ctx, blockData, peers); recErr != nil {
+		return recErr
+	}
+	return nil
+}
+
+func (sm *SyncManager) recoverOrphanChain(ctx context.Context, blockData []byte, peers []PeerStatus) error {
+	const maxRecoveryDepth = 512
+	const recoveryTimeout = 10 * time.Minute
+
+	if len(peers) == 0 {
+		return fmt.Errorf("orphan recovery failed: no peers available")
+	}
+	if sm.getBlockMeta == nil {
+		return fmt.Errorf("orphan recovery failed: GetBlockMeta callback not configured")
+	}
+	if sm.getBlockHash == nil {
+		return fmt.Errorf("orphan recovery failed: GetBlockHash callback not configured")
+	}
+	if sm.fetchBlocksByHash == nil {
+		return fmt.Errorf("orphan recovery failed: FetchBlocksByHash callback not configured")
+	}
+
+	baseCtx := ctx
+	if baseCtx == nil {
+		baseCtx = sm.ctx
+	}
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, recoveryTimeout)
+	defer cancel()
+
+	pending := make([][]byte, 0, 8)
+	pending = append(pending, blockData)
+	current := blockData
+	seenParents := make(map[[32]byte]struct{})
+
+outer:
+	for depth := 0; depth < maxRecoveryDepth; depth++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("orphan recovery timed out after fetching %d parents: %w", depth, err)
+		}
+
+		height, prevHash, err := sm.getBlockMeta(current)
+		if err != nil {
+			return fmt.Errorf("orphan recovery failed to decode block metadata: %w", err)
+		}
+		if height == 0 {
+			return fmt.Errorf("orphan recovery reached genesis without finding connectable parent")
+		}
+
+		parentHash := prevHash
+		if _, exists := seenParents[parentHash]; exists {
+			return fmt.Errorf("orphan recovery detected parent cycle at %x", parentHash[:8])
+		}
+		seenParents[parentHash] = struct{}{}
+
+		invalidPeers := make(map[peer.ID]struct{})
+		var lastProcessErr error
+		for len(invalidPeers) < len(peers) {
+			parentData, sourcePeer, err := sm.fetchBlockByHashFromAnyPeer(ctx, peers, parentHash, invalidPeers)
+			if err != nil {
+				if lastProcessErr != nil {
+					return fmt.Errorf(
+						"orphan recovery failed while processing parent %x after %d invalid peer responses: %w",
+						parentHash[:8], len(invalidPeers), lastProcessErr,
+					)
+				}
+				return fmt.Errorf("orphan recovery failed to fetch parent %x (child height %d): %w", parentHash[:8], height, err)
+			}
+
+			// If the parent is known, this returns nil (accepted or duplicate).
+			if err := sm.processBlock(parentData); err != nil {
+				if sm.isOrphanErr(err) {
+					pending = append(pending, parentData)
+					current = parentData
+					continue outer
+				}
+
+				// This peer returned hash-matching data that still fails validation.
+				// Keep trying other peers for the same parent hash before failing.
+				invalidPeers[sourcePeer] = struct{}{}
+				lastProcessErr = err
+				continue
+			}
+
+			// Parent chain is now connected; replay queued children from oldest to newest.
+			for i := len(pending) - 1; i >= 0; i-- {
+				if err := sm.processBlock(pending[i]); err != nil {
+					return fmt.Errorf("orphan recovery replay failed: %w", err)
+				}
+			}
+			return nil
+		}
+
+		if lastProcessErr != nil {
+			return fmt.Errorf(
+				"orphan recovery failed while processing parent %x after %d invalid peer responses: %w",
+				parentHash[:8], len(invalidPeers), lastProcessErr,
+			)
+		}
+		return fmt.Errorf("orphan recovery failed: no peers left to try for parent %x", parentHash[:8])
+	}
+
+	return fmt.Errorf("orphan recovery exceeded max depth (%d)", maxRecoveryDepth)
+}
+
+func (sm *SyncManager) fetchBlockByHashFromAnyPeer(
+	ctx context.Context, peers []PeerStatus, hash [32]byte, exclude map[peer.ID]struct{},
+) ([]byte, peer.ID, error) {
+	type result struct {
+		block []byte
+		peer  peer.ID
+		err   error
+	}
+	if sm.fetchBlocksByHash == nil {
+		return nil, "", fmt.Errorf("FetchBlocksByHash callback not configured")
+	}
+	if sm.getBlockHash == nil {
+		return nil, "", fmt.Errorf("GetBlockHash callback not configured")
+	}
+
+	// ctx may be nil when called outside of Start() (e.g. unit tests).
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	activePeers := make([]PeerStatus, 0, len(peers))
+	for _, ps := range peers {
+		if exclude != nil {
+			if _, skip := exclude[ps.Peer]; skip {
+				continue
+			}
+		}
+		activePeers = append(activePeers, ps)
+	}
+	if len(activePeers) == 0 {
+		return nil, "", fmt.Errorf("no peers available for block %x", hash[:8])
+	}
+
+	// Cancel remaining goroutines once we get a successful result.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	ch := make(chan result, len(activePeers))
+	for _, ps := range activePeers {
+		go func(p peer.ID) {
+			blocks, err := sm.fetchBlocksByHash(ctx, p, [][32]byte{hash})
+			if err != nil {
+				ch <- result{peer: p, err: err}
+				return
+			}
+			if len(blocks) == 0 || len(blocks[0]) == 0 {
+				ch <- result{peer: p, err: fmt.Errorf("peer %s returned no blocks for %x", p, hash[:8])}
+				return
+			}
+			blockHash, err := sm.getBlockHash(blocks[0])
+			if err != nil {
+				ch <- result{peer: p, err: fmt.Errorf("peer %s returned undecodable block for %x: %w", p, hash[:8], err)}
+				return
+			}
+			if blockHash != hash {
+				ch <- result{peer: p, err: fmt.Errorf("peer %s returned mismatched block hash %x for %x", p, blockHash[:8], hash[:8])}
+				return
+			}
+			ch <- result{peer: p, block: blocks[0]}
+		}(ps.Peer)
+	}
+
+	var lastErr error
+	for i := 0; i < len(activePeers); i++ {
+		select {
+		case r := <-ch:
+			if r.err == nil && len(r.block) > 0 {
+				return r.block, r.peer, nil
+			}
+			if r.err != nil {
+				lastErr = r.err
+			} else {
+				lastErr = fmt.Errorf("peer returned empty block for %x", hash[:8])
+			}
+		case <-ctx.Done():
+			return nil, "", ctx.Err()
+		}
+	}
+
+	if lastErr != nil {
+		return nil, "", lastErr
+	}
+	return nil, "", fmt.Errorf("block %x not found on sync peers", hash[:8])
+}
+
 // syncFrom wraps single peer sync in the parallel sync mechanism
 func (sm *SyncManager) syncFrom(p peer.ID, peerStatus ChainStatus) {
 	peers := []PeerStatus{{Peer: p, Status: peerStatus}}
@@ -763,8 +998,8 @@ func (sm *SyncManager) fetchHeaders(p peer.ID, startHeight uint64, max int) ([][
 }
 
 // FetchBlocks fetches full blocks from a peer
-func (sm *SyncManager) FetchBlocks(p peer.ID, hashes [][32]byte) ([][]byte, error) {
-	ctx, cancel := context.WithTimeout(sm.ctx, 120*time.Second)
+func (sm *SyncManager) FetchBlocks(ctx context.Context, p peer.ID, hashes [][32]byte) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	s, err := sm.node.host.NewStream(ctx, p, ProtocolSync)

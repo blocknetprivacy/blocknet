@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -163,6 +164,23 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		ProcessHeader:     nil, // Full-block sync, no header processing
 		GetMempool:        d.getMempoolTxs,
 		ProcessTx:         d.processTxData,
+		IsOrphanError: func(err error) bool {
+			return errors.Is(err, ErrOrphanBlock)
+		},
+		GetBlockMeta: func(data []byte) (uint64, [32]byte, error) {
+			var block Block
+			if err := json.Unmarshal(data, &block); err != nil {
+				return 0, [32]byte{}, err
+			}
+			return block.Header.Height, block.Header.PrevHash, nil
+		},
+		GetBlockHash: func(data []byte) ([32]byte, error) {
+			var block Block
+			if err := json.Unmarshal(data, &block); err != nil {
+				return [32]byte{}, err
+			}
+			return block.Hash(), nil
+		},
 		OnBlockAccepted: func(data []byte) {
 			d.miner.NotifyNewBlock()
 			var block Block
@@ -305,6 +323,7 @@ func (d *Daemon) handleMinedBlock(block *Block) {
 	defer d.mu.Unlock()
 
 	// Add to our chain
+	prevBest := d.chain.BestHash()
 	accepted, isMainChain, err := d.chain.ProcessBlock(block)
 	if err != nil || !accepted {
 		log.Printf("Failed to add mined block: %v", err)
@@ -318,8 +337,8 @@ func (d *Daemon) handleMinedBlock(block *Block) {
 		return
 	}
 
-	// Update mempool (only for main-chain blocks)
-	d.mempool.OnBlockConnected(block)
+	// Update mempool for all blocks that became main-chain.
+	d.updateMempoolForAcceptedMainChain(block, prevBest)
 
 	// Broadcast to peers
 	blockData, err := json.Marshal(block)
@@ -345,6 +364,7 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	prevBest := d.chain.BestHash()
 	accepted, isMainChain, err := d.chain.ProcessBlock(&block)
 	if err != nil || !accepted {
 		// May be orphan or invalid, ignore silently
@@ -356,7 +376,7 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 		return
 	}
 
-	d.mempool.OnBlockConnected(&block)
+	d.updateMempoolForAcceptedMainChain(&block, prevBest)
 	log.Printf("Received and accepted block at height %d from %s", block.Header.Height, from.String()[:8])
 
 	// Relay to other peers (exclude sender)
@@ -449,7 +469,8 @@ func (d *Daemon) processBlockData(data []byte) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	accepted, _, err := d.chain.ProcessBlock(&block)
+	prevBest := d.chain.BestHash()
+	accepted, isMainChain, err := d.chain.ProcessBlock(&block)
 	if err != nil {
 		return err
 	}
@@ -458,8 +479,172 @@ func (d *Daemon) processBlockData(data []byte) error {
 		return nil
 	}
 
-	d.mempool.OnBlockConnected(&block)
+	if isMainChain {
+		d.updateMempoolForAcceptedMainChain(&block, prevBest)
+	}
 	return nil
+}
+
+// updateMempoolForAcceptedMainChain updates mempool contents for a newly
+// accepted main-chain block. During reorg, this applies both sides:
+//   - disconnected old-main-chain blocks are re-queued (if still valid)
+//   - connected new-main-chain blocks are removed as confirmed
+func (d *Daemon) updateMempoolForAcceptedMainChain(block *Block, previousBest [32]byte) {
+	if d.mempool == nil {
+		return
+	}
+
+	// Fast path: direct extension with a single new main-chain block.
+	if block.Header.PrevHash == previousBest {
+		d.mempool.OnBlockConnected(block)
+		return
+	}
+
+	newBest := d.chain.BestHash()
+	disconnected, connected := d.collectReorgDiffBlocks(previousBest, newBest)
+	if len(connected) == 0 {
+		// Fallback to the accepted block if chain traversal failed unexpectedly.
+		log.Printf("[reorg] mempool fallback: could not walk reorg diff (prevBest=%x newBest=%x), only connecting tip block", previousBest[:8], newBest[:8])
+		d.mempool.OnBlockConnected(block)
+		return
+	}
+
+	// Disconnect first so old-chain transactions are visible to conflict removal
+	// when new-chain blocks are connected.
+	for _, b := range disconnected {
+		d.mempool.OnBlockDisconnected(b, d.txDataMapForBlock(b))
+	}
+
+	for _, b := range connected {
+		d.mempool.OnBlockConnected(b)
+	}
+}
+
+func (d *Daemon) collectReorgDiffBlocks(oldTip, newTip [32]byte) (disconnected []*Block, connected []*Block) {
+	const maxReorgDepth = 1000
+
+	// Walk both chains in lockstep-bounded fashion rather than loading the
+	// entire old chain into memory.  We walk the new chain first (up to
+	// maxReorgDepth) collecting blocks, then walk the old chain looking for
+	// the common ancestor among those plus the new-chain set.
+
+	// Step 1: walk new chain collecting blocks until we find one that is on
+	// the old chain or we exhaust the depth budget.
+	reversed := make([]*Block, 0, 8)
+	newChainSet := make(map[[32]byte]struct{}, 64)
+	for hash := newTip; ; {
+		newChainSet[hash] = struct{}{}
+		if hash == oldTip {
+			// newTip extends oldTip (shouldn't reach here due to fast-path,
+			// but handle gracefully).
+			break
+		}
+		block := d.chain.GetBlock(hash)
+		if block == nil {
+			log.Printf("[reorg] failed to load new-chain block %x during reorg diff", hash[:8])
+			return nil, nil
+		}
+		reversed = append(reversed, block)
+		if block.Header.Height == 0 || len(reversed) >= maxReorgDepth {
+			break
+		}
+		hash = block.Header.PrevHash
+	}
+
+	// Step 2: walk old chain looking for common ancestor.
+	var commonAncestor [32]byte
+	foundCommon := false
+	oldAncestors := make(map[[32]byte]*Block, len(reversed))
+	for hash := oldTip; ; {
+		if _, ok := newChainSet[hash]; ok {
+			commonAncestor = hash
+			foundCommon = true
+			break
+		}
+		block := d.chain.GetBlock(hash)
+		if block == nil {
+			log.Printf("[reorg] failed to load old-chain block %x during reorg diff", hash[:8])
+			return nil, nil
+		}
+		oldAncestors[hash] = block
+		if block.Header.Height == 0 || len(oldAncestors) >= maxReorgDepth {
+			log.Printf("[reorg] no common ancestor found within %d blocks", maxReorgDepth)
+			return nil, nil
+		}
+		hash = block.Header.PrevHash
+	}
+	if !foundCommon {
+		return nil, nil
+	}
+
+	// Filter reversed to only blocks after the common ancestor.
+	// reversed is newest-first; trim any entries at/before the ancestor.
+	trimmed := reversed[:0]
+	for _, b := range reversed {
+		if b.Hash() == commonAncestor {
+			break
+		}
+		trimmed = append(trimmed, b)
+	}
+	reversed = trimmed
+
+	for hash := oldTip; hash != commonAncestor; {
+		block, ok := oldAncestors[hash]
+		if !ok || block == nil {
+			log.Printf("[reorg] old-chain block %x missing from ancestors map", hash[:8])
+			return nil, nil
+		}
+		disconnected = append(disconnected, block)
+		hash = block.Header.PrevHash
+	}
+
+	connected = make([]*Block, 0, len(reversed))
+	for i := len(reversed) - 1; i >= 0; i-- {
+		connected = append(connected, reversed[i])
+	}
+	return disconnected, connected
+}
+
+// txDataMapForBlock builds serialized tx payloads for a block, including
+// optional aux trailers reconstructed from block-level aux metadata.
+func (d *Daemon) txDataMapForBlock(block *Block) map[[32]byte][]byte {
+	if block == nil || len(block.Transactions) == 0 {
+		return nil
+	}
+
+	// Group payment IDs by transaction index.
+	auxByTxIndex := make(map[int]map[int][8]byte)
+	if block.AuxData != nil && len(block.AuxData.PaymentIDs) > 0 {
+		for key, pid := range block.AuxData.PaymentIDs {
+			var txIdx, outIdx int
+			if _, err := fmt.Sscanf(key, "%d:%d", &txIdx, &outIdx); err != nil {
+				continue
+			}
+			if txIdx < 0 || txIdx >= len(block.Transactions) || outIdx < 0 {
+				continue
+			}
+			if auxByTxIndex[txIdx] == nil {
+				auxByTxIndex[txIdx] = make(map[int][8]byte)
+			}
+			auxByTxIndex[txIdx][outIdx] = pid
+		}
+	}
+
+	txDataMap := make(map[[32]byte][]byte, len(block.Transactions))
+	for txIdx, tx := range block.Transactions {
+		txID, err := tx.TxID()
+		if err != nil {
+			continue
+		}
+
+		txData := tx.Serialize()
+		if paymentIDs := auxByTxIndex[txIdx]; len(paymentIDs) > 0 {
+			txData = EncodeTxWithAux(txData, &TxAuxData{PaymentIDs: paymentIDs})
+		}
+		txDataMap[txID] = txData
+	}
+
+	return txDataMap
 }
 
 // getBlocksByHeight returns blocks in a height range for sync requests
@@ -512,18 +697,18 @@ func (d *Daemon) processTxData(data []byte) error {
 
 // Stats returns daemon statistics
 type DaemonStats struct {
-	PeerID        string `json:"peer_id"`
-	Peers         int    `json:"peers"`
-	ChainHeight   uint64 `json:"chain_height"`
-	BestHash      string `json:"best_hash"`
-	TotalWork     uint64 `json:"total_work"`
-	MempoolSize   int    `json:"mempool_size"`
-	MempoolBytes  int    `json:"mempool_bytes"`
-	Syncing       bool   `json:"syncing"`
-	SyncProgress  uint64 `json:"sync_progress,omitempty"`
-	SyncTarget    uint64 `json:"sync_target,omitempty"`
-	SyncPercent   string `json:"sync_percent,omitempty"`
-	IdentityAge   string `json:"identity_age"`
+	PeerID       string `json:"peer_id"`
+	Peers        int    `json:"peers"`
+	ChainHeight  uint64 `json:"chain_height"`
+	BestHash     string `json:"best_hash"`
+	TotalWork    uint64 `json:"total_work"`
+	MempoolSize  int    `json:"mempool_size"`
+	MempoolBytes int    `json:"mempool_bytes"`
+	Syncing      bool   `json:"syncing"`
+	SyncProgress uint64 `json:"sync_progress,omitempty"`
+	SyncTarget   uint64 `json:"sync_target,omitempty"`
+	SyncPercent  string `json:"sync_percent,omitempty"`
+	IdentityAge  string `json:"identity_age"`
 }
 
 func (d *Daemon) Stats() DaemonStats {
@@ -531,7 +716,7 @@ func (d *Daemon) Stats() DaemonStats {
 	defer d.mu.RUnlock()
 
 	bestHash := d.chain.BestHash()
-	
+
 	stats := DaemonStats{
 		PeerID:       d.node.PeerID().String(),
 		Peers:        len(d.node.Peers()),
@@ -559,11 +744,11 @@ func (d *Daemon) Stats() DaemonStats {
 }
 
 // Getters for components
-func (d *Daemon) Chain() *Chain           { return d.chain }
-func (d *Daemon) Mempool() *Mempool       { return d.mempool }
-func (d *Daemon) Node() *p2p.Node         { return d.node }
-func (d *Daemon) Miner() *Miner           { return d.miner }
-func (d *Daemon) TriggerSync()            { d.syncMgr.TriggerSync() }
+func (d *Daemon) Chain() *Chain     { return d.chain }
+func (d *Daemon) Mempool() *Mempool { return d.mempool }
+func (d *Daemon) Node() *p2p.Node   { return d.node }
+func (d *Daemon) Miner() *Miner     { return d.miner }
+func (d *Daemon) TriggerSync()      { d.syncMgr.TriggerSync() }
 
 // IsMining returns whether the miner is running
 func (d *Daemon) IsMining() bool {
