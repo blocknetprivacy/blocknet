@@ -475,6 +475,7 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#0a0a0a">
+<meta http-equiv="refresh" content="300">
 <link rel="icon" type="image/x-icon" href="https://blocknetcrypto.com/favicon.ico">
 <style>` + explorerCSS + `</style>
 </head>
@@ -552,6 +553,7 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#0a0a0a">
+<meta http-equiv="refresh" content="300">
 <link rel="icon" type="image/x-icon" href="https://blocknetcrypto.com/favicon.ico">
 <style>` + explorerCSS + `</style>
 </head>
@@ -607,6 +609,7 @@ const explorerTxTmpl = `<!DOCTYPE html>
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#0a0a0a">
+<meta http-equiv="refresh" content="300">
 <link rel="icon" type="image/x-icon" href="https://blocknetcrypto.com/favicon.ico">
 <style>` + explorerCSS + `</style>
 </head>
