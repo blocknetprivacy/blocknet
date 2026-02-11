@@ -562,6 +562,109 @@ func (s *APIServer) handleMiningStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"running": false})
 }
 
+// handleBlockTemplate returns a block template for pool mining.
+// The template includes a pre-built coinbase (using the wallet's keys),
+// all selected mempool transactions, and the computed merkle root.
+// Pool software distributes the header to miners; they find a valid nonce
+// and submit back via POST /api/mining/submitblock.
+// GET /api/mining/blocktemplate
+func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) {
+	if s.wallet == nil {
+		writeError(w, http.StatusServiceUnavailable, "no wallet loaded")
+		return
+	}
+
+	chain := s.daemon.Chain()
+	height := chain.Height() + 1
+	reward := GetBlockReward(height)
+
+	// Create coinbase paying to the loaded wallet
+	coinbase, err := CreateCoinbase(s.wallet.SpendPubKey(), s.wallet.ViewPubKey(), reward)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create coinbase: "+err.Error())
+		return
+	}
+
+	// Get mempool transactions sorted by fee rate
+	txs, auxData := s.daemon.Mempool().GetTransactionsForBlock(MaxBlockSize-1000, 1000)
+
+	// Build transaction list (coinbase first)
+	allTxs := make([]*Transaction, 0, len(txs)+1)
+	allTxs = append(allTxs, coinbase.Tx)
+	allTxs = append(allTxs, txs...)
+
+	// Build BlockAuxData from mempool aux data
+	var blockAux *BlockAuxData
+	if len(auxData) > 0 {
+		paymentIDs := make(map[string][8]byte)
+		for txIdx, tx := range allTxs {
+			txID, _ := tx.TxID()
+			if aux, ok := auxData[txID]; ok {
+				for outIdx, pid := range aux.PaymentIDs {
+					key := fmt.Sprintf("%d:%d", txIdx, outIdx)
+					paymentIDs[key] = pid
+				}
+			}
+		}
+		if len(paymentIDs) > 0 {
+			blockAux = &BlockAuxData{PaymentIDs: paymentIDs}
+		}
+	}
+
+	// Build block template (nonce = 0, to be solved by pool miners)
+	block := &Block{
+		Header: BlockHeader{
+			Version:    1,
+			Height:     height,
+			PrevHash:   chain.BestHash(),
+			Timestamp:  time.Now().Unix(),
+			Difficulty: chain.NextDifficulty(),
+			Nonce:      0,
+		},
+		Transactions: allTxs,
+		AuxData:      blockAux,
+	}
+
+	// Compute merkle root
+	merkleRoot, err := block.ComputeMerkleRoot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to compute merkle root: "+err.Error())
+		return
+	}
+	block.Header.MerkleRoot = merkleRoot
+
+	// Compute target for PoW validation
+	target := DifficultyToTarget(block.Header.Difficulty)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"block":       block,
+		"target":      fmt.Sprintf("%x", target),
+		"header_base": fmt.Sprintf("%x", block.Header.SerializeForPoW()),
+	})
+}
+
+// handleSubmitBlock accepts a solved block from pool mining and adds it to the chain.
+// POST /api/mining/submitblock
+func (s *APIServer) handleSubmitBlock(w http.ResponseWriter, r *http.Request) {
+	var block Block
+	if err := json.NewDecoder(r.Body).Decode(&block); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	if err := s.daemon.SubmitBlock(&block); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	hash := block.Hash()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accepted": true,
+		"hash":     fmt.Sprintf("%x", hash),
+		"height":   block.Header.Height,
+	})
+}
+
 // handleMiningThreads sets the mining thread count.
 // POST /api/mining/threads
 func (s *APIServer) handleMiningThreads(w http.ResponseWriter, r *http.Request) {

@@ -767,6 +767,43 @@ func (d *Daemon) MinerStats() MinerStats {
 
 // SubmitTransaction adds a transaction to mempool and broadcasts to peers.
 // aux is optional auxiliary data (e.g. encrypted payment IDs).
+// SubmitBlock validates a mined block, adds it to the chain, and broadcasts to peers.
+func (d *Daemon) SubmitBlock(block *Block) error {
+	// Validate block (PoW, difficulty, merkle root, transactions, etc.)
+	if err := ValidateBlock(block, d.chain); err != nil {
+		return fmt.Errorf("invalid block: %w", err)
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	prevBest := d.chain.BestHash()
+	accepted, isMainChain, err := d.chain.ProcessBlock(block)
+	if err != nil {
+		return fmt.Errorf("failed to process block: %w", err)
+	}
+	if !accepted {
+		return fmt.Errorf("block not accepted (duplicate or stale)")
+	}
+
+	if isMainChain {
+		d.updateMempoolForAcceptedMainChain(block, prevBest)
+	}
+
+	// Broadcast to peers
+	blockData, err := json.Marshal(block)
+	if err != nil {
+		return fmt.Errorf("failed to marshal block: %w", err)
+	}
+	d.syncMgr.BroadcastBlock(blockData)
+
+	// Notify subscribers
+	d.notifyBlock(block)
+	d.notifyMinedBlock(block)
+
+	return nil
+}
+
 func (d *Daemon) SubmitTransaction(txData []byte, aux ...*TxAuxData) error {
 	tx, err := DeserializeTx(txData)
 	if err != nil {

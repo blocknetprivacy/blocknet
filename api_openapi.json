@@ -804,6 +804,33 @@
         }
       }
     },
+    "/api/wallet/sync": {
+      "post": {
+        "operationId": "syncWallet",
+        "tags": ["Wallet"],
+        "summary": "Trigger blockchain sync",
+        "description": "Triggers a blockchain sync check, causing the node to request missing blocks from peers. Useful after reconnecting or if the wallet appears behind. Requires loaded, unlocked wallet.",
+        "responses": {
+          "200": {
+            "description": "Sync triggered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string" }
+                  }
+                },
+                "example": { "status": "sync triggered" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/WalletLocked" },
+          "503": { "$ref": "#/components/responses/NoWallet" }
+        }
+      }
+    },
     "/api/mining": {
       "get": {
         "operationId": "getMiningStatus",
@@ -965,6 +992,188 @@
             }
           },
           "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/mining/blocktemplate": {
+      "get": {
+        "operationId": "getBlockTemplate",
+        "tags": ["Mining"],
+        "summary": "Get block template for pool mining",
+        "description": "Returns a complete block template ready for proof-of-work solving. Includes a pre-built coinbase transaction (paying to the loaded wallet), selected mempool transactions, and the computed merkle root. The `target` field (hex) is the PoW target that the Argon2id hash must be less than. The `header_base` field (hex) is the 92-byte serialized header without the nonce, used as input to the PoW hash function. Pool software should call this to get fresh work, distribute to miners, and submit solved blocks via `POST /api/mining/submitblock`. Requires a loaded wallet (for coinbase keys) but does not require it to be unlocked.",
+        "responses": {
+          "200": {
+            "description": "Block template",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BlockTemplate"
+                },
+                "example": {
+                  "block": {
+                    "header": {
+                      "version": 1,
+                      "height": 14208,
+                      "prev_hash": "0000c3a5b7e2d1f489a1bc37e5d204f8c612aa9b33e7f04d12b8a9e6c7f50321",
+                      "merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                      "timestamp": 1738800240,
+                      "difficulty": 100000,
+                      "nonce": 0
+                    },
+                    "transactions": []
+                  },
+                  "target": "000000000000f4240000000000000000000000000000000000000000000000000",
+                  "header_base": "0100000080370000..."
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/NoWallet" }
+        }
+      }
+    },
+    "/api/mining/submitblock": {
+      "post": {
+        "operationId": "submitBlock",
+        "tags": ["Mining"],
+        "summary": "Submit a solved block",
+        "description": "Accepts a solved block (from pool mining or external miner) and adds it to the chain. The block must pass full validation: correct height, prev_hash linking to current tip, valid difficulty, valid Argon2id proof-of-work, valid merkle root, and valid transactions. On success the block is broadcast to all peers and subscribers are notified.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Block"
+              },
+              "description": "A complete block object with a valid nonce. Typically obtained from `GET /api/mining/blocktemplate` with the nonce field filled in after PoW solving."
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Block accepted and broadcast",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "accepted": { "type": "boolean" },
+                    "hash": { "type": "string", "description": "Block hash (64 hex chars)" },
+                    "height": { "type": "integer", "description": "Block height" }
+                  }
+                },
+                "example": {
+                  "accepted": true,
+                  "hash": "0000d4b5a8e7c3f2910b6e5d4c3a2f1e0d9c8b7a6f5e4d3c2b1a09f8e7d6c5b4",
+                  "height": 14208
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or rejected block",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "invalid_pow": {
+                    "summary": "Failed PoW validation",
+                    "value": { "error": "invalid block: invalid proof of work" }
+                  },
+                  "bad_height": {
+                    "summary": "Wrong height",
+                    "value": { "error": "invalid block: invalid height: expected 14208, got 14209" }
+                  },
+                  "duplicate": {
+                    "summary": "Already known",
+                    "value": { "error": "block not accepted (duplicate or stale)" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/purge": {
+      "post": {
+        "operationId": "purgeData",
+        "tags": ["Admin"],
+        "summary": "Purge blockchain data",
+        "description": "Deletes all blockchain data from disk. Requires password verification and explicit confirmation. Stops the daemon, removes the data directory, then shuts down the API server. A restart is required after this operation. This is irreversible.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["password", "confirm"],
+                "properties": {
+                  "password": {
+                    "type": "string",
+                    "description": "Wallet password for verification"
+                  },
+                  "confirm": {
+                    "type": "boolean",
+                    "description": "Must be true to confirm the destructive operation"
+                  }
+                }
+              },
+              "example": {
+                "password": "my-wallet-passphrase",
+                "confirm": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Data purged, daemon shutting down",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "message": { "type": "string" }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "message": "blockchain data purged successfully, restart required"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing confirmation",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "confirmation required (set confirm: true)" }
+              }
+            }
+          },
+          "401": {
+            "description": "Incorrect password or missing Bearer token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "incorrect password" }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to purge data",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "failed to purge blockchain data: permission denied" }
+              }
+            }
+          }
         }
       }
     },
@@ -1216,7 +1425,8 @@
           "block_height": { "type": "integer", "description": "Block height where this output was confirmed" },
           "is_coinbase": { "type": "boolean", "description": "True if this is a mining reward output" },
           "spent": { "type": "boolean", "description": "True if already used as an input" },
-          "spent_height": { "type": "integer", "description": "Block height where spent (omitted if unspent, 0 means unspent)" }
+          "spent_height": { "type": "integer", "description": "Block height where spent (omitted if unspent, 0 means unspent)" },
+          "payment_id": { "type": "string", "description": "Hex-encoded payment ID (present only if the transaction included one)" }
         },
         "example": {
           "txid": "c7f2e1d3a4b596870123456789abcdef0123456789abcdef0123456789abcdef",
@@ -1239,6 +1449,11 @@
             "type": "integer",
             "minimum": 1,
             "description": "Amount in atomic units (1 BNT = 100,000,000). Must not exceed spendable balance."
+          },
+          "payment_id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{1,16}$",
+            "description": "Optional hex-encoded payment ID (max 16 hex characters = 8 bytes). Encrypted in the transaction using a shared secret derived from the recipient's view key."
           }
         },
         "example": {
@@ -1251,12 +1466,30 @@
         "properties": {
           "txid": { "type": "string", "description": "Transaction hash (64 hex chars)" },
           "fee": { "type": "integer", "description": "Fee paid in atomic units" },
-          "change": { "type": "integer", "description": "Change returned to wallet in atomic units" }
+          "change": { "type": "integer", "description": "Change returned to wallet in atomic units" },
+          "payment_id": { "type": "string", "description": "Hex-encoded payment ID (present only if one was provided in the request)" }
         },
         "example": {
           "txid": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4",
           "fee": 15000,
           "change": 734850000
+        }
+      },
+      "BlockTemplate": {
+        "type": "object",
+        "properties": {
+          "block": {
+            "$ref": "#/components/schemas/Block",
+            "description": "Complete block with nonce=0. Submit back with a valid nonce via POST /api/mining/submitblock."
+          },
+          "target": {
+            "type": "string",
+            "description": "Hex-encoded 32-byte PoW target. The Argon2id hash of (header_base + nonce) must be less than this value."
+          },
+          "header_base": {
+            "type": "string",
+            "description": "Hex-encoded 92-byte serialized header without the nonce. This is the input to the Argon2id PoW hash function; append the 8-byte little-endian nonce to complete the hash input."
+          }
         }
       },
       "MiningStatus": {
@@ -1351,6 +1584,10 @@
     {
       "name": "Events",
       "description": "Real-time Server-Sent Events stream for new blocks and mining notifications"
+    },
+    {
+      "name": "Admin",
+      "description": "Dangerous administrative operations (data purge, etc.). These are irreversible and require password confirmation."
     }
   ]
 }
