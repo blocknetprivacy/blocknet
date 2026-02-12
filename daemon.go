@@ -15,8 +15,12 @@ import (
 )
 
 // ErrDuplicateBlock is returned by processBlockData when the block is already known.
-// This is not a validation failure — it tells callers to skip relay and notification.
-var ErrDuplicateBlock = errors.New("duplicate block")
+// ErrSideChainBlock is returned when the block is valid but landed on a fork, not the main chain.
+// Both tell callers to skip relay and notification.
+var (
+	ErrDuplicateBlock  = errors.New("duplicate block")
+	ErrSideChainBlock  = errors.New("side-chain block")
+)
 
 type Daemon struct {
 	mu sync.RWMutex
@@ -482,9 +486,11 @@ func (d *Daemon) processBlockData(data []byte) error {
 		return ErrDuplicateBlock
 	}
 
-	if isMainChain {
-		d.updateMempoolForAcceptedMainChain(&block, prevBest)
+	if !isMainChain {
+		return ErrSideChainBlock
 	}
+
+	d.updateMempoolForAcceptedMainChain(&block, prevBest)
 	return nil
 }
 
