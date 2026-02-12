@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -23,6 +24,7 @@ func NewExplorer(daemon *Daemon) *Explorer {
 	e.mux.HandleFunc("/block/", e.handleBlock)
 	e.mux.HandleFunc("/tx/", e.handleTx)
 	e.mux.HandleFunc("/search", e.handleSearch)
+	e.mux.HandleFunc("/stats", e.handleStats)
 	return e
 }
 
@@ -342,6 +344,106 @@ func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 	renderTemplate(w, explorerTxTmpl, data)
 }
 
+func (e *Explorer) handleStats(w http.ResponseWriter, r *http.Request) {
+	chain := e.daemon.chain
+	height := chain.Height()
+
+	// Sample blocks for chart data
+	maxPoints := 1000
+	step := uint64(1)
+	if height > uint64(maxPoints) {
+		step = height / uint64(maxPoints)
+	}
+
+	type chartPoint struct {
+		H  uint64 `json:"h"`
+		D  uint64 `json:"d"`
+		N  uint64 `json:"n"`
+		Tx int    `json:"tx"`
+		S  int    `json:"s"`
+		Bt int64  `json:"bt"`
+	}
+
+	var points []chartPoint
+	var prevTs int64
+	var totalTx int
+	var btSum float64
+	var btCount int
+
+	for h := uint64(0); h <= height; h++ {
+		block := chain.GetBlockByHeight(h)
+		if block == nil {
+			continue
+		}
+		totalTx += len(block.Transactions)
+		bt := int64(0)
+		if h > 0 && prevTs > 0 {
+			bt = block.Header.Timestamp - prevTs
+			if bt > 0 {
+				btSum += float64(bt)
+				btCount++
+			}
+		}
+		prevTs = block.Header.Timestamp
+		if h%step == 0 || h == height {
+			points = append(points, chartPoint{
+				H:  h,
+				D:  block.Header.Difficulty,
+				N:  block.Header.Nonce,
+				Tx: len(block.Transactions),
+				S:  block.Size(),
+				Bt: bt,
+			})
+		}
+	}
+
+	jsonData, _ := json.Marshal(points)
+
+	var avgBt float64
+	if btCount > 0 {
+		avgBt = btSum / float64(btCount)
+	}
+
+	// Current hashrate estimate
+	var hashrate float64
+	if height >= 2 {
+		var totalTime int64
+		var count int
+		for h := height; h > 0 && count < 10; h-- {
+			block := chain.GetBlockByHeight(h)
+			prevBlock := chain.GetBlockByHeight(h - 1)
+			if block != nil && prevBlock != nil {
+				blockTime := block.Header.Timestamp - prevBlock.Header.Timestamp
+				if blockTime > 0 {
+					totalTime += blockTime
+					count++
+				}
+			}
+		}
+		if count > 0 && totalTime > 0 {
+			hashrate = float64(chain.NextDifficulty()) / (float64(totalTime) / float64(count))
+		}
+	}
+
+	emitted, remaining, pctEmitted := e.getSupplyInfo()
+
+	data := map[string]interface{}{
+		"Height":       height,
+		"Difficulty":   chain.NextDifficulty(),
+		"Hashrate":     fmt.Sprintf("%.2f", hashrate),
+		"AvgBlockTime": fmt.Sprintf("%.0f", avgBt),
+		"TotalTx":      totalTx,
+		"Emitted":      fmt.Sprintf("%.2f", float64(emitted)/100_000_000),
+		"Remaining":    fmt.Sprintf("%.2f", float64(remaining)/100_000_000),
+		"PctEmitted":   fmt.Sprintf("%.4f", pctEmitted),
+		"Peers":        len(e.daemon.node.Peers()),
+		"DataJSON":     template.JS(jsonData),
+		"GenesisTs":    chain.GetBlockByHeight(0).Header.Timestamp,
+	}
+
+	renderTemplate(w, explorerStatsTmpl, data)
+}
+
 // findTx searches for a transaction by hash in the blockchain.
 func (e *Explorer) findTx(hashStr string) (*Transaction, uint64, bool) {
 	return e.daemon.chain.FindTxByHashStr(hashStr)
@@ -457,7 +559,8 @@ tr:hover{background:#111}
 .prop:last-child{border:0}
 .prop-k{width:140px;color:#666}
 .prop-v{flex:1;word-break:break-all}
-.prop-v.mono{font-size:12px;color:#888}`
+.prop-v.mono{font-size:12px;color:#888}
+.topnav{font-size:13px;margin:4px 0 0}`
 
 const explorerIndexTmpl = `<!DOCTYPE html>
 <html lang="en">
@@ -480,7 +583,7 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 <style>` + explorerCSS + `</style>
 </head>
 <body>
-<h1><span class="g">$</span> blocknet <span class="d">explorer</span></h1>
+<div style="display:flex;justify-content:space-between;align-items:baseline"><h1 style="margin-bottom:0"><span class="g">$</span> blocknet <span class="d">explorer</span></h1><a href="/stats" style="font-size:13px">network stats</a></div>
 
 <form class="search" action="/search" method="get">
 <input type="text" name="q" placeholder="Search by block height or hash...">
@@ -559,6 +662,7 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 </head>
 <body>
 <h1><a href="/" style="text-decoration:none;color:#eee"><span class="g">$</span> blocknet <span class="d">explorer</span></a></h1>
+<div class="topnav"><a href="/">blocks</a> · <a href="/stats">stats</a></div>
 
 <div class="nav">
 {{if .HasPrev}}<a href="/block/{{.PrevHeight}}">← Block {{.PrevHeight}}</a>{{end}}
@@ -615,6 +719,7 @@ const explorerTxTmpl = `<!DOCTYPE html>
 </head>
 <body>
 <h1><a href="/" style="text-decoration:none;color:#eee"><span class="g">$</span> blocknet <span class="d">explorer</span></a></h1>
+<div class="topnav"><a href="/">blocks</a> · <a href="/stats">stats</a></div>
 
 <h2><span class="g">#</span> transaction</h2>
 <div class="box">
@@ -653,5 +758,355 @@ const explorerTxTmpl = `<!DOCTYPE html>
 {{end}}
 
 <footer><a href="/">← explorer</a> · <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
+</body>
+</html>`
+
+const explorerStatsTmpl = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Network Stats - blocknet explorer</title>
+<meta name="description" content="blocknet network statistics">
+<meta property="og:title" content="Network Stats - blocknet">
+<meta property="og:description" content="Historical blockchain data">
+<meta property="og:image" content="https://blocknetcrypto.com/blocknet.png">
+<meta property="og:image:width" content="1024">
+<meta property="og:image:height" content="1024">
+<meta property="og:url" content="https://explorer.blocknetcrypto.com/stats">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#000">
+<link rel="icon" type="image/x-icon" href="https://blocknetcrypto.com/favicon.ico">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;color:#b0b0b0;font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;padding:32px;max-width:900px;margin:0 auto}
+a{color:#af0}
+a:hover{color:#cf3}
+h1,h2{color:#eee;font-weight:normal;margin:48px 0 16px}
+h1{font-size:24px;margin-top:0}
+h2{font-size:18px;border-bottom:1px dashed #333;padding-bottom:8px}
+.g{color:#af0}
+.d{color:#555}
+.topnav{font-size:13px;margin:4px 0 0}
+.box{border:1px solid #222;padding:20px;margin:24px 0;background:#000}
+.stats{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+.stat{text-align:center;flex:1;min-width:100px}
+.stat-v{font-size:24px;color:#eee}
+.stat-k{font-size:12px;color:#666;text-transform:uppercase}
+.chart-box{border:1px solid #222;margin:24px 0;background:#000;padding:12px 12px 8px}
+canvas{width:100%;height:280px;display:block}
+footer{margin-top:64px;padding-top:24px;border-top:1px dashed #333;color:#444;font-size:13px}
+@media(max-width:600px){body{padding:16px}h1{font-size:20px}.stats{flex-direction:column}.stat{min-width:auto}}
+</style>
+</head>
+<body>
+<h1><a href="/" style="text-decoration:none;color:#eee"><span class="g">$</span> blocknet <span class="d">explorer</span></a></h1>
+<div class="topnav"><a href="/">← blocks</a></div>
+
+<h2><span class="g">#</span> network overview</h2>
+<div class="box stats">
+<div class="stat"><div class="stat-v">{{.Height}}</div><div class="stat-k">Block Height</div></div>
+<div class="stat"><div class="stat-v">{{.Hashrate}} H/s</div><div class="stat-k">Hashrate</div></div>
+<div class="stat"><div class="stat-v">{{.Difficulty}}</div><div class="stat-k">Difficulty</div></div>
+<div class="stat"><div class="stat-v">{{.AvgBlockTime}}s</div><div class="stat-k">Avg Block Time</div></div>
+</div>
+<div class="box stats">
+<div class="stat"><div class="stat-v">{{.TotalTx}}</div><div class="stat-k">Total Transactions</div></div>
+<div class="stat"><div class="stat-v">{{.Emitted}}</div><div class="stat-k">Coins Emitted</div></div>
+<div class="stat"><div class="stat-v">{{.PctEmitted}}%</div><div class="stat-k">Emission Progress</div></div>
+<div class="stat"><div class="stat-v">{{.Peers}}</div><div class="stat-k">Peers</div></div>
+</div>
+
+<h2><span class="g">#</span> difficulty</h2>
+<div class="chart-box"><canvas id="c-diff"></canvas></div>
+
+<h2 style="color:#fa0"><span style="color:#fa0">#</span> estimated hashrate</h2>
+<div class="chart-box"><canvas id="c-hash"></canvas></div>
+
+<h2 style="color:#f0a"><span style="color:#f0a">#</span> block time</h2>
+<div class="chart-box"><canvas id="c-bt"></canvas></div>
+
+<h2 style="color:#a0f"><span style="color:#a0f">#</span> nonce distribution</h2>
+<div class="chart-box"><canvas id="c-nonce"></canvas></div>
+
+<h2 style="color:#0fa"><span style="color:#0fa">#</span> transactions per block</h2>
+<div class="chart-box"><canvas id="c-tx"></canvas></div>
+
+<h2 style="color:#0af"><span style="color:#0af">#</span> block size</h2>
+<div class="chart-box"><canvas id="c-size"></canvas></div>
+
+<h2><span class="g">#</span> emission schedule</h2>
+<div class="chart-box"><canvas id="c-emission"></canvas></div>
+
+<footer><a href="/">← explorer</a> · <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
+
+<script>
+var D={{.DataJSON}};
+(function(){
+if(!D||D.length<2)return;
+
+var tip=document.createElement('div');
+tip.style.cssText='position:fixed;background:#111;border:1px solid #333;color:#eee;padding:8px 12px;font:12px/1.5 monospace;pointer-events:none;display:none;z-index:10;white-space:nowrap';
+document.body.appendChild(tip);
+
+function showTip(e,html){
+tip.innerHTML=html;tip.style.display='block';
+var tx=e.clientX+14,ty=e.clientY-44;
+if(tx+tip.offsetWidth>window.innerWidth-8)tx=e.clientX-tip.offsetWidth-14;
+if(ty<8)ty=e.clientY+20;
+tip.style.left=tx+'px';tip.style.top=ty+'px';
+}
+function hideTip(){tip.style.display='none';}
+
+function fmt(n){
+if(Math.abs(n)>=1e12)return(n/1e12).toFixed(1)+'T';
+if(Math.abs(n)>=1e9)return(n/1e9).toFixed(1)+'G';
+if(Math.abs(n)>=1e6)return(n/1e6).toFixed(1)+'M';
+if(Math.abs(n)>=1e3)return(n/1e3).toFixed(1)+'K';
+return n%1?n.toFixed(2):n.toFixed(0);
+}
+
+function xhex(c){if(c.length===4)return'#'+c[1]+c[1]+c[2]+c[2]+c[3]+c[3];return c;}
+
+function draw(id,getY,color,opts){
+opts=opts||{};
+color=xhex(color);
+var c=document.getElementById(id);
+if(!c)return;
+var dpr=window.devicePixelRatio||1;
+var rect=c.getBoundingClientRect();
+c.width=rect.width*dpr;
+c.height=rect.height*dpr;
+var ctx=c.getContext('2d');
+ctx.scale(dpr,dpr);
+var W=rect.width,H=rect.height;
+var pad={t:24,r:16,b:32,l:60};
+var pw=W-pad.l-pad.r,ph=H-pad.t-pad.b;
+
+var src=opts.data||D;
+var pts=[];
+for(var i=0;i<src.length;i++){
+var y=getY(src[i],i);
+if(y!==null&&y!==undefined&&isFinite(y))pts.push({x:src[i].h,y:y});
+}
+if(pts.length<2){
+ctx.fillStyle='#333';ctx.font='13px monospace';ctx.textAlign='center';
+ctx.fillText('Not enough data',W/2,H/2);return;
+}
+
+var xMin=pts[0].x,xMax=pts[pts.length-1].x;
+var yMin=Infinity,yMax=-Infinity;
+for(var i=0;i<pts.length;i++){
+if(pts[i].y<yMin)yMin=pts[i].y;
+if(pts[i].y>yMax)yMax=pts[i].y;
+}
+if(opts.refLine!==undefined){yMin=Math.min(yMin,opts.refLine);yMax=Math.max(yMax,opts.refLine);}
+if(opts.yMin!==undefined)yMin=Math.min(yMin,opts.yMin);
+var yP=(yMax-yMin)*0.08||1;
+yMin-=yP;yMax+=yP;
+if(opts.yMin!==undefined)yMin=Math.max(yMin,opts.yMin);
+if(xMin===xMax)xMax=xMin+1;
+
+// measure widest y-axis label and adjust left padding
+ctx.font='11px monospace';
+var maxLW=0;
+for(var i=0;i<=4;i++){
+var val=yMax-(yMax-yMin)*i/4;
+var tw=ctx.measureText(opts.fmtY?opts.fmtY(val):fmt(val)).width;
+if(tw>maxLW)maxLW=tw;
+}
+pad.l=Math.max(60,Math.ceil(maxLW+16));
+pw=W-pad.l-pad.r;
+
+function sx(x){return pad.l+(x-xMin)/(xMax-xMin)*pw;}
+function sy(y){return pad.t+ph-(y-yMin)/(yMax-yMin)*ph;}
+
+// grid
+ctx.strokeStyle='#1a1a1a';ctx.lineWidth=1;
+for(var i=0;i<=4;i++){
+var y=pad.t+ph*i/4;
+ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();
+}
+
+// y-axis legend
+if(opts.yLabel){
+ctx.fillStyle=color;ctx.font='11px monospace';ctx.textAlign='left';
+ctx.fillText(opts.yLabel,pad.l,pad.t-10);
+}
+
+// y tick labels
+ctx.fillStyle='#555';ctx.font='11px monospace';ctx.textAlign='right';
+for(var i=0;i<=4;i++){
+var val=yMax-(yMax-yMin)*i/4;
+ctx.fillText(opts.fmtY?opts.fmtY(val):fmt(val),pad.l-8,pad.t+ph*i/4+4);
+}
+
+// x tick labels
+ctx.textAlign='center';ctx.fillStyle='#444';
+for(var i=0;i<=4;i++){
+var val=xMin+(xMax-xMin)*i/4;
+ctx.fillText(Math.round(val).toString(),pad.l+pw*i/4,H-6);
+}
+
+// reference line
+if(opts.refLine!==undefined){
+ctx.save();ctx.strokeStyle='#444';ctx.setLineDash([4,4]);ctx.lineWidth=1;
+var ry=sy(opts.refLine);
+ctx.beginPath();ctx.moveTo(pad.l,ry);ctx.lineTo(W-pad.r,ry);ctx.stroke();
+ctx.restore();
+if(opts.refLabel){ctx.fillStyle='#666';ctx.textAlign='left';ctx.fillText(opts.refLabel,pad.l+4,ry-6);}
+}
+
+// line + fill
+ctx.strokeStyle=color;ctx.lineWidth=1.5;ctx.beginPath();
+for(var i=0;i<pts.length;i++){
+var x=sx(pts[i].x),y=sy(pts[i].y);
+i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+}
+ctx.stroke();
+var grad=ctx.createLinearGradient(0,pad.t,0,pad.t+ph);
+grad.addColorStop(0,color+'18');grad.addColorStop(1,color+'03');
+ctx.fillStyle=grad;
+ctx.lineTo(sx(pts[pts.length-1].x),pad.t+ph);
+ctx.lineTo(sx(pts[0].x),pad.t+ph);
+ctx.closePath();ctx.fill();
+
+// snapshot for hover redraw
+var base=ctx.getImageData(0,0,c.width,c.height);
+
+c.addEventListener('mousemove',function(e){
+var r=c.getBoundingClientRect();
+var mx=e.clientX-r.left;
+var best=null,bd=Infinity;
+for(var i=0;i<pts.length;i++){
+var dx=Math.abs(sx(pts[i].x)-mx);
+if(dx<bd){bd=dx;best=pts[i];}
+}
+if(!best||bd>Math.max(20,pw/pts.length*2)){
+ctx.putImageData(base,0,0);hideTip();return;
+}
+ctx.putImageData(base,0,0);
+ctx.save();ctx.setTransform(dpr,0,0,dpr,0,0);
+var px=sx(best.x),py=sy(best.y);
+// crosshair
+ctx.strokeStyle='#333';ctx.setLineDash([2,2]);ctx.lineWidth=1;
+ctx.beginPath();ctx.moveTo(px,pad.t);ctx.lineTo(px,pad.t+ph);ctx.stroke();
+ctx.beginPath();ctx.moveTo(pad.l,py);ctx.lineTo(pad.l+pw,py);ctx.stroke();
+ctx.setLineDash([]);
+// dot
+ctx.beginPath();ctx.arc(px,py,5,0,Math.PI*2);
+ctx.fillStyle='#000';ctx.fill();
+ctx.beginPath();ctx.arc(px,py,4,0,Math.PI*2);
+ctx.fillStyle=color;ctx.fill();
+ctx.restore();
+var fv=opts.fmtY?opts.fmtY(best.y):fmt(best.y);
+var extra=opts.tipExtra?opts.tipExtra(best):'';
+showTip(e,'<span style="color:'+color+'">\u25CF '+(opts.yLabel||'value')+'</span> <b style="color:#eee">'+fv+'</b><br><span style="color:#555">block '+Math.round(best.x)+'</span>'+extra);
+});
+c.addEventListener('mouseleave',function(){ctx.putImageData(base,0,0);hideTip();});
+}
+
+// line charts
+draw('c-diff',function(d){return d.d;},'#af0',{yLabel:'difficulty'});
+var hrD=[],hrW=20;
+for(var i=1;i<D.length;i++){
+if(D[i].bt<=0)continue;
+var sd=0,st=0;
+for(var j=Math.max(1,i-hrW+1);j<=i;j++){if(D[j].bt>0){sd+=D[j].d;st+=D[j].bt;}}
+if(st>0)hrD.push({h:D[i].h,hr:sd/st});
+}
+draw('c-hash',function(d){return d.hr;},'#fa0',{data:hrD,yLabel:'H/s ('+hrW+'-block avg)',yMin:0});
+draw('c-bt',function(d,i){return d.h>1&&d.bt>0?d.bt:null;},'#f0a',{yLabel:'seconds',refLine:300,refLabel:'5m target',yMin:0});
+
+// nonce histogram
+(function(){
+var c=document.getElementById('c-nonce');
+if(!c||D.length<2)return;
+var dpr=window.devicePixelRatio||1;
+var rect=c.getBoundingClientRect();
+c.width=rect.width*dpr;c.height=rect.height*dpr;
+var ctx=c.getContext('2d');ctx.scale(dpr,dpr);
+var W=rect.width,H=rect.height;
+var pad={t:24,r:16,b:32,l:60};
+var pw=W-pad.l-pad.r,ph=H-pad.t-pad.b;
+var lnonces=[];for(var i=0;i<D.length;i++)lnonces.push(Math.log10(D[i].n+1));
+var nMin=Infinity,nMax=-Infinity;
+for(var i=0;i<lnonces.length;i++){if(lnonces[i]<nMin)nMin=lnonces[i];if(lnonces[i]>nMax)nMax=lnonces[i];}
+if(nMin===nMax)nMax=nMin+1;
+var bins=Math.min(64,lnonces.length);
+var counts=[];for(var i=0;i<bins;i++)counts[i]=0;
+var range=nMax-nMin;
+for(var i=0;i<lnonces.length;i++){var b=Math.floor((lnonces[i]-nMin)/range*bins);if(b>=bins)b=bins-1;counts[b]++;}
+var maxC=0;for(var i=0;i<bins;i++){if(counts[i]>maxC)maxC=counts[i];}
+if(maxC===0)return;
+
+// grid
+ctx.strokeStyle='#1a1a1a';ctx.lineWidth=1;
+for(var i=0;i<=4;i++){var y=pad.t+ph*i/4;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();}
+
+// y legend
+ctx.fillStyle='#aa00ff';ctx.font='11px monospace';ctx.textAlign='left';
+ctx.fillText('block count',pad.l,pad.t-10);
+
+// y ticks
+ctx.fillStyle='#555';ctx.font='11px monospace';ctx.textAlign='right';
+for(var i=0;i<=4;i++){var val=maxC-maxC*i/4;ctx.fillText(Math.round(val).toString(),pad.l-8,pad.t+ph*i/4+4);}
+
+// x ticks
+ctx.textAlign='center';ctx.fillStyle='#444';
+for(var i=0;i<=4;i++){var lv=nMin+(nMax-nMin)*i/4;var rv=Math.pow(10,lv);ctx.fillText(fmt(rv),pad.l+pw*i/4,H-6);}
+
+// x legend
+ctx.fillStyle='#555';ctx.textAlign='right';ctx.fillText('nonce (log)',W-pad.r,pad.t-10);
+
+// bars
+var bw=pw/bins;
+for(var i=0;i<bins;i++){
+var bh=counts[i]/maxC*ph;var x=pad.l+i*bw;var y=pad.t+ph-bh;
+ctx.fillStyle='#aa00ff50';ctx.fillRect(x+1,y,bw-2,bh);
+ctx.fillStyle='#aa00ff';ctx.fillRect(x+1,y,bw-2,Math.min(2,bh));
+}
+
+// snapshot for hover
+var base=ctx.getImageData(0,0,c.width,c.height);
+
+c.addEventListener('mousemove',function(e){
+var r=c.getBoundingClientRect();
+var mx=e.clientX-r.left;
+var bi=Math.floor((mx-pad.l)/bw);
+if(bi<0||bi>=bins){ctx.putImageData(base,0,0);hideTip();return;}
+ctx.putImageData(base,0,0);
+ctx.save();ctx.setTransform(dpr,0,0,dpr,0,0);
+var bh=counts[bi]/maxC*ph;var bx=pad.l+bi*bw;var by=pad.t+ph-bh;
+ctx.fillStyle='#aa00ff90';ctx.fillRect(bx+1,by,bw-2,bh);
+ctx.restore();
+var loN=Math.pow(10,nMin+range*bi/bins);
+var hiN=Math.pow(10,nMin+range*(bi+1)/bins);
+showTip(e,'<span style="color:#aa00ff">\u25CF block count</span> <b style="color:#eee">'+counts[bi]+'</b><br><span style="color:#555">nonce '+fmt(loN)+' \u2013 '+fmt(hiN)+'</span>');
+});
+c.addEventListener('mouseleave',function(){ctx.putImageData(base,0,0);hideTip();});
+})();
+
+// remaining line charts
+draw('c-tx',function(d){return d.tx;},'#0fa',{yLabel:'transactions',yMin:0,fmtY:function(v){return Math.round(v).toString();}});
+draw('c-size',function(d){return d.s;},'#0af',{yLabel:'bytes',yMin:0,fmtY:function(v){return v>=1024?(v/1024).toFixed(1)+'KB':v.toFixed(0)+'B';}});
+
+// emission
+var IR=72325093035,TE=200000000,BPM=8640,MTT=48,DR=0.75;
+var emD=[];
+var maxH=MTT*BPM+BPM;
+var eStep=Math.max(1,Math.floor(maxH/500));
+for(var h=0;h<=maxH;h+=eStep){
+var mo=Math.floor(h/BPM);
+var r;
+if(mo>=MTT){r=TE;}else{var yr=mo/12;r=(IR-TE)*Math.exp(-DR*yr)+TE;}
+emD.push({h:h,r:r/100000000});
+}
+var genTs={{.GenesisTs}};
+draw('c-emission',function(d){return d.r;},'#af0',{data:emD,yLabel:'BNT/block',fmtY:function(v){return v.toFixed(2)+' BNT';},tipExtra:function(pt){var d=new Date((genTs+pt.x*300)*1000);return '<br><span style="color:#555">~'+d.toISOString().slice(0,10)+'</span>';}});
+
+})();
+</script>
 </body>
 </html>`
