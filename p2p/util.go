@@ -9,6 +9,22 @@ import (
 const (
 	// MaxMessageSize is the maximum size of a single message (16 MB)
 	MaxMessageSize = 16 * 1024 * 1024
+
+	// Stream-level payload hard caps.
+	MaxBlockStreamPayloadSize     = 2 * 1024 * 1024
+	MaxTxStreamPayloadSize        = 1 * 1024 * 1024
+	MaxDandelionStreamPayloadSize = MaxTxStreamPayloadSize
+
+	// Typed protocol payload hard caps.
+	MaxPEXMessageSize          = 512 * 1024
+	MaxSyncStatusMessageSize   = 32 * 1024
+	MaxSyncHeadersMessageSize  = 3 * 1024 * 1024
+	MaxSyncBlocksMessageSize   = 12 * 1024 * 1024
+	MaxSyncMempoolMessageSize  = 6 * 1024 * 1024
+	MaxSyncGetHeadersReqSize   = 32 * 1024
+	MaxSyncGetBlocksReqSize    = 64 * 1024
+	MaxSyncGetBlocksByHeightSz = 32 * 1024
+	MaxSyncGetMempoolReqSize   = 4 * 1024
 )
 
 // writeLengthPrefixed writes data with a 4-byte big-endian length prefix
@@ -31,6 +47,11 @@ func writeLengthPrefixed(w io.Writer, data []byte) error {
 
 // readLengthPrefixed reads length-prefixed data
 func readLengthPrefixed(r io.Reader) ([]byte, error) {
+	return readLengthPrefixedWithLimit(r, MaxMessageSize)
+}
+
+// readLengthPrefixedWithLimit reads length-prefixed data with an explicit cap.
+func readLengthPrefixedWithLimit(r io.Reader, maxSize uint32) ([]byte, error) {
 	// Read length prefix
 	lenBuf := make([]byte, 4)
 	if _, err := io.ReadFull(r, lenBuf); err != nil {
@@ -38,8 +59,8 @@ func readLengthPrefixed(r io.Reader) ([]byte, error) {
 	}
 
 	length := binary.BigEndian.Uint32(lenBuf)
-	if length > MaxMessageSize {
-		return nil, fmt.Errorf("message too large: %d > %d", length, MaxMessageSize)
+	if length > maxSize {
+		return nil, fmt.Errorf("message too large: %d > %d", length, maxSize)
 	}
 
 	// Read data
@@ -61,12 +82,23 @@ func writeMessage(w io.Writer, msgType byte, data []byte) error {
 
 // readMessage reads a message type byte followed by length-prefixed data
 func readMessage(r io.Reader) (byte, []byte, error) {
+	return readMessageWithLimit(r, func(_ byte) (uint32, error) { return MaxMessageSize, nil })
+}
+
+// readMessageWithLimit reads a type byte then a length-prefixed payload using
+// a message-type-specific payload cap.
+func readMessageWithLimit(r io.Reader, maxForType func(byte) (uint32, error)) (byte, []byte, error) {
 	typeBuf := make([]byte, 1)
 	if _, err := io.ReadFull(r, typeBuf); err != nil {
 		return 0, nil, err
 	}
 
-	data, err := readLengthPrefixed(r)
+	maxSize, err := maxForType(typeBuf[0])
+	if err != nil {
+		return 0, nil, err
+	}
+
+	data, err := readLengthPrefixedWithLimit(r, maxSize)
 	if err != nil {
 		return 0, nil, err
 	}

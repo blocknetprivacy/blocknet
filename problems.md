@@ -34,17 +34,23 @@ This file is a live backlog of negative findings only.
 
 ### High
 
-3. `high` - P2P validation for non-tip fork blocks is weaker than tip blocks  
+3. [DONE] `high` - P2P validation for non-tip fork blocks is weaker than tip blocks  
    - **Location:** `block.go` (`ValidateBlockP2P`)  
    - **Problem:** Full `NextDifficulty` and median-time checks are only strict on tip-extension path; side-chain/fork blocks can bypass equivalent chain-context checks.  
    - **Impact:** Weakly-validated forks can accumulate in storage/memory and influence reorg dynamics under edge conditions.  
    - **Required fix:** Add parent-chain-context difficulty/timestamp validation for fork blocks too (not only best-tip extensions).
+   - **Status:** fixed (2026-02-12)  
+   - **What changed:** Unified chain-context validation now derives expected LWMA difficulty and median-time from the block's actual parent branch for all non-genesis blocks (tip and non-tip), then enforces both checks in shared `validateBlockWithContext`; both `ValidateBlockP2P` and `ProcessBlock` use this same path.  
+   - **Regression coverage:** deferred to `Deferred Test Backlog` per fix-first cadence.
 
-4. `high` - P2P message size ceiling is far above consensus object sizes  
-   - **Location:** `p2p/util.go` (`MaxMessageSize`, `readLengthPrefixed`)  
-   - **Problem:** 16MB accepted before decode while block limit is 1MB.  
-   - **Impact:** Memory-pressure DoS from many oversized protocol messages.  
-   - **Required fix:** Per-message-type hard caps (block, tx, sync payloads) before allocation.
+4. [DONE] `high` - Global P2P payload cap is shared across different protocol payload classes  
+   - **Location:** `p2p/util.go` (`MaxMessageSize`, `readLengthPrefixed`), `p2p/sync.go` (`readMessage` paths), `p2p/node.go`/`p2p/dandelion.go` (direct `readLengthPrefixed` paths)  
+   - **Problem:** A single 16MB pre-decode limit is reused for sync/PEX typed messages and block/tx/dandelion stream payloads, while consensus objects (e.g., blocks) are much smaller.  
+   - **Impact:** Memory-pressure DoS via oversized-but-transport-valid payloads; weak separation between control-path and bulk-sync limits.  
+   - **Required fix:** Enforce protocol/message-class-specific hard caps before allocation/decode (sync by message type; block/tx/dandelion by stream protocol), while preserving sync batching with explicit response byte budgets.
+   - **Status:** fixed (2026-02-12)  
+   - **What changed:** Added explicit per-class read caps before allocation via `readLengthPrefixedWithLimit`/`readMessageWithLimit`; wired sync and PEX to message-type-specific limits (`readSyncMessage`, `readPEXMessage`), and block/tx/dandelion direct streams to protocol-specific caps. Added sync response byte-budget trimming for headers/blocks/mempool so batching remains supported but bounded.
+   - **Regression coverage:** deferred to `Deferred Test Backlog` per fix-first cadence.
 
 5. `high` - Sync mempool fetch unmarshals unbounded `[][]byte` payloads  
    - **Location:** `p2p/sync.go` (`fetchAndProcessMempool`)  

@@ -232,7 +232,7 @@ func (pex *PeerExchange) exchangeWith(p peer.ID) {
 	}
 
 	// Read response
-	msgType, data, err := readMessage(s)
+	msgType, data, err := readPEXMessage(s)
 	if err != nil {
 		return
 	}
@@ -304,7 +304,7 @@ func (pex *PeerExchange) HandleStream(s network.Stream) {
 	defer s.Close()
 
 	// Read message
-	msgType, _, err := readMessage(s)
+	msgType, _, err := readPEXMessage(s)
 	if err != nil {
 		return
 	}
@@ -327,6 +327,19 @@ func (pex *PeerExchange) handleGetPeers(s network.Stream) {
 	}
 
 	writeMessage(s, PEXMsgPeers, data)
+}
+
+func readPEXMessage(r network.Stream) (byte, []byte, error) {
+	return readMessageWithLimit(r, pexMessageMaxSize)
+}
+
+func pexMessageMaxSize(msgType byte) (uint32, error) {
+	switch msgType {
+	case PEXMsgGetPeers, PEXMsgPeers, PEXMsgAnnounce:
+		return MaxPEXMessageSize, nil
+	default:
+		return 0, fmt.Errorf("unknown pex message type: %d", msgType)
+	}
 }
 
 // getPeerRecords returns a subset of known peers

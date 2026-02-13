@@ -31,6 +31,14 @@ const MaxHeadersPerRequest = 500
 // MaxBlocksPerRequest is the maximum blocks to request at once
 const MaxBlocksPerRequest = 100
 
+const (
+	// Keep sync responses bounded even when request count is large.
+	// Budgets are for raw []byte entries before JSON/base64 expansion.
+	SyncHeadersResponseByteBudget = 2 * 1024 * 1024
+	SyncBlocksResponseByteBudget  = 8 * 1024 * 1024
+	SyncMempoolResponseByteBudget = 4 * 1024 * 1024
+)
+
 // ChainStatus represents a peer's chain status
 type ChainStatus struct {
 	BestHash  [32]byte `json:"best_hash"`
@@ -177,7 +185,7 @@ func (sm *SyncManager) HandleStream(s network.Stream) {
 	defer s.Close()
 	s.SetDeadline(time.Now().Add(60 * time.Second))
 
-	msgType, data, err := readMessage(s)
+	msgType, data, err := readSyncMessage(s)
 	if err != nil {
 		return
 	}
@@ -233,6 +241,7 @@ func (sm *SyncManager) handleGetHeaders(s network.Stream, data []byte) {
 	}
 
 	// Send headers
+	headers = trimByteSliceBatch(headers, MaxHeadersPerRequest, SyncHeadersResponseByteBudget)
 	headersData, _ := json.Marshal(headers)
 	writeMessage(s, SyncMsgHeaders, headersData)
 }
@@ -254,6 +263,7 @@ func (sm *SyncManager) handleGetBlocks(s network.Stream, data []byte) {
 	}
 
 	// Send blocks
+	blocks = trimByteSliceBatch(blocks, MaxBlocksPerRequest, SyncBlocksResponseByteBudget)
 	blocksData, _ := json.Marshal(blocks)
 	writeMessage(s, SyncMsgBlocks, blocksData)
 }
@@ -274,6 +284,7 @@ func (sm *SyncManager) handleGetBlocksByHeight(s network.Stream, data []byte) {
 		return
 	}
 
+	blocks = trimByteSliceBatch(blocks, MaxBlocksPerRequest, SyncBlocksResponseByteBudget)
 	blocksData, _ := json.Marshal(blocks)
 	writeMessage(s, SyncMsgBlocks, blocksData)
 }
@@ -323,6 +334,7 @@ func (sm *SyncManager) handleGetMempool(s network.Stream) {
 	}
 
 	txs := sm.getMempool()
+	txs = trimByteSliceBatch(txs, len(txs), SyncMempoolResponseByteBudget)
 	data, err := json.Marshal(txs)
 	if err != nil {
 		writeMessage(s, SyncMsgMempool, []byte("[]"))
@@ -459,7 +471,7 @@ func (sm *SyncManager) getStatusFrom(p peer.ID) (ChainStatus, error) {
 	}
 
 	// Read their status
-	msgType, data, err := readMessage(s)
+	msgType, data, err := readSyncMessage(s)
 	if err != nil {
 		return ChainStatus{}, err
 	}
@@ -990,7 +1002,7 @@ func (sm *SyncManager) fetchHeaders(p peer.ID, startHeight uint64, max int) ([][
 	}
 
 	// Read response
-	msgType, data, err := readMessage(s)
+	msgType, data, err := readSyncMessage(s)
 	if err != nil {
 		return nil, err
 	}
@@ -1025,7 +1037,7 @@ func (sm *SyncManager) FetchBlocks(ctx context.Context, p peer.ID, hashes [][32]
 		return nil, err
 	}
 
-	msgType, data, err := readMessage(s)
+	msgType, data, err := readSyncMessage(s)
 	if err != nil {
 		return nil, err
 	}
@@ -1097,7 +1109,7 @@ func (sm *SyncManager) fetchBlocksByHeight(p peer.ID, startHeight uint64, max in
 		return nil, err
 	}
 
-	msgType, data, err := readMessage(s)
+	msgType, data, err := readSyncMessage(s)
 	if err != nil {
 		return nil, err
 	}
@@ -1171,7 +1183,7 @@ func (sm *SyncManager) fetchAndProcessMempool(p peer.ID) error {
 	}
 
 	// Read response
-	msgType, data, err := readMessage(s)
+	msgType, data, err := readSyncMessage(s)
 	if err != nil {
 		return err
 	}
@@ -1192,4 +1204,57 @@ func (sm *SyncManager) fetchAndProcessMempool(p peer.ID) error {
 	}
 
 	return nil
+}
+
+func readSyncMessage(r network.Stream) (byte, []byte, error) {
+	return readMessageWithLimit(r, syncMessageMaxSize)
+}
+
+func syncMessageMaxSize(msgType byte) (uint32, error) {
+	switch msgType {
+	case SyncMsgStatus:
+		return MaxSyncStatusMessageSize, nil
+	case SyncMsgGetHeaders:
+		return MaxSyncGetHeadersReqSize, nil
+	case SyncMsgHeaders:
+		return MaxSyncHeadersMessageSize, nil
+	case SyncMsgGetBlocks:
+		return MaxSyncGetBlocksReqSize, nil
+	case SyncMsgBlocks:
+		return MaxSyncBlocksMessageSize, nil
+	case SyncMsgNewBlock:
+		return MaxBlockStreamPayloadSize, nil
+	case SyncMsgGetMempool:
+		return MaxSyncGetMempoolReqSize, nil
+	case SyncMsgMempool:
+		return MaxSyncMempoolMessageSize, nil
+	case SyncMsgGetBlocksByHeight:
+		return MaxSyncGetBlocksByHeightSz, nil
+	default:
+		return 0, fmt.Errorf("unknown sync message type: %d", msgType)
+	}
+}
+
+func trimByteSliceBatch(items [][]byte, maxItems int, byteBudget int) [][]byte {
+	if maxItems < 0 {
+		maxItems = 0
+	}
+	if len(items) > maxItems {
+		items = items[:maxItems]
+	}
+	if byteBudget <= 0 || len(items) == 0 {
+		return nil
+	}
+
+	total := 0
+	keep := 0
+	for _, item := range items {
+		if total+len(item) > byteBudget {
+			break
+		}
+		total += len(item)
+		keep++
+	}
+
+	return items[:keep]
 }

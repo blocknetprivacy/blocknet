@@ -254,7 +254,7 @@ func (n *Node) handleBlockStream(s network.Stream) {
 	s.SetReadDeadline(time.Now().Add(30 * time.Second))
 
 	// Read block data
-	data, err := readLengthPrefixed(s)
+	data, err := readLengthPrefixedWithLimit(s, MaxBlockStreamPayloadSize)
 	if err != nil {
 		return
 	}
@@ -273,7 +273,7 @@ func (n *Node) handleTxStream(s network.Stream) {
 	defer s.Close()
 	s.SetReadDeadline(time.Now().Add(30 * time.Second))
 
-	data, err := readLengthPrefixed(s)
+	data, err := readLengthPrefixedWithLimit(s, MaxTxStreamPayloadSize)
 	if err != nil {
 		return
 	}

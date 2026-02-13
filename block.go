@@ -332,8 +332,6 @@ func ValidateBlockP2P(block *Block, chain *Chain) error {
 		block,
 		chain.BestHash(),
 		chain.Height(),
-		chain.NextDifficulty(),
-		chain.MedianTimestamp(11),
 		chain.GetBlock,
 		chain.IsKeyImageSpent,
 	)
@@ -343,8 +341,6 @@ func validateBlockWithContext(
 	block *Block,
 	bestHash [32]byte,
 	tipHeight uint64,
-	expectedTipDifficulty uint64,
-	medianTime int64,
 	getParent func([32]byte) *Block,
 	isKeyImageSpent func([32]byte) bool,
 ) error {
@@ -355,8 +351,9 @@ func validateBlockWithContext(
 	}
 
 	// Parent/height consistency checks (for non-genesis blocks).
+	var parent *Block
 	if header.Height > 0 {
-		parent := getParent(header.PrevHash)
+		parent = getParent(header.PrevHash)
 		if parent == nil {
 			return ErrOrphanBlock
 		}
@@ -369,13 +366,27 @@ func validateBlockWithContext(
 		}
 	}
 
-	// For blocks extending the current tip, enforce full tip rules.
+	// For blocks extending the current tip, height must align with our tip.
 	if header.PrevHash == bestHash {
 		if header.Height != tipHeight+1 {
 			return fmt.Errorf("invalid height: expected %d, got %d", tipHeight+1, header.Height)
 		}
-		if header.Difficulty != expectedTipDifficulty {
-			return fmt.Errorf("invalid difficulty: expected %d, got %d", expectedTipDifficulty, header.Difficulty)
+	}
+
+	// Enforce parent-branch difficulty + median-time rules for all non-genesis blocks,
+	// including non-tip side-chain/fork blocks.
+	if header.Height > 0 {
+		expectedDifficulty, err := expectedDifficultyFromParent(parent, getParent)
+		if err != nil {
+			return fmt.Errorf("failed to derive expected difficulty from parent context: %w", err)
+		}
+		if header.Difficulty != expectedDifficulty {
+			return fmt.Errorf("invalid difficulty: expected %d, got %d", expectedDifficulty, header.Difficulty)
+		}
+
+		medianTime, err := medianTimestampFromParent(parent, getParent, 11)
+		if err != nil {
+			return fmt.Errorf("failed to derive median timestamp from parent context: %w", err)
 		}
 		if err := validateTimestampWithMedian(header, medianTime); err != nil {
 			return fmt.Errorf("invalid timestamp: %w", err)
@@ -941,11 +952,101 @@ func (c *Chain) validateBlockForProcessLocked(block *Block) error {
 		block,
 		c.bestHash,
 		c.height,
-		c.nextDifficultyLocked(),
-		c.medianTimestampLocked(11),
 		c.getBlockByHashLocked,
 		c.isKeyImageSpentLocked,
 	)
+}
+
+func expectedDifficultyFromParent(parent *Block, getParent func([32]byte) *Block) (uint64, error) {
+	if parent == nil {
+		return 0, fmt.Errorf("nil parent")
+	}
+
+	// Child height <= LWMAWindow => minimum difficulty epoch.
+	if parent.Header.Height < uint64(LWMAWindow) {
+		return MinDifficulty, nil
+	}
+
+	// Build the same LWMA window shape as nextDifficultyLocked:
+	// blocks[0..LWMAWindow] are consecutive heights ending at parent.
+	blocks := make([]*Block, LWMAWindow+1)
+	current := parent
+	for i := LWMAWindow; ; i-- {
+		blocks[i] = current
+		if i == 0 {
+			break
+		}
+		if current.Header.Height == 0 {
+			return 0, fmt.Errorf("insufficient ancestors for LWMA window")
+		}
+		current = getParent(current.Header.PrevHash)
+		if current == nil {
+			return 0, fmt.Errorf("missing ancestor at height %d", blocks[i].Header.Height-1)
+		}
+	}
+
+	var weightedSolvetimeSum int64
+	var difficultySum uint64
+	weightSum := int64(LWMAWindow * (LWMAWindow + 1) / 2)
+
+	for i := 1; i <= LWMAWindow; i++ {
+		solvetime := blocks[i].Header.Timestamp - blocks[i-1].Header.Timestamp
+		if solvetime < LWMAMinSolvetime {
+			solvetime = LWMAMinSolvetime
+		}
+		if solvetime > LWMAMaxSolvetime {
+			solvetime = LWMAMaxSolvetime
+		}
+		weightedSolvetimeSum += solvetime * int64(i)
+		difficultySum += blocks[i].Header.Difficulty
+	}
+
+	avgDifficulty := difficultySum / uint64(LWMAWindow)
+	expectedWeightedSum := int64(BlockIntervalSec) * weightSum
+	if weightedSolvetimeSum < 1 {
+		weightedSolvetimeSum = 1
+	}
+
+	newDiff := avgDifficulty * uint64(expectedWeightedSum) / uint64(weightedSolvetimeSum)
+	if newDiff < MinDifficulty {
+		newDiff = MinDifficulty
+	}
+
+	return newDiff, nil
+}
+
+func medianTimestampFromParent(parent *Block, getParent func([32]byte) *Block, n int) (int64, error) {
+	if parent == nil {
+		return 0, fmt.Errorf("nil parent")
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("invalid median window: %d", n)
+	}
+
+	timestamps := make([]int64, 0, n)
+	current := parent
+	for i := 0; i < n && current != nil; i++ {
+		timestamps = append(timestamps, current.Header.Timestamp)
+		if current.Header.Height == 0 {
+			break
+		}
+		current = getParent(current.Header.PrevHash)
+	}
+
+	if len(timestamps) == 0 {
+		return 0, fmt.Errorf("no timestamps available")
+	}
+
+	// Small bounded list; keep local sort to avoid extra imports.
+	for i := 0; i < len(timestamps); i++ {
+		for j := i + 1; j < len(timestamps); j++ {
+			if timestamps[i] > timestamps[j] {
+				timestamps[i], timestamps[j] = timestamps[j], timestamps[i]
+			}
+		}
+	}
+
+	return timestamps[len(timestamps)/2], nil
 }
 
 func (c *Chain) getBlockByHashLocked(hash [32]byte) *Block {

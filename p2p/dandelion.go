@@ -153,7 +153,7 @@ func (d *DandelionRouter) HandleStemStream(s network.Stream) {
 	defer s.Close()
 
 	// Read transaction data
-	data, err := readLengthPrefixed(s)
+	data, err := readLengthPrefixedWithLimit(s, MaxDandelionStreamPayloadSize)
 	if err != nil {
 		return
 	}
