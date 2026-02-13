@@ -288,6 +288,10 @@ func ValidateBlock(block *Block, chain *Chain) error {
 func validateTimestamp(header *BlockHeader, chain *Chain) error {
 	// Must be greater than median of last 11 blocks
 	medianTime := chain.MedianTimestamp(11)
+	return validateTimestampWithMedian(header, medianTime)
+}
+
+func validateTimestampWithMedian(header *BlockHeader, medianTime int64) error {
 	if header.Timestamp <= medianTime {
 		return fmt.Errorf("timestamp %d <= median %d", header.Timestamp, medianTime)
 	}
@@ -320,19 +324,39 @@ func validatePoW(header *BlockHeader) bool {
 // This validation is chain-aware and enforces core consensus rules, while
 // still allowing side-chain/fork blocks that do not extend the current tip.
 func ValidateBlockP2P(block *Block, chain *Chain) error {
+	if chain == nil {
+		return fmt.Errorf("chain is nil")
+	}
+
+	return validateBlockWithContext(
+		block,
+		chain.BestHash(),
+		chain.Height(),
+		chain.NextDifficulty(),
+		chain.MedianTimestamp(11),
+		chain.GetBlock,
+		chain.IsKeyImageSpent,
+	)
+}
+
+func validateBlockWithContext(
+	block *Block,
+	bestHash [32]byte,
+	tipHeight uint64,
+	expectedTipDifficulty uint64,
+	medianTime int64,
+	getParent func([32]byte) *Block,
+	isKeyImageSpent func([32]byte) bool,
+) error {
 	header := &block.Header
 
 	if header.Version == 0 {
 		return fmt.Errorf("invalid block version")
 	}
 
-	if chain == nil {
-		return fmt.Errorf("chain is nil")
-	}
-
 	// Parent/height consistency checks (for non-genesis blocks).
 	if header.Height > 0 {
-		parent := chain.GetBlock(header.PrevHash)
+		parent := getParent(header.PrevHash)
 		if parent == nil {
 			return ErrOrphanBlock
 		}
@@ -346,15 +370,14 @@ func ValidateBlockP2P(block *Block, chain *Chain) error {
 	}
 
 	// For blocks extending the current tip, enforce full tip rules.
-	if header.PrevHash == chain.BestHash() {
-		if header.Height != chain.Height()+1 {
-			return fmt.Errorf("invalid height: expected %d, got %d", chain.Height()+1, header.Height)
+	if header.PrevHash == bestHash {
+		if header.Height != tipHeight+1 {
+			return fmt.Errorf("invalid height: expected %d, got %d", tipHeight+1, header.Height)
 		}
-		expectedDiff := chain.NextDifficulty()
-		if header.Difficulty != expectedDiff {
-			return fmt.Errorf("invalid difficulty: expected %d, got %d", expectedDiff, header.Difficulty)
+		if header.Difficulty != expectedTipDifficulty {
+			return fmt.Errorf("invalid difficulty: expected %d, got %d", expectedTipDifficulty, header.Difficulty)
 		}
-		if err := validateTimestamp(header, chain); err != nil {
+		if err := validateTimestampWithMedian(header, medianTime); err != nil {
 			return fmt.Errorf("invalid timestamp: %w", err)
 		}
 	}
@@ -394,7 +417,7 @@ func ValidateBlockP2P(block *Block, chain *Chain) error {
 	// Validate all transactions and enforce no duplicated key images within the block.
 	seenKeyImages := make(map[[32]byte]struct{})
 	for i, tx := range block.Transactions {
-		if err := ValidateTransaction(tx, chain.IsKeyImageSpent); err != nil {
+		if err := ValidateTransaction(tx, isKeyImageSpent); err != nil {
 			return fmt.Errorf("invalid transaction %d: %w", i, err)
 		}
 		if tx.IsCoinbase() {
@@ -749,30 +772,7 @@ func (c *Chain) getBlockByHeightLocked(height uint64) *Block {
 func (c *Chain) MedianTimestamp(n int) int64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-
-	if len(c.timestamps) == 0 {
-		return 0
-	}
-
-	count := n
-	if count > len(c.timestamps) {
-		count = len(c.timestamps)
-	}
-
-	// Get last n timestamps
-	recent := make([]int64, count)
-	copy(recent, c.timestamps[len(c.timestamps)-count:])
-
-	// Sort and get median
-	for i := 0; i < len(recent); i++ {
-		for j := i + 1; j < len(recent); j++ {
-			if recent[i] > recent[j] {
-				recent[i], recent[j] = recent[j], recent[i]
-			}
-		}
-	}
-
-	return recent[len(recent)/2]
+	return c.medianTimestampLocked(n)
 }
 
 // NextDifficulty calculates the difficulty for the next block
@@ -784,83 +784,40 @@ func (c *Chain) MedianTimestamp(n int) int64 {
 func (c *Chain) NextDifficulty() uint64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-
-	// Not enough blocks for LWMA - use minimum difficulty
-	if c.height < uint64(LWMAWindow) {
-		return MinDifficulty
-	}
-
-	// Collect the last LWMAWindow+1 blocks (need N+1 to get N solve times)
-	blocks := make([]*Block, LWMAWindow+1)
-	for i := 0; i <= LWMAWindow; i++ {
-		height := c.height - uint64(LWMAWindow) + uint64(i)
-		hash := c.byHeight[height]
-		blocks[i] = c.blocks[hash]
-	}
-
-	// Calculate weighted sum of solve times and sum of difficulties
-	var weightedSolvetimeSum int64
-	var difficultySum uint64
-	weightSum := int64(LWMAWindow * (LWMAWindow + 1) / 2) // Sum of 1..N
-
-	for i := 1; i <= LWMAWindow; i++ {
-		// Solve time for this block
-		solvetime := blocks[i].Header.Timestamp - blocks[i-1].Header.Timestamp
-
-		// Clamp solve time to prevent manipulation
-		// Min: prevent negative or zero (timestamp attacks)
-		// Max: prevent huge drops from network stalls
-		if solvetime < LWMAMinSolvetime {
-			solvetime = LWMAMinSolvetime
-		}
-		if solvetime > LWMAMaxSolvetime {
-			solvetime = LWMAMaxSolvetime
-		}
-
-		// Weight increases linearly: block 1 has weight 1, block N has weight N
-		weight := int64(i)
-		weightedSolvetimeSum += solvetime * weight
-
-		// Sum difficulties for averaging
-		difficultySum += blocks[i].Header.Difficulty
-	}
-
-	// Calculate new difficulty
-	// Formula: new_diff = avg_diff * target_time * weight_sum / weighted_solvetime_sum
-	//
-	// This adjusts difficulty proportionally:
-	// - If blocks came too fast (weighted_solvetime_sum < expected), increase difficulty
-	// - If blocks came too slow (weighted_solvetime_sum > expected), decrease difficulty
-	avgDifficulty := difficultySum / uint64(LWMAWindow)
-	expectedWeightedSum := int64(BlockIntervalSec) * weightSum
-
-	// Prevent division by zero
-	if weightedSolvetimeSum < 1 {
-		weightedSolvetimeSum = 1
-	}
-
-	newDiff := avgDifficulty * uint64(expectedWeightedSum) / uint64(weightedSolvetimeSum)
-
-	// Enforce minimum difficulty
-	if newDiff < MinDifficulty {
-		newDiff = MinDifficulty
-	}
-
-	return newDiff
+	return c.nextDifficultyLocked()
 }
 
-// AddBlock adds a validated block to the chain
-// AddBlock adds a block to the main chain (used for initial sync/genesis)
-// For normal operation, use ProcessBlock which handles forks
-func (c *Chain) AddBlock(block *Block) error {
+// addGenesisBlock adds the genesis block to an empty chain.
+// For all non-genesis blocks, use ProcessBlock.
+func (c *Chain) addGenesisBlock(block *Block) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if block == nil {
+		return fmt.Errorf("nil block")
+	}
+	if block.Header.Height != 0 {
+		return fmt.Errorf("addGenesisBlock only accepts genesis blocks (height 0), got %d", block.Header.Height)
+	}
+	if _, _, _, found := c.storage.GetTip(); found {
+		return fmt.Errorf("genesis already exists; refusing unvalidated write path")
+	}
 
 	return c.addBlockInternal(block)
 }
 
 // addBlockInternal adds block to main chain (caller holds lock)
 func (c *Chain) addBlockInternal(block *Block) error {
+	if block == nil {
+		return fmt.Errorf("nil block")
+	}
+	if block.Header.Height != 0 {
+		return fmt.Errorf("refusing unvalidated non-genesis block at height %d; use ProcessBlock", block.Header.Height)
+	}
+	if _, _, _, found := c.storage.GetTip(); found {
+		return fmt.Errorf("refusing unvalidated add on non-empty chain; use ProcessBlock")
+	}
+
 	hash := block.Hash()
 
 	// Calculate cumulative work
@@ -944,23 +901,8 @@ func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err
 		return false, false, nil
 	}
 
-	// Must have parent (except genesis)
-	if block.Header.Height > 0 {
-		hasParent := false
-		if _, ok := c.blocks[block.Header.PrevHash]; ok {
-			hasParent = true
-		} else if c.storage.HasBlock(block.Header.PrevHash) {
-			// Load parent into cache
-			parent, _ := c.storage.GetBlock(block.Header.PrevHash)
-			if parent != nil {
-				c.blocks[block.Header.PrevHash] = parent
-				hasParent = true
-			}
-		}
-		if !hasParent {
-			// Orphan block - return special error so caller can handle appropriately
-			return false, false, ErrOrphanBlock
-		}
+	if err := c.validateBlockForProcessLocked(block); err != nil {
+		return false, false, err
 	}
 
 	// Calculate work at this block
@@ -992,6 +934,105 @@ func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err
 	}
 
 	return true, false, nil
+}
+
+func (c *Chain) validateBlockForProcessLocked(block *Block) error {
+	return validateBlockWithContext(
+		block,
+		c.bestHash,
+		c.height,
+		c.nextDifficultyLocked(),
+		c.medianTimestampLocked(11),
+		c.getBlockByHashLocked,
+		c.isKeyImageSpentLocked,
+	)
+}
+
+func (c *Chain) getBlockByHashLocked(hash [32]byte) *Block {
+	if block, ok := c.blocks[hash]; ok {
+		return block
+	}
+	block, _ := c.storage.GetBlock(hash)
+	if block != nil {
+		c.blocks[hash] = block
+	}
+	return block
+}
+
+func (c *Chain) isKeyImageSpentLocked(keyImage [32]byte) bool {
+	if _, exists := c.keyImages[keyImage]; exists {
+		return true
+	}
+	spent, _ := c.storage.IsKeyImageSpent(keyImage)
+	return spent
+}
+
+func (c *Chain) medianTimestampLocked(n int) int64 {
+	if len(c.timestamps) == 0 {
+		return 0
+	}
+
+	count := n
+	if count > len(c.timestamps) {
+		count = len(c.timestamps)
+	}
+
+	recent := make([]int64, count)
+	copy(recent, c.timestamps[len(c.timestamps)-count:])
+	for i := 0; i < len(recent); i++ {
+		for j := i + 1; j < len(recent); j++ {
+			if recent[i] > recent[j] {
+				recent[i], recent[j] = recent[j], recent[i]
+			}
+		}
+	}
+
+	return recent[len(recent)/2]
+}
+
+func (c *Chain) nextDifficultyLocked() uint64 {
+	// Not enough blocks for LWMA - use minimum difficulty
+	if c.height < uint64(LWMAWindow) {
+		return MinDifficulty
+	}
+
+	// Collect the last LWMAWindow+1 blocks (need N+1 to get N solve times)
+	blocks := make([]*Block, LWMAWindow+1)
+	for i := 0; i <= LWMAWindow; i++ {
+		height := c.height - uint64(LWMAWindow) + uint64(i)
+		hash := c.byHeight[height]
+		blocks[i] = c.blocks[hash]
+	}
+
+	// Calculate weighted sum of solve times and sum of difficulties
+	var weightedSolvetimeSum int64
+	var difficultySum uint64
+	weightSum := int64(LWMAWindow * (LWMAWindow + 1) / 2) // Sum of 1..N
+
+	for i := 1; i <= LWMAWindow; i++ {
+		solvetime := blocks[i].Header.Timestamp - blocks[i-1].Header.Timestamp
+		if solvetime < LWMAMinSolvetime {
+			solvetime = LWMAMinSolvetime
+		}
+		if solvetime > LWMAMaxSolvetime {
+			solvetime = LWMAMaxSolvetime
+		}
+		weight := int64(i)
+		weightedSolvetimeSum += solvetime * weight
+		difficultySum += blocks[i].Header.Difficulty
+	}
+
+	avgDifficulty := difficultySum / uint64(LWMAWindow)
+	expectedWeightedSum := int64(BlockIntervalSec) * weightSum
+	if weightedSolvetimeSum < 1 {
+		weightedSolvetimeSum = 1
+	}
+
+	newDiff := avgDifficulty * uint64(expectedWeightedSum) / uint64(weightedSolvetimeSum)
+	if newDiff < MinDifficulty {
+		newDiff = MinDifficulty
+	}
+	return newDiff
 }
 
 // reorganizeTo switches the main chain to end at newTip

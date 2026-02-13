@@ -120,7 +120,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 			cancel()
 			return nil, fmt.Errorf("failed to create genesis: %w", err)
 		}
-		if err := chain.AddBlock(genesis); err != nil {
+		if err := chain.addGenesisBlock(genesis); err != nil {
 			chain.Close()
 			cancel()
 			return nil, fmt.Errorf("failed to add genesis: %w", err)

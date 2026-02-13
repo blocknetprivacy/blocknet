@@ -139,7 +139,7 @@ func runTests() {
 		return
 	}
 	defer chain.Close()
-	err = chain.AddBlock(genesis)
+	err = chain.addBlockInternal(genesis)
 	if err != nil {
 		log.Fatalf("Failed to add genesis: %v", err)
 	}
@@ -181,7 +181,7 @@ func testLWMA() {
 	defer chain.Close()
 	stealthKeys, _ := GenerateStealthKeys()
 	genesis, _ := CreateGenesisBlock(stealthKeys.SpendPubKey, stealthKeys.ViewPubKey, GetBlockReward(0))
-	chain.AddBlock(genesis)
+	chain.addBlockInternal(genesis)
 
 	// Add blocks at target interval
 	for i := 0; i < 60; i++ {
@@ -193,7 +193,7 @@ func testLWMA() {
 				Difficulty: chain.NextDifficulty(),
 			},
 		}
-		chain.AddBlock(block)
+		chain.addBlockInternal(block)
 	}
 
 	baseDiff := chain.NextDifficulty()
@@ -209,7 +209,7 @@ func testLWMA() {
 				Difficulty: chain.NextDifficulty(),
 			},
 		}
-		chain.AddBlock(block)
+		chain.addBlockInternal(block)
 	}
 
 	fastDiff := chain.NextDifficulty()
@@ -245,7 +245,7 @@ func testMining(stealthKeys *StealthKeys) {
 	}
 	defer chain.Close()
 	genesis, _ := CreateGenesisBlock(stealthKeys.SpendPubKey, stealthKeys.ViewPubKey, GetBlockReward(0))
-	chain.AddBlock(genesis)
+	chain.addBlockInternal(genesis)
 
 	target := DifficultyToTarget(MinDifficulty)
 	fmt.Printf("Current target: %x...\n", target[:8])
@@ -269,7 +269,7 @@ func testForkChoice(stealthKeys *StealthKeys) {
 	defer chain.Close()
 	genesis, _ := CreateGenesisBlock(stealthKeys.SpendPubKey, stealthKeys.ViewPubKey, GetBlockReward(0))
 	genesisHash := genesis.Hash()
-	chain.AddBlock(genesis)
+	chain.addBlockInternal(genesis)
 
 	// Main chain: genesis -> A -> B
 	blockA := &Block{
@@ -280,7 +280,7 @@ func testForkChoice(stealthKeys *StealthKeys) {
 			Difficulty: MinDifficulty,
 		},
 	}
-	chain.AddBlock(blockA)
+	chain.addBlockInternal(blockA)
 
 	blockB := &Block{
 		Header: BlockHeader{
@@ -290,7 +290,7 @@ func testForkChoice(stealthKeys *StealthKeys) {
 			Difficulty: MinDifficulty,
 		},
 	}
-	chain.AddBlock(blockB)
+	chain.addBlockInternal(blockB)
 
 	fmt.Printf("Main chain: genesis -> A -> B (height=%d, work=%d)\n", chain.Height(), chain.TotalWork())
 
@@ -420,7 +420,7 @@ func testMiner(stealthKeys *StealthKeys) {
 	}
 	defer chain.Close()
 	genesis, _ := CreateGenesisBlock(stealthKeys.SpendPubKey, stealthKeys.ViewPubKey, GetBlockReward(0))
-	chain.AddBlock(genesis)
+	chain.addBlockInternal(genesis)
 
 	miner := NewMiner(chain, nil, MinerConfig{
 		MinerSpendPub: stealthKeys.SpendPubKey,
