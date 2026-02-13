@@ -1,6 +1,7 @@
 package p2p
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1057,6 +1058,9 @@ func (sm *SyncManager) fetchHeaders(p peer.ID, startHeight uint64, max int) ([][
 	if msgType != SyncMsgHeaders {
 		return nil, fmt.Errorf("unexpected message type: %d", msgType)
 	}
+	if err := ensureJSONArrayMaxItems(data, MaxHeadersPerRequest); err != nil {
+		return nil, fmt.Errorf("invalid headers response: %w", err)
+	}
 
 	var headers [][]byte
 	if err := json.Unmarshal(data, &headers); err != nil {
@@ -1091,6 +1095,9 @@ func (sm *SyncManager) FetchBlocks(ctx context.Context, p peer.ID, hashes [][32]
 
 	if msgType != SyncMsgBlocks {
 		return nil, fmt.Errorf("unexpected message type: %d", msgType)
+	}
+	if err := ensureJSONArrayMaxItems(data, MaxBlocksPerRequest); err != nil {
+		return nil, fmt.Errorf("invalid blocks response: %w", err)
 	}
 
 	var blocks [][]byte
@@ -1163,6 +1170,9 @@ func (sm *SyncManager) fetchBlocksByHeight(p peer.ID, startHeight uint64, max in
 
 	if msgType != SyncMsgBlocks {
 		return nil, fmt.Errorf("unexpected message type: %d", msgType)
+	}
+	if err := ensureJSONArrayMaxItems(data, MaxBlocksPerRequest); err != nil {
+		return nil, fmt.Errorf("invalid blocks-by-height response: %w", err)
 	}
 
 	var blocks [][]byte
@@ -1239,6 +1249,10 @@ func (sm *SyncManager) fetchAndProcessMempool(p peer.ID) error {
 		return fmt.Errorf("unexpected message type: %d", msgType)
 	}
 
+	if err := ensureJSONArrayMaxItems(data, MaxSyncMempoolTxCount); err != nil {
+		return err
+	}
+
 	var txs [][]byte
 	if err := json.Unmarshal(data, &txs); err != nil {
 		return err
@@ -1307,4 +1321,45 @@ func trimByteSliceBatch(items [][]byte, maxItems int, byteBudget int) [][]byte {
 	}
 
 	return items[:keep]
+}
+
+// ensureJSONArrayMaxItems rejects JSON arrays that exceed maxItems.
+// This validates element count before full decode into [][]byte structures.
+func ensureJSONArrayMaxItems(data []byte, maxItems int) error {
+	if maxItems < 0 {
+		maxItems = 0
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok || delim != '[' {
+		return fmt.Errorf("expected JSON array")
+	}
+
+	count := 0
+	for dec.More() {
+		count++
+		if count > maxItems {
+			return fmt.Errorf("array contains %d items (max %d)", count, maxItems)
+		}
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return err
+		}
+	}
+
+	tok, err = dec.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok = tok.(json.Delim)
+	if !ok || delim != ']' {
+		return fmt.Errorf("malformed JSON array")
+	}
+
+	return nil
 }

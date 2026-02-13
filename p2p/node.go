@@ -242,7 +242,7 @@ func (n *Node) registerProtocols() {
 	// Block announcement protocol
 	n.host.SetStreamHandler(ProtocolBlock, n.handleBlockStream)
 
-	// Transaction protocol (direct, non-dandelion)
+	// Transaction protocol (fluff phase ingress)
 	n.host.SetStreamHandler(ProtocolTx, n.handleTxStream)
 
 	// Dandelion stem protocol
@@ -272,7 +272,8 @@ func (n *Node) handleBlockStream(s network.Stream) {
 	}
 }
 
-// handleTxStream handles incoming transaction announcements (fluff phase)
+// handleTxStream handles incoming transaction announcements (fluff phase).
+// All ProtocolTx ingress must pass through Dandelion fluff semantics.
 func (n *Node) handleTxStream(s network.Stream) {
 	defer s.Close()
 	s.SetReadDeadline(time.Now().Add(30 * time.Second))
@@ -282,13 +283,7 @@ func (n *Node) handleTxStream(s network.Stream) {
 		return
 	}
 
-	n.mu.RLock()
-	handler := n.onTx
-	n.mu.RUnlock()
-
-	if handler != nil {
-		handler(s.Conn().RemotePeer(), data)
-	}
+	n.dandel.HandleFluffTx(s.Conn().RemotePeer(), data)
 }
 
 // handleSyncStream handles chain sync requests

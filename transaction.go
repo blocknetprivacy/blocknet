@@ -894,11 +894,17 @@ func (b *TxBuilder) Build(utxoSet *UTXOSet) (*Transaction, error) {
 // KeyImageChecker is a function that checks if a key image is spent
 type KeyImageChecker func(keyImage [32]byte) bool
 
+// RingMemberChecker verifies that a ring member+commitment pair exists in canonical chain state.
+type RingMemberChecker func(pubKey, commitment [32]byte) bool
+
 // ValidateTransaction validates a transaction
-func ValidateTransaction(tx *Transaction, isSpent KeyImageChecker) error {
+func ValidateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRingMember RingMemberChecker) error {
 	// Coinbase transactions have no inputs
 	if tx.IsCoinbase() {
 		return validateCoinbase(tx)
+	}
+	if isCanonicalRingMember == nil {
+		return fmt.Errorf("ring member checker is required")
 	}
 
 	// Check each input
@@ -914,6 +920,11 @@ func ValidateTransaction(tx *Transaction, isSpent KeyImageChecker) error {
 		}
 		if len(input.RingCommitments) != RingSize {
 			return fmt.Errorf("input %d: ring commitments size must be %d, got %d", i, RingSize, len(input.RingCommitments))
+		}
+		for j := range input.RingMembers {
+			if !isCanonicalRingMember(input.RingMembers[j], input.RingCommitments[j]) {
+				return fmt.Errorf("input %d ring member %d: not a canonical on-chain output", i, j)
+			}
 		}
 
 		// Verify RingCT signature (proves key ownership AND amount equality)

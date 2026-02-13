@@ -377,6 +377,25 @@ func (s *APIServer) handleUnlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ip := clientIP(r)
+	if wait, lockedUntil := s.unlockAttempts.precheck(ip); !lockedUntil.IsZero() {
+		retryAfter := int(time.Until(lockedUntil).Seconds())
+		if retryAfter < 1 {
+			retryAfter = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeError(w, http.StatusTooManyRequests, "too many unlock attempts; try again later")
+		return
+	} else if wait > 0 {
+		retryAfter := int(wait.Seconds())
+		if retryAfter < 1 {
+			retryAfter = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeError(w, http.StatusTooManyRequests, "unlock backoff active; retry later")
+		return
+	}
+
 	var req struct {
 		Password string `json:"password"`
 	}
@@ -386,9 +405,27 @@ func (s *APIServer) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if subtle.ConstantTimeCompare([]byte(req.Password), s.password) != 1 {
+		delay, lockedUntil := s.unlockAttempts.recordFailure(ip)
+		if delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-r.Context().Done():
+			}
+		}
+		if !lockedUntil.IsZero() {
+			retryAfter := int(time.Until(lockedUntil).Seconds())
+			if retryAfter < 1 {
+				retryAfter = 1
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			writeError(w, http.StatusTooManyRequests, "too many unlock attempts; try again later")
+			return
+		}
 		writeError(w, http.StatusUnauthorized, "incorrect password")
 		return
 	}
+
+	s.unlockAttempts.recordSuccess(ip)
 
 	s.mu.Lock()
 	s.locked = false

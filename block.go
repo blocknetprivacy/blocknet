@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"sync"
 	"time"
@@ -14,6 +15,13 @@ import (
 
 // ErrOrphanBlock is returned when a block's parent is not found
 var ErrOrphanBlock = errors.New("orphan block")
+
+func addCumulativeWork(parentWork, blockDifficulty uint64) (uint64, error) {
+	if blockDifficulty > math.MaxUint64-parentWork {
+		return 0, fmt.Errorf("cumulative work overflow: parent=%d difficulty=%d", parentWork, blockDifficulty)
+	}
+	return parentWork + blockDifficulty, nil
+}
 
 // ============================================================================
 // Constants
@@ -282,7 +290,7 @@ func ValidateBlock(block *Block, chain *Chain) error {
 
 	// Validate all transactions
 	for i, tx := range block.Transactions {
-		if err := ValidateTransaction(tx, chain.IsKeyImageSpent); err != nil {
+		if err := ValidateTransaction(tx, chain.IsKeyImageSpent, chain.IsCanonicalRingMember); err != nil {
 			return fmt.Errorf("invalid transaction %d: %w", i, err)
 		}
 	}
@@ -343,6 +351,7 @@ func ValidateBlockP2P(block *Block, chain *Chain) error {
 		chain.Height(),
 		chain.GetBlock,
 		chain.IsKeyImageSpent,
+		chain.IsCanonicalRingMember,
 	)
 }
 
@@ -352,6 +361,7 @@ func validateBlockWithContext(
 	tipHeight uint64,
 	getParent func([32]byte) *Block,
 	isKeyImageSpent func([32]byte) bool,
+	isCanonicalRingMember RingMemberChecker,
 ) error {
 	header := &block.Header
 
@@ -436,7 +446,7 @@ func validateBlockWithContext(
 	// Validate all transactions and enforce no duplicated key images within the block.
 	seenKeyImages := make(map[[32]byte]struct{})
 	for i, tx := range block.Transactions {
-		if err := ValidateTransaction(tx, isKeyImageSpent); err != nil {
+		if err := ValidateTransaction(tx, isKeyImageSpent, isCanonicalRingMember); err != nil {
 			return fmt.Errorf("invalid transaction %d: %w", i, err)
 		}
 		if tx.IsCoinbase() {
@@ -737,7 +747,11 @@ func (c *Chain) loadFromStorage() error {
 		if h > 0 {
 			parentWork = c.workAt[block.Header.PrevHash]
 		}
-		c.workAt[hash] = parentWork + block.Header.Difficulty
+		blockWork, err := addCumulativeWork(parentWork, block.Header.Difficulty)
+		if err != nil {
+			return fmt.Errorf("failed to compute cumulative work at height %d: %w", h, err)
+		}
+		c.workAt[hash] = blockWork
 
 		// Track timestamps for LWMA
 		c.timestamps = append(c.timestamps, block.Header.Timestamp)
@@ -758,9 +772,17 @@ func (c *Chain) loadFromStorage() error {
 	// Fix cumulative work: the loop above computed workAt relative to 0
 	// because the parent of startHeight wasn't loaded. Offset every entry
 	// so workAt[tipHash] == totalWork (the real value from storage).
-	if offset := c.totalWork - c.workAt[c.bestHash]; offset > 0 {
+	computedTipWork := c.workAt[c.bestHash]
+	if c.totalWork < computedTipWork {
+		return fmt.Errorf("invalid stored cumulative work: stored tip work %d below computed tip work %d", c.totalWork, computedTipWork)
+	}
+	if offset := c.totalWork - computedTipWork; offset > 0 {
 		for h := range c.workAt {
-			c.workAt[h] += offset
+			adjustedWork, err := addCumulativeWork(c.workAt[h], offset)
+			if err != nil {
+				return fmt.Errorf("failed to offset cumulative work for loaded chain state: %w", err)
+			}
+			c.workAt[h] = adjustedWork
 		}
 	}
 
@@ -807,17 +829,23 @@ func (c *Chain) BestHash() [32]byte {
 // GetBlock retrieves a block by hash
 func (c *Chain) GetBlock(hash [32]byte) *Block {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	// Check memory cache first
-	if block, ok := c.blocks[hash]; ok {
+	block, ok := c.blocks[hash]
+	c.mu.RUnlock()
+	if ok {
 		return block
 	}
 
-	// Fall back to storage
-	block, _ := c.storage.GetBlock(hash)
+	// Fall back to storage without holding chain lock.
+	block, _ = c.storage.GetBlock(hash)
 	if block != nil {
-		c.blocks[hash] = block // Cache it
+		c.mu.Lock()
+		// Re-check in case another goroutine already cached it.
+		if cached, exists := c.blocks[hash]; exists {
+			c.mu.Unlock()
+			return cached
+		}
+		c.blocks[hash] = block
+		c.mu.Unlock()
 	}
 	return block
 }
@@ -829,8 +857,8 @@ func (c *Chain) GetBlockByHeight(height uint64) *Block {
 	return c.getBlockByHeightLocked(height)
 }
 
-// getBlockByHeightLocked is the lock-free inner implementation.
-// Caller must hold at least c.mu.RLock.
+// getBlockByHeightLocked is the lock-safe inner implementation.
+// Caller must hold at least c.mu.RLock. It never mutates caches.
 func (c *Chain) getBlockByHeightLocked(height uint64) *Block {
 	// Check memory cache first
 	if hash, ok := c.byHeight[height]; ok {
@@ -845,10 +873,6 @@ func (c *Chain) getBlockByHeightLocked(height uint64) *Block {
 		return nil
 	}
 	block, _ := c.storage.GetBlock(hash)
-	if block != nil {
-		c.blocks[hash] = block
-		c.byHeight[height] = hash
-	}
 	return block
 }
 
@@ -912,7 +936,10 @@ func (c *Chain) addBlockInternal(block *Block) error {
 	if block.Header.Height > 0 {
 		parentWork = c.workAt[block.Header.PrevHash]
 	}
-	blockWork := parentWork + block.Header.Difficulty
+	blockWork, err := addCumulativeWork(parentWork, block.Header.Difficulty)
+	if err != nil {
+		return fmt.Errorf("failed to compute cumulative work: %w", err)
+	}
 
 	// Collect outputs and key images from transactions
 	var newOutputs []*UTXO
@@ -997,7 +1024,10 @@ func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err
 	if block.Header.Height > 0 {
 		parentWork = c.workAt[block.Header.PrevHash]
 	}
-	blockWork := parentWork + block.Header.Difficulty
+	blockWork, err := addCumulativeWork(parentWork, block.Header.Difficulty)
+	if err != nil {
+		return false, false, fmt.Errorf("failed to compute cumulative work: %w", err)
+	}
 
 	// Store block in memory (always, even if not main chain)
 	c.blocks[hash] = block
@@ -1005,6 +1035,9 @@ func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err
 
 	// Does this create a heavier chain?
 	if blockWork > c.totalWork {
+		if err := c.enforceReorgFinalityLocked(hash); err != nil {
+			return false, false, err
+		}
 		// Need to reorganize to this chain
 		if err := c.reorganizeTo(hash); err != nil {
 			// Reorg failed - remove from memory
@@ -1030,6 +1063,7 @@ func (c *Chain) validateBlockForProcessLocked(block *Block) error {
 		c.height,
 		c.getBlockByHashLocked,
 		c.isKeyImageSpentLocked,
+		c.isCanonicalRingMemberLocked,
 	)
 }
 
@@ -1144,6 +1178,19 @@ func (c *Chain) isKeyImageSpentLocked(keyImage [32]byte) bool {
 	return spent
 }
 
+func (c *Chain) isCanonicalRingMemberLocked(pubKey, commitment [32]byte) bool {
+	outputs, err := c.storage.GetAllOutputs()
+	if err != nil {
+		return false
+	}
+	for _, output := range outputs {
+		if output.Output.PublicKey == pubKey && output.Output.Commitment == commitment {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Chain) medianTimestampLocked(n int) int64 {
 	if len(c.timestamps) == 0 {
 		return 0
@@ -1214,6 +1261,10 @@ func (c *Chain) nextDifficultyLocked() uint64 {
 
 // reorganizeTo switches the main chain to end at newTip
 func (c *Chain) reorganizeTo(newTip [32]byte) error {
+	if err := c.enforceReorgFinalityLocked(newTip); err != nil {
+		return err
+	}
+
 	// Find common ancestor between current tip and new tip
 	currentPath := c.getAncestorPath(c.bestHash)
 	newPath := c.getAncestorPath(newTip)
@@ -1296,6 +1347,53 @@ func (c *Chain) reorganizeTo(newTip [32]byte) error {
 	c.bestHash = newTip
 	c.height = newBlock.Header.Height
 	c.totalWork = c.workAt[newTip]
+
+	return nil
+}
+
+// enforceReorgFinalityLocked rejects reorgs that would disconnect finalized blocks.
+// Caller must hold c.mu.Lock.
+func (c *Chain) enforceReorgFinalityLocked(newTip [32]byte) error {
+	if c.height < MaxReorgDepth {
+		return nil
+	}
+
+	newBlock := c.blocks[newTip]
+	if newBlock == nil {
+		if loaded, _ := c.storage.GetBlock(newTip); loaded != nil {
+			c.blocks[newTip] = loaded
+			newBlock = loaded
+		} else {
+			return fmt.Errorf("unknown reorg tip")
+		}
+	}
+
+	currentPath := c.getAncestorPath(c.bestHash)
+	newPath := c.getAncestorPath(newTip)
+	if currentPath == nil || newPath == nil {
+		return fmt.Errorf("incomplete chain: cannot build ancestor path for reorg")
+	}
+
+	// Find fork point (highest common height).
+	commonHeight := uint64(0)
+	for h := uint64(0); h <= min(c.height, newBlock.Header.Height); h++ {
+		if h < uint64(len(currentPath)) && h < uint64(len(newPath)) {
+			if currentPath[h] == newPath[h] {
+				commonHeight = h
+			} else {
+				break
+			}
+		}
+	}
+
+	finalizedBoundary := c.height - MaxReorgDepth
+	if commonHeight < finalizedBoundary {
+		return fmt.Errorf(
+			"reorg crosses finalized boundary: fork at height %d, finalized boundary %d",
+			commonHeight,
+			finalizedBoundary,
+		)
+	}
 
 	return nil
 }
@@ -1435,6 +1533,13 @@ func (c *Chain) IsKeyImageSpent(keyImage [32]byte) bool {
 	// Check storage
 	spent, _ := c.storage.IsKeyImageSpent(keyImage)
 	return spent
+}
+
+// IsCanonicalRingMember checks whether a ring member+commitment pair exists in canonical chain outputs.
+func (c *Chain) IsCanonicalRingMember(pubKey, commitment [32]byte) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.isCanonicalRingMemberLocked(pubKey, commitment)
 }
 
 // GetAllOutputs returns all outputs for ring member selection

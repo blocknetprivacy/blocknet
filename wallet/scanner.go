@@ -62,6 +62,7 @@ func NewScanner(w *Wallet, cfg ScannerConfig) *Scanner {
 // ScanBlock scans a block for owned outputs and spent outputs
 func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
 	keys := s.wallet.Keys()
+	spendableByKeyImage := s.buildSpendableKeyImageIndex()
 
 	for txIdx, tx := range block.Transactions {
 		// Check each output - is it ours?
@@ -128,28 +129,38 @@ func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
 				}
 
 				s.wallet.AddOutput(owned)
+				if keyImage, err := s.config.GenerateKeyImage(owned.OneTimePrivKey); err == nil {
+					spendableByKeyImage[keyImage] = append(spendableByKeyImage[keyImage], owned.OneTimePubKey)
+				}
 				found++
 			}
 		}
 
 		// Check key images - did we spend something?
 		for _, keyImage := range tx.KeyImages {
-			// Check against our outputs
-			for _, out := range s.wallet.SpendableOutputs() {
-				// Compute expected key image for this output
-				expectedKeyImage, err := s.config.GenerateKeyImage(out.OneTimePrivKey)
-				if err != nil {
-					continue
-				}
-				if keyImage == expectedKeyImage {
-					s.wallet.MarkSpent(out.OneTimePubKey, block.Height)
+			ownedPubKeys := spendableByKeyImage[keyImage]
+			for _, ownedPubKey := range ownedPubKeys {
+				if s.wallet.MarkSpent(ownedPubKey, block.Height) {
 					spent++
 				}
 			}
+			delete(spendableByKeyImage, keyImage)
 		}
 	}
 
 	return found, spent
+}
+
+func (s *Scanner) buildSpendableKeyImageIndex() map[[32]byte][][32]byte {
+	spendableByKeyImage := make(map[[32]byte][][32]byte)
+	for _, out := range s.wallet.SpendableOutputs() {
+		keyImage, err := s.config.GenerateKeyImage(out.OneTimePrivKey)
+		if err != nil {
+			continue
+		}
+		spendableByKeyImage[keyImage] = append(spendableByKeyImage[keyImage], out.OneTimePubKey)
+	}
+	return spendableByKeyImage
 }
 
 // ScanBlocks scans multiple blocks

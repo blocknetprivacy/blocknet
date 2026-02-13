@@ -1,6 +1,7 @@
 package p2p
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -24,6 +25,13 @@ const (
 
 // MaxPeersPerExchange is the maximum peers to send in one exchange
 const MaxPeersPerExchange = 32
+
+const (
+	// MaxPeerRecordsPerResponse bounds inbound peer records per PEX exchange response.
+	MaxPeerRecordsPerResponse = MaxPeersPerExchange
+	// MaxPeerAddrsPerRecord bounds inbound multiaddrs accepted per peer record.
+	MaxPeerAddrsPerRecord = 16
+)
 
 // PeerRecord represents a known peer's address info
 type PeerRecord struct {
@@ -241,6 +249,13 @@ func (pex *PeerExchange) exchangeWith(p peer.ID) {
 		return
 	}
 
+	if err := ensureJSONArrayMaxItems(data, MaxPeerRecordsPerResponse); err != nil {
+		return
+	}
+	if err := ensurePEXRecordAddressBounds(data, MaxPeerRecordsPerResponse, MaxPeerAddrsPerRecord); err != nil {
+		return
+	}
+
 	// Parse peer records
 	var records []PeerRecord
 	if err := json.Unmarshal(data, &records); err != nil {
@@ -281,6 +296,160 @@ func (pex *PeerExchange) exchangeWith(p peer.ID) {
 	pex.mu.Lock()
 	pex.lastExchange[p] = time.Now()
 	pex.mu.Unlock()
+}
+
+// ensurePEXRecordAddressBounds validates peer record and address counts before full decode.
+func ensurePEXRecordAddressBounds(data []byte, maxRecords int, maxAddrsPerRecord int) error {
+	if maxRecords < 0 {
+		maxRecords = 0
+	}
+	if maxAddrsPerRecord < 0 {
+		maxAddrsPerRecord = 0
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok || delim != '[' {
+		return fmt.Errorf("expected JSON array")
+	}
+
+	recordCount := 0
+	for dec.More() {
+		recordCount++
+		if recordCount > maxRecords {
+			return fmt.Errorf("peer record count %d exceeds max %d", recordCount, maxRecords)
+		}
+
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		objStart, ok := tok.(json.Delim)
+		if !ok || objStart != '{' {
+			return fmt.Errorf("expected peer record object")
+		}
+
+		for dec.More() {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyTok.(string)
+			if !ok {
+				return fmt.Errorf("expected peer record field name")
+			}
+
+			if key != "addrs" {
+				if err := skipJSONValue(dec); err != nil {
+					return err
+				}
+				continue
+			}
+
+			tok, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			addrsStart, ok := tok.(json.Delim)
+			if !ok || addrsStart != '[' {
+				return fmt.Errorf("expected addrs array")
+			}
+
+			addrCount := 0
+			for dec.More() {
+				addrCount++
+				if addrCount > maxAddrsPerRecord {
+					return fmt.Errorf("peer record address count %d exceeds max %d", addrCount, maxAddrsPerRecord)
+				}
+				if err := skipJSONValue(dec); err != nil {
+					return err
+				}
+			}
+
+			tok, err = dec.Token()
+			if err != nil {
+				return err
+			}
+			addrsEnd, ok := tok.(json.Delim)
+			if !ok || addrsEnd != ']' {
+				return fmt.Errorf("malformed addrs array")
+			}
+		}
+
+		tok, err = dec.Token()
+		if err != nil {
+			return err
+		}
+		objEnd, ok := tok.(json.Delim)
+		if !ok || objEnd != '}' {
+			return fmt.Errorf("malformed peer record object")
+		}
+	}
+
+	tok, err = dec.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok = tok.(json.Delim)
+	if !ok || delim != ']' {
+		return fmt.Errorf("malformed JSON array")
+	}
+
+	return nil
+}
+
+func skipJSONValue(dec *json.Decoder) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		return nil
+	}
+
+	switch delim {
+	case '{':
+		for dec.More() {
+			if _, err := dec.Token(); err != nil {
+				return err
+			}
+			if err := skipJSONValue(dec); err != nil {
+				return err
+			}
+		}
+		endTok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		endDelim, ok := endTok.(json.Delim)
+		if !ok || endDelim != '}' {
+			return fmt.Errorf("malformed object")
+		}
+		return nil
+	case '[':
+		for dec.More() {
+			if err := skipJSONValue(dec); err != nil {
+				return err
+			}
+		}
+		endTok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		endDelim, ok := endTok.(json.Delim)
+		if !ok || endDelim != ']' {
+			return fmt.Errorf("malformed array")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delim)
+	}
 }
 
 // tryConnect attempts to connect to a peer

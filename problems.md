@@ -55,7 +55,7 @@ This file is a live backlog of negative findings only.
    - **Impact:** Remote memory amplification / CPU exhaustion via large mempool response payloads.  
    - **Required fix:** Enforce max entry count and byte budget; use streaming decode with limits.
    - **Status:** fixed (2026-02-12)  
-   - **What changed:** Added `MaxSyncMempoolTxCount` (5000, aligned with default mempool capacity) in `p2p/util.go`. On the receiving side (`fetchAndProcessMempool`), decoded `[][]byte` is now capped by entry count and decoded byte budget via `trimByteSliceBatch` before any processing loop. On the sending side (`handleGetMempool`), replaced the no-op `len(txs)` count parameter with the same `MaxSyncMempoolTxCount` cap so honest nodes also bound entry count.  
+   - **What changed:** Added `MaxSyncMempoolTxCount` (5000, aligned with default mempool capacity) in `p2p/util.go`. On the receiving side (`fetchAndProcessMempool`), mempool responses now run `ensureJSONArrayMaxItems(..., MaxSyncMempoolTxCount)` before `json.Unmarshal` and then apply decoded byte-budget trimming via `trimByteSliceBatch` before processing. On the sending side (`handleGetMempool`), replaced the no-op `len(txs)` count parameter with the same `MaxSyncMempoolTxCount` cap so honest nodes also bound entry count.  
 
 6. [DONE] `high` - `findTxBoundary()` parses attacker-controlled counts without safety bounds  
    - **Location:** `tx_aux.go` (`findTxBoundary`)  
@@ -198,120 +198,144 @@ This file is a live backlog of negative findings only.
     - **Status:** fixed (2026-02-12)  
     - **What changed:** Re-enabled host-layer banned-peer admission filtering by wiring `libp2p.ConnectionGater` in `NewNode` using existing `BanGater`. Also initialized `PeerExchange` before host construction so ban-state checks are available to the gater from startup onward.
 
-23. `high` - Sync fetch decode paths trust unbounded header/block array counts within message budget  
+23. [DONE] `high` - Sync fetch decode paths trust unbounded header/block array counts within message budget  
     - **Location:** `p2p/sync.go` (`FetchHeaders`, `FetchBlocks`, `fetchBlocksByHeight`)  
     - **Problem:** Response arrays are fully unmarshaled without per-array element count caps.  
     - **Impact:** Peer can send array-heavy payloads that maximize decode overhead and memory churn within allowed message size.  
     - **Required fix:** Cap decoded element counts and reject over-limit responses before full processing.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Added pre-decode JSON array element-count validation for `FetchHeaders`, `FetchBlocks`, and `fetchBlocksByHeight`. Each path now rejects over-limit responses (`MaxHeadersPerRequest` / `MaxBlocksPerRequest`) before unmarshaling into `[][]byte`, preventing unbounded decoded entry counts from peer responses.
 
-24. `medium` - Wallet unlock endpoint has no brute-force throttling  
+24. [DONE] `medium` - Wallet unlock endpoint has no brute-force throttling  
     - **Location:** `api_handlers.go` (`handleUnlock`)  
     - **Problem:** Unlimited password attempts over authenticated API channel, no delay/backoff/lockout logic.  
     - **Impact:** If API token leaks, online brute-force against wallet password is accelerated.  
     - **Required fix:** Add attempt counters, progressive delay, and temporary lockouts.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Added per-client-IP unlock attempt tracking in the API server with progressive backoff, temporary lockout after repeated failures, and automatic state expiry. `handleUnlock` now enforces pre-attempt backoff/lockout checks, returns `429` with `Retry-After` during enforced cooldown windows, applies delay on failed password checks, and resets attempt state on successful unlock.
 
-25. `medium` - Wallet scanner spent-detection is quadratic over wallet outputs and tx inputs  
+25. [DONE] `medium` - Wallet scanner spent-detection is quadratic over wallet outputs and tx inputs  
     - **Location:** `wallet/scanner.go` (`ScanBlock`, key image check loop)  
     - **Problem:** For each key image in each tx, scanner iterates all spendable outputs and regenerates key images repeatedly.  
     - **Impact:** Large-wallet scan performance collapse under high-input blocks; practical local DoS during rescan/recovery.  
     - **Required fix:** Index wallet outputs by precomputed key image for O(1)/O(log n) spent detection.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Added precomputed spendable-output key-image indexing in `ScanBlock` and switched spent detection to direct key-image lookups instead of nested output scans. Scanner now builds a key-image map once, updates it as newly owned outputs are discovered, marks spends by mapped one-time pubkeys, and removes consumed key-image entries after processing.
 
-26. `medium` - PEX peer-record parsing lacks strict record/address bounds beyond message size  
+26. [DONE] `medium` - PEX peer-record parsing lacks strict record/address bounds beyond message size  
     - **Location:** `p2p/pex.go` (`exchangeWithPeer`, `json.Unmarshal` into `[]PeerRecord`)  
     - **Problem:** No explicit cap on number of records or addresses per record before decode/processing.  
     - **Impact:** Decode-time CPU/memory amplification from crafted peer lists.  
     - **Required fix:** Enforce hard limits on peer-record count and per-record address count.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Added explicit inbound PEX response bounds in `exchangeWith` before full `[]PeerRecord` decode. The code now enforces a hard cap on total peer records (`MaxPeerRecordsPerResponse`) and stream-parses each record object so `addrs` arrays are counted token-by-token and rejected immediately once `MaxPeerAddrsPerRecord` is exceeded, avoiding full address-list materialization prior to rejection.
 
-27. `high` - Deep reorg/finality limit is defined but not enforced in fork choice  
+27. [DONE] `high` - Deep reorg/finality limit is defined but not enforced in fork choice  
     - **Location:** `block.go` (`MaxReorgDepth`, `IsFinalized`, `ProcessBlock`, `reorganizeTo`)  
     - **Problem:** The code defines finality depth (`MaxReorgDepth`) and exposes `IsFinalized`, but reorg acceptance path never enforces it.  
     - **Impact:** A higher-work alternative chain can rewrite arbitrarily deep history, which is a classic private-network PoW attack surface (low-hashrate chain rewrites).  
     - **Required fix:** Enforce reorg depth checks in `ProcessBlock`/`reorganizeTo` and reject chain switches that disconnect finalized heights.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Added finality-boundary enforcement for fork switching in `block.go`. `ProcessBlock` now runs a reorg finality guard before attempting heavier-chain adoption, and `reorganizeTo` also enforces the same check defensively. The new guard computes the fork point and rejects any reorg whose divergence height is below `height - MaxReorgDepth`, preventing chain switches that would disconnect finalized history.
 
-28. `high` - Difficulty-to-target conversion is coarse and decouples claimed work from real work  
+28. [DONE] `high` - Difficulty-to-target conversion is coarse and decouples claimed work from real work  
     - **Location:** `crypto-rs/src/pow.rs` (`blocknet_difficulty_to_target`), `block.go` (`ProcessBlock` cumulative work)  
     - **Problem:** Target mapping is bucketed by leading-zero bits rather than an exact `2^256 / difficulty` mapping. Many different difficulty values map to the same effective target while chainwork still sums raw difficulty values.  
     - **Impact:** Chain-selection weight can be inflated relative to actual PoW hardness, enabling work-accounting distortion and reorg leverage with less real hash effort than the numeric difficulty implies.  
     - **Required fix:** Replace target conversion with exact integer arithmetic (`target = floor((2^256-1)/difficulty)`) and ensure cumulative work metric is mathematically aligned with validation target.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Replaced the coarse leading-zero bucket conversion in `blocknet_difficulty_to_target` with exact 256-bit integer division (`floor((2^256-1)/difficulty)`) implemented via limb-wise long division. This restores a one-to-one difficulty-to-target mapping used by PoW validation, removing the prior bucket collapse that let multiple numeric difficulty values share the same effective target while cumulative work still accrued by difficulty.
 
-29. `medium` - Cumulative chainwork uses unchecked `uint64` arithmetic  
+29. [DONE] `medium` - Cumulative chainwork uses unchecked `uint64` arithmetic  
     - **Location:** `block.go` (`addBlockInternal`, `ProcessBlock`, `loadFromStorage`)  
     - **Problem:** Chainwork accumulation (`parentWork + difficulty`) has no overflow checks or saturating math.  
     - **Impact:** Overflow/wrap can corrupt fork-choice ordering under extreme values or long-lived networks, producing invalid best-chain selection behavior.  
     - **Required fix:** Add overflow detection and reject/handle blocks that would overflow cumulative work; migrate chainwork to wider arithmetic if needed.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Added checked cumulative-work arithmetic in `block.go` via a shared helper that rejects `uint64` overflow before summing `parentWork + difficulty`. `addBlockInternal`, `ProcessBlock`, and `loadFromStorage` now fail closed on overflow instead of wrapping, and load-time work-offset adjustment now uses the same checked addition while also rejecting inconsistent stored tip-work metadata.
 
-30. `critical` - Transaction validation does not prove ring members/commitments are canonical on-chain outputs  
+30. [DONE] `critical` - Transaction validation does not prove ring members/commitments are canonical on-chain outputs  
     - **Location:** `transaction.go` (`ValidateTransaction`, `VerifyRingCT` call path)  
     - **Problem:** Validation checks cryptographic consistency of provided ring data but does not bind each `(RingMember, RingCommitment)` pair to a real historical UTXO in canonical chain state.  
     - **Impact:** A transaction can be constructed over attacker-chosen ring sets that are cryptographically self-consistent but not chain-grounded, creating spend-from-nowhere/inflation risk.  
     - **Required fix:** Extend validation to require every ring member+commitment pair resolves to an existing canonical output and matches chain state commitments.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Extended transaction validation to enforce canonical ring binding by requiring each `(RingMember, RingCommitment)` pair to match an output stored in canonical chain state before RingCT verification. This was wired through both block validation and mempool admission by adding a shared ring-member checker callback and chain-backed canonical lookup, so non-chain-grounded ring sets are rejected consistently across consensus and ingress paths.
 
-31. `high` - Zero-length proof/signature slices can panic through FFI pointer dereference  
+31. [DONE] `high` - Zero-length proof/signature slices can panic through FFI pointer dereference  
     - **Location:** `crypto.go` (`VerifyRangeProof`, `VerifyRingCT`, other `unsafe.Pointer(&slice[0])` call sites)  
     - **Problem:** Multiple wrappers pass `&slice[0]` into C without explicit non-empty checks; malformed transactions can carry empty proof/signature fields.  
     - **Impact:** Remote crash/DoS via panic (`index out of range`) before graceful rejection.  
     - **Required fix:** Add strict length checks before all FFI pointer conversions and return validation errors instead of panicking.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Added explicit nil/empty input guards in the FFI verification wrappers used by transaction validation (`VerifyRangeProof`, `VerifyRing`, `VerifyRingCT`). These paths now reject missing/empty proof, signature, ring, or message slices with validation errors before any `&slice[0]` conversion, preventing panic-based DoS from malformed payloads.
 
-32. `high` - Chain cache mutates maps while holding read lock  
+32. [DONE] `high` - Chain cache mutates maps while holding read lock  
     - **Location:** `block.go` (`GetBlock`, `getBlockByHeightLocked`)  
     - **Problem:** Code writes to `c.blocks`/`c.byHeight` while under `RLock`, violating Go map concurrency safety guarantees.  
     - **Impact:** Concurrent map write panic/data race under load, resulting in node crash or undefined behavior.  
     - **Required fix:** Never mutate maps under `RLock`; promote to write lock or use dedicated synchronized cache structures.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Removed cache-map mutations from the `RLock` read path. `getBlockByHeightLocked` is now strictly read-only, and `GetBlock` now upgrades to `Lock` only for cache insertion (with a re-check to avoid duplicate writes), preventing map writes while holding only a read lock.
 
-33. `high` - Inbound fluff transaction path bypasses Dandelion fluff handler semantics  
+33. [DONE] `high` - Inbound fluff transaction path bypasses Dandelion fluff handler semantics  
     - **Location:** `p2p/node.go` (`ProtocolTx` -> `handleTxStream`), `p2p/dandelion.go` (`HandleFluffTx`)  
     - **Problem:** `ProtocolTx` stream currently dispatches directly to node tx handler path instead of passing through `HandleFluffTx` rebroadcast/cache logic.  
     - **Impact:** Reduced propagation robustness and privacy model drift (fluff handling behavior differs from intended Dandelion path).  
     - **Required fix:** Route inbound `ProtocolTx` through Dandelion fluff handler (or unify equivalent behavior in one path).
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Updated `ProtocolTx` ingress in `p2p/node.go` so `handleTxStream` now routes inbound transaction payloads to `dandel.HandleFluffTx` instead of calling the node tx callback directly. This restores Dandelion fluff-path semantics (seen-cache handling, local callback, and rebroadcast behavior) for all inbound fluff transactions.
 
-34. `medium` - Mempool admission does not explicitly reject coinbase transactions  
+34. [DONE] `medium` - Mempool admission does not explicitly reject coinbase transactions  
     - **Location:** `mempool.go` (`AddTransaction`)  
     - **Problem:** Coinbase txs skip normal validation branch but are not explicitly rejected at mempool boundary.  
     - **Impact:** Invalid object class can occupy mempool path and increase weird-state/edge-case risk.  
     - **Required fix:** Hard-reject `tx.IsCoinbase()` in mempool admission with explicit error.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Added an explicit early guard in `mempool.go` `AddTransaction` that rejects `tx.IsCoinbase()` with a clear error before any mempool admission logic. The transaction validation path is now uniformly applied to admitted transactions only, with coinbase objects denied at the ingress boundary.
 
 ## Giant Work Queue
 
 ### P0 - Must ship immediately
 
-1. Refactor block acceptance into one mandatory validated chain-ingest function used by all paths.
-2. Lock down `AddBlock` so non-genesis use cannot bypass consensus checks.
-3. Harden `ValidateBlockP2P` for fork/side-chain context with strict chain-aware rules.
-4. Add peer penalty escalation for invalid-block spam in all sync rejection branches.
-5. Add route-level throttling and concurrency limits for expensive validation endpoints (`submitblock` first).
-6. Enforce hard protocol payload limits per message type before allocation/decode.
+1. [DONE] Refactor block acceptance into one mandatory validated chain-ingest function used by all paths.
+2. [DONE] Lock down `AddBlock` so non-genesis use cannot bypass consensus checks.
+3. [DONE] Harden `ValidateBlockP2P` for fork/side-chain context with strict chain-aware rules.
+4. [DONE] Add peer penalty escalation for invalid-block spam in all sync rejection branches.
+5. [DONE] Add route-level throttling and concurrency limits for expensive validation endpoints (`submitblock` first).
+6. [DONE] Enforce hard protocol payload limits per message type before allocation/decode.
 
 ### P1 - Next wave
 
-7. Cap and stream-parse mempool sync payloads.
-8. Add strict bounds/overflow checks to `findTxBoundary` and aux parsing logic.
-9. Canonicalize txid derivation and remove multi-hash fallback behavior.
-10. Add storage write-time invariants for consensus-critical mutations.
-11. Harden destructive API operations with dedicated admin secret and explicit preconditions.
+7. [DONE] Cap and stream-parse mempool sync payloads.
+8. [DONE] Add strict bounds/overflow checks to `findTxBoundary` and aux parsing logic.
+9. [DONE] Canonicalize txid derivation and remove multi-hash fallback behavior.
+10. [DONE] Add storage write-time invariants for consensus-critical mutations.
+11. [WONTFIX] Harden destructive API operations with dedicated admin secret and explicit preconditions.
 
 ### P2 - Operational resilience
 
-12. Add cache/precompute for expensive explorer/stat endpoints.
-13. Introduce protocol-level abuse accounting for malformed tx/block streams.
-14. Add explicit genesis validation branch in consensus validator.
-15. Normalize serialization docs and invariant guards.
-16. Tighten sync request parameter validation and quotas.
-17. Add stem-phase tx sanity validation and malformed-stem peer penalties.
-18. Enforce Dandelion cache size caps with deterministic eviction.
-19. Remove panic-based failure handling from Dandelion RNG helpers.
-20. Re-enable/replace connection admission gating for banned peers.
-21. Add explicit decode limits for sync header/block response arrays.
-22. Add wallet unlock brute-force protection controls.
-23. Rework scanner spent-detection to indexed key-image lookup.
-24. Add strict limits for PEX peer record and address list decoding.
-25. Enforce finalized-depth reorg rejection in consensus fork-choice path.
-26. Replace coarse difficulty-to-target mapping with exact integer conversion.
-27. Add overflow-safe cumulative chainwork accounting.
-28. Enforce on-chain canonical membership checks for all RingCT ring member/commitment pairs.
-29. Add FFI wrapper guards for zero-length proof/signature/message slices.
-30. Eliminate map mutations under read locks in chain cache code paths.
-31. Route inbound `ProtocolTx` through Dandelion fluff semantics (or unified equivalent path).
-32. Explicitly reject coinbase transactions at mempool admission boundary.
+12. [DONE] Add cache/precompute for expensive explorer/stat endpoints.
+13. [DONE] Introduce protocol-level abuse accounting for malformed tx/block streams.
+14. [DONE] Add explicit genesis validation branch in consensus validator.
+15. [DONE] Normalize serialization docs and invariant guards.
+16. [DONE] Tighten sync request parameter validation and quotas.
+17. [DONE] Add stem-phase tx sanity validation and malformed-stem peer penalties.
+18. [DONE] Enforce Dandelion cache size caps with deterministic eviction.
+19. [DONE] Remove panic-based failure handling from Dandelion RNG helpers.
+20. [DONE] Re-enable/replace connection admission gating for banned peers.
+21. [DONE] Add explicit decode limits for sync header/block response arrays.
+22. [DONE] Add wallet unlock brute-force protection controls.
+23. [DONE] Rework scanner spent-detection to indexed key-image lookup.
+24. [DONE] Add strict limits for PEX peer record and address list decoding.
+25. [DONE] Enforce finalized-depth reorg rejection in consensus fork-choice path.
+26. [DONE] Replace coarse difficulty-to-target mapping with exact integer conversion.
+27. [DONE] Add overflow-safe cumulative chainwork accounting.
+28. [DONE] Enforce on-chain canonical membership checks for all RingCT ring member/commitment pairs.
+29. [DONE] Add FFI wrapper guards for zero-length proof/signature/message slices.
+30. [DONE] Eliminate map mutations under read locks in chain cache code paths.
+31. [DONE] Route inbound `ProtocolTx` through Dandelion fluff semantics (or unified equivalent path).
+32. [DONE] Explicitly reject coinbase transactions at mempool admission boundary.
 
 ## Regression Check List (queued, not implemented here)
 

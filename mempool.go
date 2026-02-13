@@ -70,19 +70,22 @@ type Mempool struct {
 
 	// Key image checker for validation (provided by chain)
 	isKeyImageSpent KeyImageChecker
+	// Ring member checker for canonical output binding.
+	isCanonicalRingMember RingMemberChecker
 
 	// Stats
 	totalSize int // Total bytes in mempool
 }
 
 // NewMempool creates a new mempool
-func NewMempool(cfg MempoolConfig, isSpent KeyImageChecker) *Mempool {
+func NewMempool(cfg MempoolConfig, isSpent KeyImageChecker, isCanonicalRingMember RingMemberChecker) *Mempool {
 	return &Mempool{
-		config:          cfg,
-		txByID:          make(map[[32]byte]*MempoolEntry),
-		txByImage:       make(map[[32]byte][32]byte),
-		priorityQueue:   make(txPriorityQueue, 0),
-		isKeyImageSpent: isSpent,
+		config:                cfg,
+		txByID:                make(map[[32]byte]*MempoolEntry),
+		txByImage:             make(map[[32]byte][32]byte),
+		priorityQueue:         make(txPriorityQueue, 0),
+		isKeyImageSpent:       isSpent,
+		isCanonicalRingMember: isCanonicalRingMember,
 	}
 }
 
@@ -91,6 +94,10 @@ func NewMempool(cfg MempoolConfig, isSpent KeyImageChecker) *Mempool {
 func (m *Mempool) AddTransaction(tx *Transaction, txData []byte, aux ...*TxAuxData) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if tx.IsCoinbase() {
+		return fmt.Errorf("coinbase transaction cannot be added to mempool")
+	}
 
 	txID, err := tx.TxID()
 	if err != nil {
@@ -110,10 +117,8 @@ func (m *Mempool) AddTransaction(tx *Transaction, txData []byte, aux ...*TxAuxDa
 	}
 
 	// Validate against UTXO set (doesn't modify it)
-	if !tx.IsCoinbase() {
-		if err := ValidateTransaction(tx, m.isKeyImageSpent); err != nil {
-			return fmt.Errorf("validation failed: %w", err)
-		}
+	if err := ValidateTransaction(tx, m.isKeyImageSpent, m.isCanonicalRingMember); err != nil {
+		return fmt.Errorf("validation failed: %w", err)
 	}
 
 	// Calculate fee rate

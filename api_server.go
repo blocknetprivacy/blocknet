@@ -15,6 +15,14 @@ import (
 
 const maxRequestBodyBytes int64 = 1 << 20 // 1MB
 
+const (
+	unlockFailureBaseDelay  = 250 * time.Millisecond
+	unlockFailureMaxDelay   = 5 * time.Second
+	unlockFailureLockout    = 30 * time.Second
+	unlockFailureStateTTL   = 30 * time.Minute
+	unlockFailuresToLockout = 8
+)
+
 // APIServer serves the authenticated JSON API for GUI wallets.
 type APIServer struct {
 	daemon  *Daemon
@@ -35,6 +43,9 @@ type APIServer struct {
 	// Route-scoped abuse controls for expensive block validation.
 	submitBlockLimiter *perIPLimiter
 	submitBlockSem     chan struct{}
+
+	// Wallet unlock brute-force controls.
+	unlockAttempts *unlockAttemptTracker
 }
 
 type perIPLimiter struct {
@@ -50,6 +61,18 @@ type ipClientLimiter struct {
 	lastSeen time.Time
 }
 
+type unlockAttemptTracker struct {
+	mu      sync.Mutex
+	clients map[string]*unlockAttemptState
+}
+
+type unlockAttemptState struct {
+	failures    int
+	nextAllowed time.Time
+	lockoutUntil time.Time
+	lastSeen    time.Time
+}
+
 func newPerIPLimiter(limit rate.Limit, burst int, ttl time.Duration) *perIPLimiter {
 	return &perIPLimiter{
 		clients: make(map[string]*ipClientLimiter),
@@ -57,6 +80,78 @@ func newPerIPLimiter(limit rate.Limit, burst int, ttl time.Duration) *perIPLimit
 		burst:   burst,
 		ttl:     ttl,
 	}
+}
+
+func newUnlockAttemptTracker() *unlockAttemptTracker {
+	return &unlockAttemptTracker{
+		clients: make(map[string]*unlockAttemptState),
+	}
+}
+
+func (t *unlockAttemptTracker) precheck(ip string) (time.Duration, time.Time) {
+	now := time.Now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for key, state := range t.clients {
+		if now.Sub(state.lastSeen) > unlockFailureStateTTL {
+			delete(t.clients, key)
+		}
+	}
+
+	state, ok := t.clients[ip]
+	if !ok {
+		return 0, time.Time{}
+	}
+	state.lastSeen = now
+
+	if now.Before(state.lockoutUntil) {
+		return 0, state.lockoutUntil
+	}
+	if now.Before(state.nextAllowed) {
+		return state.nextAllowed.Sub(now), time.Time{}
+	}
+	return 0, time.Time{}
+}
+
+func (t *unlockAttemptTracker) recordFailure(ip string) (time.Duration, time.Time) {
+	now := time.Now()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	state, ok := t.clients[ip]
+	if !ok {
+		state = &unlockAttemptState{}
+		t.clients[ip] = state
+	}
+
+	state.lastSeen = now
+	state.failures++
+
+	shift := state.failures - 1
+	if shift > 5 {
+		shift = 5
+	}
+	delay := unlockFailureBaseDelay << shift
+	if delay > unlockFailureMaxDelay {
+		delay = unlockFailureMaxDelay
+	}
+	state.nextAllowed = now.Add(delay)
+
+	if state.failures >= unlockFailuresToLockout {
+		state.lockoutUntil = now.Add(unlockFailureLockout)
+		state.nextAllowed = state.lockoutUntil
+		state.failures = 0
+		return delay, state.lockoutUntil
+	}
+
+	return delay, time.Time{}
+}
+
+func (t *unlockAttemptTracker) recordSuccess(ip string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.clients, ip)
 }
 
 func (l *perIPLimiter) allow(ip string) bool {
@@ -93,6 +188,7 @@ func NewAPIServer(daemon *Daemon, w *wallet.Wallet, scanner *wallet.Scanner, dat
 		password:           password,
 		submitBlockLimiter: newPerIPLimiter(rate.Limit(2), 4, 10*time.Minute),
 		submitBlockSem:     make(chan struct{}, 2),
+		unlockAttempts:     newUnlockAttemptTracker(),
 	}
 }
 

@@ -91,10 +91,7 @@ pub extern "C" fn blocknet_pow_check_target(
 }
 
 /// Convert difficulty to target
-/// Target = 2^256 / difficulty (simplified)
-///
-/// For our purposes, difficulty determines how many leading zero bits are needed.
-/// Higher difficulty = more leading zeros = smaller target
+/// Target = floor((2^256 - 1) / difficulty)
 #[unsafe(no_mangle)]
 pub extern "C" fn blocknet_difficulty_to_target(
     difficulty: u64,
@@ -104,25 +101,24 @@ pub extern "C" fn blocknet_difficulty_to_target(
         return -1;
     }
 
-    // Calculate target: essentially 2^256 / difficulty
-    // Simplified: we set bytes based on leading zeros
-    let mut target = [0xFFu8; 32];
-    
-    // Find how many leading zero bits we need
-    // difficulty = 2^n means n leading zero bits
-    let leading_zeros = 63 - difficulty.leading_zeros();
-    
-    let zero_bytes = (leading_zeros / 8) as usize;
-    let remaining_bits = leading_zeros % 8;
-    
-    // Set leading bytes to zero
-    for i in 0..zero_bytes.min(32) {
-        target[i] = 0;
+    // Exact integer division over 256-bit numerator:
+    // numerator = (2^256 - 1) = [u64::MAX, u64::MAX, u64::MAX, u64::MAX]
+    // Compute quotient limbs in base 2^64 using long division by u64 divisor.
+    let divisor = difficulty as u128;
+    let numerator = [u64::MAX; 4];
+    let mut quotient = [0u64; 4];
+    let mut rem = 0u128;
+
+    for (i, limb) in numerator.iter().enumerate() {
+        let cur = (rem << 64) | (*limb as u128);
+        quotient[i] = (cur / divisor) as u64;
+        rem = cur % divisor;
     }
-    
-    // Set partial byte
-    if zero_bytes < 32 {
-        target[zero_bytes] = 0xFF >> remaining_bits;
+
+    let mut target = [0u8; 32];
+    for i in 0..4 {
+        let be = quotient[i].to_be_bytes();
+        target[i * 8..(i + 1) * 8].copy_from_slice(&be);
     }
 
     unsafe {
@@ -188,13 +184,21 @@ mod tests {
     #[test]
     fn test_difficulty_to_target() {
         let mut target = [0u8; 32];
-        
-        // Low difficulty - easy target
+
+        // difficulty=1 => max target
         blocknet_difficulty_to_target(1, target.as_mut_ptr());
-        assert!(target[0] == 0xFF); // No leading zeros
-        
-        // Higher difficulty - harder target
+        assert_eq!(target, [0xFF; 32]);
+
+        // difficulty=2 => floor((2^256 - 1)/2) = 0x7f...ff
+        blocknet_difficulty_to_target(2, target.as_mut_ptr());
+        assert_eq!(target[0], 0x7F);
+        assert_eq!(target[1], 0xFF);
+        assert_eq!(target[31], 0xFF);
+
+        // difficulty=256 => floor((2^256 - 1)/256) = 0x00ff...ff
         blocknet_difficulty_to_target(256, target.as_mut_ptr());
-        assert!(target[0] == 0x00); // Some leading zeros
+        assert_eq!(target[0], 0x00);
+        assert_eq!(target[1], 0xFF);
+        assert_eq!(target[31], 0xFF);
     }
 }

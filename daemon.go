@@ -150,7 +150,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 	}
 
 	// Create mempool (uses chain's key image checker)
-	mempool := NewMempool(DefaultMempoolConfig(), chain.IsKeyImageSpent)
+	mempool := NewMempool(DefaultMempoolConfig(), chain.IsKeyImageSpent, chain.IsCanonicalRingMember)
 
 	// Create miner (peer count wired up after node creation)
 	minerCfg := MinerConfig{

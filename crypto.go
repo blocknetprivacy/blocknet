@@ -284,6 +284,13 @@ func CreateRangeProof(value uint64, blinding [32]byte) (*RangeProof, error) {
 
 // VerifyRangeProof verifies a bulletproof for a commitment
 func VerifyRangeProof(commitment [32]byte, proof *RangeProof) error {
+	if proof == nil {
+		return fmt.Errorf("range proof is required")
+	}
+	if len(proof.Proof) == 0 {
+		return fmt.Errorf("range proof must not be empty")
+	}
+
 	result := C.blocknet_range_proof_verify(
 		(*C.uint8_t)(unsafe.Pointer(&commitment[0])),
 		(*C.uint8_t)(unsafe.Pointer(&proof.Proof[0])),
@@ -597,9 +604,21 @@ func SignRing(ring [][32]byte, secretIndex int, privateKey [32]byte, message []b
 
 // VerifyRing verifies a CLSAG ring signature
 func VerifyRing(ring [][32]byte, message []byte, sig *RingSignature) error {
+	if sig == nil {
+		return fmt.Errorf("ring signature is required")
+	}
 	ringSize := len(ring)
+	if ringSize == 0 {
+		return fmt.Errorf("ring must not be empty")
+	}
 	if ringSize != sig.RingSize {
 		return fmt.Errorf("ring size mismatch")
+	}
+	if len(message) == 0 {
+		return fmt.Errorf("ring signature message must not be empty")
+	}
+	if len(sig.Signature) == 0 {
+		return fmt.Errorf("ring signature must not be empty")
 	}
 
 	// Flatten ring keys
@@ -714,12 +733,24 @@ func VerifyRingCT(
 	message []byte,
 	sig *RingCTSignature,
 ) error {
+	if sig == nil {
+		return fmt.Errorf("RingCT signature is required")
+	}
 	ringSize := len(ringKeys)
+	if ringSize == 0 {
+		return fmt.Errorf("RingCT ring must not be empty")
+	}
 	if ringSize != len(ringCommitments) {
 		return fmt.Errorf("ring keys and commitments must have same length")
 	}
 	if ringSize != sig.RingSize {
 		return fmt.Errorf("ring size mismatch")
+	}
+	if len(message) == 0 {
+		return fmt.Errorf("RingCT message must not be empty")
+	}
+	if len(sig.Signature) == 0 {
+		return fmt.Errorf("RingCT signature must not be empty")
 	}
 
 	// Flatten ring keys and commitments
