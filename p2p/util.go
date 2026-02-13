@@ -25,6 +25,10 @@ const (
 	MaxSyncGetBlocksReqSize    = 64 * 1024
 	MaxSyncGetBlocksByHeightSz = 32 * 1024
 	MaxSyncGetMempoolReqSize   = 4 * 1024
+
+	// MaxSyncMempoolTxCount caps decoded transaction entries in a mempool
+	// sync response. Aligned with the default mempool capacity (5,000).
+	MaxSyncMempoolTxCount = 5000
 )
 
 // writeLengthPrefixed writes data with a 4-byte big-endian length prefix

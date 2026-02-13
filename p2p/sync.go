@@ -334,7 +334,7 @@ func (sm *SyncManager) handleGetMempool(s network.Stream) {
 	}
 
 	txs := sm.getMempool()
-	txs = trimByteSliceBatch(txs, len(txs), SyncMempoolResponseByteBudget)
+	txs = trimByteSliceBatch(txs, MaxSyncMempoolTxCount, SyncMempoolResponseByteBudget)
 	data, err := json.Marshal(txs)
 	if err != nil {
 		writeMessage(s, SyncMsgMempool, []byte("[]"))
@@ -1196,6 +1196,9 @@ func (sm *SyncManager) fetchAndProcessMempool(p peer.ID) error {
 	if err := json.Unmarshal(data, &txs); err != nil {
 		return err
 	}
+
+	// Enforce entry count and decoded byte budget before processing.
+	txs = trimByteSliceBatch(txs, MaxSyncMempoolTxCount, SyncMempoolResponseByteBudget)
 
 	// Process each transaction
 	for _, txData := range txs {

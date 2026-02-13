@@ -52,17 +52,23 @@ This file is a live backlog of negative findings only.
    - **What changed:** Added explicit per-class read caps before allocation via `readLengthPrefixedWithLimit`/`readMessageWithLimit`; wired sync and PEX to message-type-specific limits (`readSyncMessage`, `readPEXMessage`), and block/tx/dandelion direct streams to protocol-specific caps. Added sync response byte-budget trimming for headers/blocks/mempool so batching remains supported but bounded.
    - **Regression coverage:** deferred to `Deferred Test Backlog` per fix-first cadence.
 
-5. `high` - Sync mempool fetch unmarshals unbounded `[][]byte` payloads  
-   - **Location:** `p2p/sync.go` (`fetchAndProcessMempool`)  
+5. [DONE] `high` - Sync mempool fetch unmarshals unbounded `[][]byte` payloads  
+   - **Location:** `p2p/sync.go` (`fetchAndProcessMempool`, `handleGetMempool`), `p2p/util.go`  
    - **Problem:** No limit on transaction count before full JSON decode.  
    - **Impact:** Remote memory amplification / CPU exhaustion via large mempool response payloads.  
    - **Required fix:** Enforce max entry count and byte budget; use streaming decode with limits.
+   - **Status:** fixed (2026-02-12)  
+   - **What changed:** Added `MaxSyncMempoolTxCount` (5000, aligned with default mempool capacity) in `p2p/util.go`. On the receiving side (`fetchAndProcessMempool`), decoded `[][]byte` is now capped by entry count and decoded byte budget via `trimByteSliceBatch` before any processing loop. On the sending side (`handleGetMempool`), replaced the no-op `len(txs)` count parameter with the same `MaxSyncMempoolTxCount` cap so honest nodes also bound entry count.  
+   - **Regression coverage:** deferred to `Deferred Test Backlog` per fix-first cadence.
 
-6. `high` - `findTxBoundary()` parses attacker-controlled counts without safety bounds  
+6. [DONE] `high` - `findTxBoundary()` parses attacker-controlled counts without safety bounds  
    - **Location:** `tx_aux.go` (`findTxBoundary`)  
    - **Problem:** `inputCount`/`outputCount`/`ringSize` are used for loop arithmetic without strict upper limits.  
    - **Impact:** CPU burn and malformed-tail parsing abuse in aux-data decode path.  
    - **Required fix:** Apply hard limits matching `DeserializeTx` and fail fast on overflow/over-budget paths.
+   - **Status:** fixed (2026-02-12)  
+   - **What changed:** Added hard caps in `findTxBoundary` derived from protocol constants (`maxInputs=256`, `maxOutputs=256`, `maxRingSize=RingSize` (16), `maxProofSize=1024` per Bulletproof buffer, `maxSigSize=96+64*RingSize` (1120) per RingCT CLSAG buffer); each field is checked immediately after decode and returns `len(data)` (no valid boundary) on violation, preventing CPU burn and malformed-tail parsing. Values are tighter than `DeserializeTx`'s looser local caps.  
+   - **Regression coverage:** deferred to `Deferred Test Backlog` per fix-first cadence.
 
 7. `high` - Expensive `submitblock` path has no route-level abuse throttling  
    - **Location:** `api_handlers.go` (`handleSubmitBlock`)  
@@ -307,6 +313,13 @@ This file is a live backlog of negative findings only.
 1. (C) Re-enable a production-faithful `TestProcessBlockData_ReorgRequeuesTxsFromDisconnectedBlocks` that verifies requeue semantics through an actual reorg in daemon ingest.
 2. (a) Add a regression test that proves `AddBlock` rejects non-genesis blocks once finding #2 is implemented.
 2. (b) Add a regression test that proves `AddBlock` still accepts valid genesis only once and fails duplicate genesis insertion.
+5. (a) Add a regression test that crafts a mempool sync response exceeding `MaxSyncMempoolTxCount` entries and proves the receiver truncates before processing.
+5. (b) Add a regression test that crafts a mempool sync response exceeding `SyncMempoolResponseByteBudget` in decoded bytes and proves truncation before processing.
+6. (a) Add a regression test that crafts tx data with `inputCount > 256` and proves `findTxBoundary` returns `len(data)` (no valid boundary).
+6. (b) Add a regression test that crafts tx data with `outputCount > 256` and proves `findTxBoundary` returns `len(data)`.
+6. (c) Add a regression test that crafts tx data with `ringSize > 128` in an input and proves `findTxBoundary` returns `len(data)`.
+6. (d) Add a regression test that crafts tx data with `proofLen > 10240` in an output and proves `findTxBoundary` returns `len(data)`.
+6. (e) Add a regression test that crafts tx data with `sigLen > 131072` in an input and proves `findTxBoundary` returns `len(data)`.
 
 ### Deferred test restoration after bug crunch
 

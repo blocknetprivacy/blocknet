@@ -80,7 +80,17 @@ func DecodeTxWithAux(data []byte) (txData []byte, aux *TxAuxData) {
 // findTxBoundary parses the binary TX format to find where the TX data ends.
 // Returns the byte offset after the last byte of the transaction.
 func findTxBoundary(data []byte) int {
-	const minHeaderSize = 1 + 32 + 4 + 4 + 8
+	// Hard limits derived from protocol constants (crypto.go).
+	// DeserializeTx uses looser values; these match actual production ceilings.
+	const (
+		maxInputs     = 256
+		maxOutputs    = 256
+		maxRingSize   = RingSize           // fixed 16 (15 decoys + 1 real)
+		maxProofSize  = 1024               // Bulletproof buffer size in CreateRangeProof
+		maxSigSize    = 96 + 64*RingSize   // RingCT CLSAG buffer size in SignRingCT (1120)
+		minHeaderSize = 1 + 32 + 4 + 4 + 8
+	)
+
 	if len(data) < minHeaderSize {
 		return len(data)
 	}
@@ -94,12 +104,18 @@ func findTxBoundary(data []byte) int {
 	}
 	inputCount := int(binary.LittleEndian.Uint32(data[off:]))
 	off += 4
+	if inputCount > maxInputs {
+		return len(data)
+	}
 
 	if off+4 > len(data) {
 		return len(data)
 	}
 	outputCount := int(binary.LittleEndian.Uint32(data[off:]))
 	off += 4
+	if outputCount > maxOutputs {
+		return len(data)
+	}
 
 	off += 8 // fee
 
@@ -111,6 +127,9 @@ func findTxBoundary(data []byte) int {
 		}
 		proofLen := int(binary.LittleEndian.Uint32(data[off:]))
 		off += 4
+		if proofLen > maxProofSize {
+			return len(data)
+		}
 		off += proofLen
 		if off > len(data) {
 			return len(data)
@@ -125,6 +144,9 @@ func findTxBoundary(data []byte) int {
 		}
 		ringSize := int(binary.LittleEndian.Uint32(data[off:]))
 		off += 4
+		if ringSize > maxRingSize {
+			return len(data)
+		}
 		off += ringSize * 32 // ring member keys
 		off += ringSize * 32 // ring member commitments
 		if off+4 > len(data) {
@@ -132,6 +154,9 @@ func findTxBoundary(data []byte) int {
 		}
 		sigLen := int(binary.LittleEndian.Uint32(data[off:]))
 		off += 4
+		if sigLen > maxSigSize {
+			return len(data)
+		}
 		off += sigLen
 		if off > len(data) {
 			return len(data)
