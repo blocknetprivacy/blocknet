@@ -778,6 +778,33 @@ func VerifyRingCT(
 	return nil
 }
 
+// ExtractRingCTBinding extracts key image and pseudo-output from RingCT signature payload.
+func ExtractRingCTBinding(sig *RingCTSignature) ([32]byte, [32]byte, error) {
+	var keyImage [32]byte
+	var pseudoOutput [32]byte
+
+	if sig == nil {
+		return keyImage, pseudoOutput, fmt.Errorf("RingCT signature is required")
+	}
+	if sig.RingSize <= 0 {
+		return keyImage, pseudoOutput, fmt.Errorf("RingCT ring size must be positive")
+	}
+
+	expectedLen := 32 + sig.RingSize*32 + sig.RingSize*32 + 32 + 32
+	if len(sig.Signature) != expectedLen {
+		return keyImage, pseudoOutput, fmt.Errorf(
+			"invalid RingCT signature length: got %d, expected %d",
+			len(sig.Signature),
+			expectedLen,
+		)
+	}
+
+	kiOffset := 32 + sig.RingSize*32 + sig.RingSize*32
+	copy(keyImage[:], sig.Signature[kiOffset:kiOffset+32])
+	copy(pseudoOutput[:], sig.Signature[kiOffset+32:kiOffset+64])
+	return keyImage, pseudoOutput, nil
+}
+
 // ============================================================================
 // Proof of Work (Argon2id)
 // ============================================================================

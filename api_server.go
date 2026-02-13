@@ -67,10 +67,10 @@ type unlockAttemptTracker struct {
 }
 
 type unlockAttemptState struct {
-	failures    int
-	nextAllowed time.Time
+	failures     int
+	nextAllowed  time.Time
 	lockoutUntil time.Time
-	lastSeen    time.Time
+	lastSeen     time.Time
 }
 
 func newPerIPLimiter(limit rate.Limit, burst int, ttl time.Duration) *perIPLimiter {
@@ -215,6 +215,10 @@ func (s *APIServer) requireWallet(w http.ResponseWriter, _ *http.Request) bool {
 
 // Start launches the full authenticated API server.
 func (s *APIServer) Start(addr string) error {
+	if isInsecureAPIBindAddress(addr) {
+		log.Printf("Warning: API bind address %q is not loopback; place behind trusted network boundaries/TLS", addr)
+	}
+
 	token, err := generateToken()
 	if err != nil {
 		return fmt.Errorf("failed to generate auth token: %w", err)
@@ -257,6 +261,24 @@ func (s *APIServer) Start(addr string) error {
 	}()
 
 	return nil
+}
+
+func isInsecureAPIBindAddress(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return true
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return true
+	}
+	if host == "localhost" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return true
+	}
+	return !ip.IsLoopback()
 }
 
 // Stop gracefully shuts down the API server and removes the cookie file.

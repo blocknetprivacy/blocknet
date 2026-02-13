@@ -1,6 +1,121 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func mustBuildValidRingCTBindingTestTx(t *testing.T) *Transaction {
+	t.Helper()
+
+	const amount uint64 = 42
+	secretIndex := 5
+
+	secretKP, err := GenerateRistrettoKeypair()
+	if err != nil {
+		t.Fatalf("failed to generate secret keypair: %v", err)
+	}
+
+	inputBlinding, err := GenerateBlinding()
+	if err != nil {
+		t.Fatalf("failed to generate input blinding: %v", err)
+	}
+	realInputCommitment, err := CreatePedersenCommitmentWithBlinding(amount, inputBlinding)
+	if err != nil {
+		t.Fatalf("failed to create real input commitment: %v", err)
+	}
+
+	pseudoBlinding, err := GenerateBlinding()
+	if err != nil {
+		t.Fatalf("failed to generate pseudo blinding: %v", err)
+	}
+	pseudoOutput, err := CreatePedersenCommitmentWithBlinding(amount, pseudoBlinding)
+	if err != nil {
+		t.Fatalf("failed to create pseudo-output commitment: %v", err)
+	}
+
+	keyImage, err := GenerateKeyImage(secretKP.PrivateKey)
+	if err != nil {
+		t.Fatalf("failed to generate key image: %v", err)
+	}
+
+	ringMembers := make([][32]byte, RingSize)
+	ringCommitments := make([][32]byte, RingSize)
+	for i := 0; i < RingSize; i++ {
+		if i == secretIndex {
+			ringMembers[i] = secretKP.PublicKey
+			ringCommitments[i] = realInputCommitment
+			continue
+		}
+
+		memberKP, err := GenerateRistrettoKeypair()
+		if err != nil {
+			t.Fatalf("failed to generate ring member keypair %d: %v", i, err)
+		}
+		ringMembers[i] = memberKP.PublicKey
+
+		decoyCommitment, err := CreatePedersenCommitment(uint64(i + 100))
+		if err != nil {
+			t.Fatalf("failed to create decoy commitment %d: %v", i, err)
+		}
+		ringCommitments[i] = decoyCommitment.Commitment
+	}
+
+	outKP, err := GenerateRistrettoKeypair()
+	if err != nil {
+		t.Fatalf("failed to generate output keypair: %v", err)
+	}
+	rangeProof, err := CreateRangeProof(amount, pseudoBlinding)
+	if err != nil {
+		t.Fatalf("failed to create range proof: %v", err)
+	}
+
+	tx := &Transaction{
+		Version: 1,
+		Inputs: []TxInput{
+			{
+				KeyImage:        keyImage,
+				RingMembers:     ringMembers,
+				RingCommitments: ringCommitments,
+				PseudoOutput:    pseudoOutput,
+			},
+		},
+		Outputs: []TxOutput{
+			{
+				Commitment: pseudoOutput,
+				PublicKey:  outKP.PublicKey,
+				RangeProof: rangeProof.Proof,
+			},
+		},
+		Fee: 0,
+	}
+
+	sigHash := tx.SigningHash()
+	ringSig, err := SignRingCT(
+		ringMembers,
+		ringCommitments,
+		secretIndex,
+		secretKP.PrivateKey,
+		inputBlinding,
+		pseudoOutput,
+		pseudoBlinding,
+		sigHash[:],
+	)
+	if err != nil {
+		t.Fatalf("failed to sign RingCT input: %v", err)
+	}
+	tx.Inputs[0].RingSignature = ringSig.Signature
+
+	if err := ValidateTransaction(
+		tx,
+		func(_ [32]byte) bool { return false },
+		func(_, _ [32]byte) bool { return true },
+	); err != nil {
+		t.Fatalf("failed to build valid baseline RingCT tx: %v", err)
+	}
+
+	return tx
+}
 
 func TestIsCanonicalRingMember_RejectsReorgedOutOutput(t *testing.T) {
 	chain, storage, cleanup := mustCreateTestChain(t)
@@ -110,5 +225,49 @@ func TestIsCanonicalRingMember_RejectsReorgedOutOutput(t *testing.T) {
 	}
 	if !chain.IsCanonicalRingMember(pubB, commB) {
 		t.Fatal("expected blockB output to be canonical after reorg")
+	}
+}
+
+func TestValidateTransactionRejectsTamperedRingCTExternalKeyImage(t *testing.T) {
+	tx := mustBuildValidRingCTBindingTestTx(t)
+
+	original := tx.Inputs[0].KeyImage
+	tx.Inputs[0].KeyImage[0] ^= 0x01
+	if tx.Inputs[0].KeyImage == original {
+		t.Fatal("failed to tamper key image")
+	}
+
+	err := ValidateTransaction(
+		tx,
+		func(_ [32]byte) bool { return false },
+		func(_, _ [32]byte) bool { return true },
+	)
+	if err == nil {
+		t.Fatal("expected tampered external key image to be rejected")
+	}
+	if !strings.Contains(err.Error(), "key image does not match signed RingCT payload") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateTransactionRejectsTamperedRingCTExternalPseudoOutput(t *testing.T) {
+	tx := mustBuildValidRingCTBindingTestTx(t)
+
+	original := tx.Inputs[0].PseudoOutput
+	tx.Inputs[0].PseudoOutput[0] ^= 0x01
+	if tx.Inputs[0].PseudoOutput == original {
+		t.Fatal("failed to tamper pseudo-output")
+	}
+
+	err := ValidateTransaction(
+		tx,
+		func(_ [32]byte) bool { return false },
+		func(_, _ [32]byte) bool { return true },
+	)
+	if err == nil {
+		t.Fatal("expected tampered external pseudo-output to be rejected")
+	}
+	if !strings.Contains(err.Error(), "pseudo-output does not match signed RingCT payload") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

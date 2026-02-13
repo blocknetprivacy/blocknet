@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,8 +19,8 @@ import (
 // ErrSideChainBlock is returned when the block is valid but landed on a fork, not the main chain.
 // Both tell callers to skip relay and notification.
 var (
-	ErrDuplicateBlock  = errors.New("duplicate block")
-	ErrSideChainBlock  = errors.New("side-chain block")
+	ErrDuplicateBlock = errors.New("duplicate block")
+	ErrSideChainBlock = errors.New("side-chain block")
 )
 
 type Daemon struct {
@@ -248,6 +249,21 @@ func (d *Daemon) SubscribeBlocks() chan *Block {
 	return ch
 }
 
+// UnsubscribeBlocks removes a previously subscribed block channel.
+func (d *Daemon) UnsubscribeBlocks(ch chan *Block) {
+	if ch == nil {
+		return
+	}
+	d.blockSubsMu.Lock()
+	defer d.blockSubsMu.Unlock()
+	for i, sub := range d.blockSubs {
+		if sub == ch {
+			d.blockSubs = append(d.blockSubs[:i], d.blockSubs[i+1:]...)
+			return
+		}
+	}
+}
+
 // notifyBlock sends block to all subscribers
 func (d *Daemon) notifyBlock(block *Block) {
 	d.blockSubsMu.Lock()
@@ -267,6 +283,21 @@ func (d *Daemon) SubscribeMinedBlocks() chan *Block {
 	ch := make(chan *Block, 10)
 	d.minedSubs = append(d.minedSubs, ch)
 	return ch
+}
+
+// UnsubscribeMinedBlocks removes a previously subscribed mined-block channel.
+func (d *Daemon) UnsubscribeMinedBlocks(ch chan *Block) {
+	if ch == nil {
+		return
+	}
+	d.minedSubsMu.Lock()
+	defer d.minedSubsMu.Unlock()
+	for i, sub := range d.minedSubs {
+		if sub == ch {
+			d.minedSubs = append(d.minedSubs[:i], d.minedSubs[i+1:]...)
+			return
+		}
+	}
 }
 
 // notifyMinedBlock sends mined block to all subscribers
@@ -367,6 +398,11 @@ func (d *Daemon) handleMinedBlock(block *Block) {
 func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 	var block Block
 	if err := json.Unmarshal(data, &block); err != nil {
+		d.penalizeInvalidGossipPeer(from, p2p.ScorePenaltyMisbehave, "malformed block payload")
+		return
+	}
+	if err := validateBlockCheapPrefilters(&block); err != nil {
+		d.penalizeInvalidGossipPeer(from, p2p.ScorePenaltyMisbehave, fmt.Sprintf("block prefilter failed: %v", err))
 		return
 	}
 
@@ -378,6 +414,7 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 	if err != nil || !accepted {
 		if err != nil {
 			log.Printf("Rejected announced block at height %d from %s: %v", block.Header.Height, from.String()[:8], err)
+			d.penalizeInvalidGossipPeer(from, p2p.ScorePenaltyMisbehave, fmt.Sprintf("invalid block: %v", err))
 		}
 		return
 	}
@@ -405,13 +442,65 @@ func (d *Daemon) handleTx(from peer.ID, data []byte) {
 
 	tx, err := DeserializeTx(txData)
 	if err != nil {
+		d.penalizeInvalidGossipPeer(from, p2p.ScorePenaltyMisbehave, "malformed transaction payload")
+		return
+	}
+	txID, err := tx.TxID()
+	if err != nil {
+		d.penalizeInvalidGossipPeer(from, p2p.ScorePenaltyMisbehave, "invalid transaction id")
+		return
+	}
+	if d.mempool.HasTransaction(txID) {
 		return
 	}
 
 	if err := d.mempool.AddTransaction(tx, txData, aux); err != nil {
-		// Invalid or duplicate, ignore
+		if shouldPenalizeTxGossipRejection(err) {
+			d.penalizeInvalidGossipPeer(from, p2p.ScorePenaltyMisbehave, fmt.Sprintf("invalid transaction: %v", err))
+		}
 		return
 	}
+}
+
+func validateBlockCheapPrefilters(block *Block) error {
+	if block == nil {
+		return fmt.Errorf("nil block")
+	}
+	if block.Header.Version == 0 {
+		return fmt.Errorf("invalid block version")
+	}
+	if block.Size() > MaxBlockSize {
+		return fmt.Errorf("block too large: %d > %d", block.Size(), MaxBlockSize)
+	}
+	if len(block.Transactions) == 0 {
+		return fmt.Errorf("block has no transactions")
+	}
+	if !block.Transactions[0].IsCoinbase() {
+		return fmt.Errorf("first transaction is not coinbase")
+	}
+	for i := 1; i < len(block.Transactions); i++ {
+		if block.Transactions[i].IsCoinbase() {
+			return fmt.Errorf("multiple coinbase transactions")
+		}
+	}
+	return nil
+}
+
+func shouldPenalizeTxGossipRejection(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "validation failed:") ||
+		strings.Contains(msg, "coinbase transaction cannot be added to mempool") ||
+		strings.Contains(msg, "double-spend: key image already in mempool")
+}
+
+func (d *Daemon) penalizeInvalidGossipPeer(pid peer.ID, penalty int, reason string) {
+	if d.node == nil || pid == "" {
+		return
+	}
+	d.node.PenalizePeer(pid, penalty, reason)
 }
 
 // Chain status callbacks for sync manager
@@ -474,6 +563,9 @@ func (d *Daemon) processBlockData(data []byte) error {
 	var block Block
 	if err := json.Unmarshal(data, &block); err != nil {
 		return err
+	}
+	if err := validateBlockCheapPrefilters(&block); err != nil {
+		return fmt.Errorf("rejected p2p block at height %d: %w", block.Header.Height, err)
 	}
 
 	d.mu.Lock()

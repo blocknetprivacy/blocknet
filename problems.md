@@ -294,6 +294,58 @@ This file is a live backlog of negative findings only.
     - **Status:** fixed (2026-02-12)  
     - **What changed:** Added an explicit early guard in `mempool.go` `AddTransaction` that rejects `tx.IsCoinbase()` with a clear error before any mempool admission logic. The transaction validation path is now uniformly applied to admitted transactions only, with coinbase objects denied at the ingress boundary.
 
+35. [DONE] `critical` - RingCT input fields are not bound to the externally validated tx input fields  
+    - **Location:** `transaction.go` (`ValidateTransaction`, `verifyCommitmentBalance`), `crypto.go` (`VerifyRingCT`), `crypto-rs/src/ring.rs` (`blocknet_ringct_verify`)  
+    - **Problem:** External `TxInput.KeyImage` and `TxInput.PseudoOutput` are used for spent/balance checks, while signature verification validates only bytes in `RingSignature`; Rust verify derives key image/pseudo-output from signature payload and does not enforce equality with external fields.  
+    - **Impact:** Field-level tampering risk between signed payload and consensus-checked fields can enable spend/balance safety violations.  
+    - **Required fix:** Cryptographically bind and/or explicitly equality-check external input fields (`KeyImage`, `PseudoOutput`) against values extracted from verified signature payload before spent and balance checks.  
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Added explicit RingCT binding extraction in `crypto.go` (`ExtractRingCTBinding`) and enforced it in `ValidateTransaction` so each input now verifies that external `KeyImage` and `PseudoOutput` exactly match the key image and pseudo-output embedded in the verified RingCT signature payload. Spent-key-image checks now run only after this equality binding, ensuring double-spend and commitment-balance validation operate on cryptographically bound input fields.
+
+36. [DONE] `high` - Side-chain key image reuse is not prevented across fork blocks  
+    - **Location:** `block.go` (`ProcessBlock`, `validateBlockForProcessLocked`, key-image spent checks), storage key-image update paths  
+    - **Problem:** Non-main-chain block validation checks spent state from main-chain view, and fork-accepted blocks do not reserve/update spent-key-image state until reorg adoption.  
+    - **Impact:** Repeated key images can accumulate on side branches and survive validation until fork-choice transition.  
+    - **Required fix:** Enforce branch-aware key-image uniqueness/spent tracking across candidate fork chains during validation and storage of side-chain blocks.  
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Updated `validateBlockForProcessLocked` to use a branch-aware spent checker for non-genesis blocks. New logic walks the candidate parent ancestry and treats key images from off-main-chain ancestors as already spent during validation, while still consulting canonical main-chain spent state. This prevents accepting side-branch blocks that reuse key images already spent earlier on that same fork branch before reorg adoption.
+    - **Regression coverage:** Added `TestBranchAwareSpentCheckerIncludesSideBranchAncestry` in `block_branch_keyimage_test.go` to verify side-branch ancestor key images are treated as spent during candidate-branch validation, while unrelated side-branch key images are not.
+
+37. [DONE] `high` - P2P gossip ingress still permits expensive-validation DoS with weak direct penalties on some paths  
+    - **Location:** `daemon.go` (`handleBlock`, `handleTx`), expensive validation path in `block.go` (`validatePoW`), PoW params in `crypto-rs/src/pow.rs`  
+    - **Problem:** Invalid gossip payloads on daemon handlers are often dropped/returned without immediate sender penalty, while block validation includes expensive Argon2id work.  
+    - **Impact:** Attackers can repeatedly trigger costly validation work with limited deterrence in these ingress routes.  
+    - **Required fix:** Apply deterministic peer penalties/rate controls on invalid gossip at all ingress handlers, and ensure expensive-validation paths are guarded by cheap prefilters where possible.  
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Hardened daemon gossip ingress in `daemon.go` by adding deterministic peer penalties for malformed/invalid `handleBlock` and `handleTx` payloads, while still allowing duplicate tx gossip without penalty. Added cheap block prefilters (version/size/coinbase-shape checks) before `ProcessBlock` in both direct handler and sync ingest (`processBlockData`) so clearly-invalid blocks are rejected before expensive validation paths such as PoW.  
+    - **Regression coverage:** Added `TestHandleTxPenalizesMalformedPayload` and `TestHandleBlockPenalizesCheapPrefilterFailure` in `daemon_gossip_penalty_test.go`.
+
+38. [DONE] `medium` - Ring-member canonicality check is O(total_outputs) per ring member  
+    - **Location:** `block.go` (`isCanonicalRingMemberLocked`), `storage.go` (`GetAllOutputs`), `transaction.go` (`ValidateTransaction`)  
+    - **Problem:** Canonicality checks repeatedly scan all outputs for each ring member/commitment pair.  
+    - **Impact:** Validation cost scales poorly with chain growth and ring-member count, enabling practical computational DoS pressure.  
+    - **Required fix:** Introduce indexed canonical output lookup (keyed by pubkey+commitment or equivalent) and use O(1)/O(log n) membership checks in validation paths.  
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Replaced per-call output scans in `isCanonicalRingMemberLocked` with a canonical main-chain membership index keyed by `(pubkey||commitment)` in `Chain`. The index is rebuilt from main-chain height mapping and cached for O(1) lookups, with automatic refresh on tip changes and explicit dirtying on chain-state transitions (add/reorg/truncate/load), so validation no longer performs O(total_outputs) scans per ring member.  
+    - **Regression coverage:** Added `TestCanonicalRingIndexRefreshesAcrossReorgTipChange` in `block_canonical_index_test.go` to verify indexed canonical membership stays correct across tip changes/reorgs.
+
+39. [DONE] `medium` - SSE subscriber lifecycle leak causes unbounded subscriber growth  
+    - **Location:** `api_sse.go` (`handleEvents`), `daemon.go` (`SubscribeBlocks`, `SubscribeMinedBlocks`, notify paths)  
+    - **Problem:** SSE requests append subscriber channels but disconnect paths do not unsubscribe/remove channels from daemon subscriber sets.  
+    - **Impact:** Repeated connect/disconnect grows memory and fanout overhead over time.  
+    - **Required fix:** Add unsubscribe lifecycle management (or context-bound auto-cleanup) for block/mined subscriber channels on client disconnect.  
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Added explicit unsubscribe APIs in `daemon.go` (`UnsubscribeBlocks`, `UnsubscribeMinedBlocks`) and wired `api_sse.go` `handleEvents` to defer unsubscribe on disconnect. This ensures SSE subscriptions are removed when request context closes, preventing unbounded subscriber-slice growth across repeated client reconnects.  
+    - **Regression coverage:** Added `TestHandleEventsUnsubscribesOnClientDisconnect` in `api_sse_test.go` to verify subscribe-on-connect and unsubscribe-on-disconnect behavior for both block and mined-block channels.
+
+40. [DONE] `medium` - Docker compose deployment defaults are insecure for exposed environments  
+    - **Location:** `docker/docker-compose.yml`, API serving path in `api_server.go`  
+    - **Problem:** Defaults expose API on `0.0.0.0` and use weak default wallet password (`changeme`) under plain HTTP assumptions.  
+    - **Impact:** Elevated operational compromise risk for internet-exposed deployments.  
+    - **Required fix:** Harden defaults (loopback bind, required strong password input, explicit secure deployment guidance) and make unsafe defaults opt-in.  
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Hardened Docker defaults by removing weak password fallback in `docker/docker-compose.yml` (password now required), binding API/explorer published ports to localhost by default, and adding weak-password rejection in `docker/entrypoint.sh` unless explicitly overridden via `BLOCKNET_ALLOW_WEAK_WALLET_PASSWORD=true`. Added API bind safety warning in `api_server.go` for non-loopback listen addresses and updated `docker/README.md` with explicit secure-deployment guidance and localhost exposure defaults.
+
 ## Giant Work Queue
 
 ### P0 - Must ship immediately
@@ -336,6 +388,12 @@ This file is a live backlog of negative findings only.
 30. [DONE] Eliminate map mutations under read locks in chain cache code paths.
 31. [DONE] Route inbound `ProtocolTx` through Dandelion fluff semantics (or unified equivalent path).
 32. [DONE] Explicitly reject coinbase transactions at mempool admission boundary.
+33. [TODO] Bind RingCT external input fields (`key_image`, `pseudo_output`) to verified signature payload values.
+34. [TODO] Enforce side-chain/fork-aware key-image reuse prevention before reorg adoption.
+35. [TODO] Add deterministic penalties/abuse controls on all invalid gossip ingress paths that can trigger expensive validation.
+36. [TODO] Replace O(total_outputs) canonical ring-member scans with indexed lookup for validation paths.
+37. [TODO] Add SSE subscriber unsubscribe/cleanup lifecycle to prevent channel leak growth.
+38. [TODO] Harden docker-compose defaults for API exposure and wallet-password safety.
 
 ## High-Risk Regression Test Plan (real paths only, no mocks)
 
@@ -483,6 +541,51 @@ Place these in a common Go test helper file (suggested: `testhelpers_test.go`) s
     - **Assertions:** Explicit rejection error in both ingress routes; mempool contents unchanged.
     - **Suggested files:** `mempool_test.go` and daemon tx ingest tests (`daemon_tx_test.go`).
     - **Status:** implemented in `TestMempoolRejectsCoinbaseTransaction` and `TestDaemonTxIngestRejectsCoinbaseTransaction` (Go tests).
+
+15. [DONE] **RingCT binding extractor enforces signature layout and field decoding**
+    - **Scenario:** Parse RingCT signature payload for key-image/pseudo-output binding from well-formed and malformed signature lengths.
+    - **Primary path:** `crypto.go` `ExtractRingCTBinding`.
+    - **Test setup:** Construct signature byte slices with expected RingCT layout and intentionally invalid lengths.
+    - **Shared helpers:** none required.
+    - **Assertions:** Valid payload returns extracted key image/pseudo-output exactly; malformed length is rejected with error.
+    - **Suggested files:** `crypto_ffi_guard_test.go`.
+    - **Status:** implemented in `TestExtractRingCTBindingReturnsEmbeddedFields` and `TestExtractRingCTBindingRejectsInvalidSignatureLength` (Go tests).
+
+16. [DONE] **ValidateTransaction rejects tampered external key-image against signed RingCT payload**
+    - **Scenario:** Transaction has a valid RingCT signature, but external `TxInput.KeyImage` is modified after signing.
+    - **Primary path:** `transaction.go` `ValidateTransaction` binding check path + spent check sequencing.
+    - **Test setup:** Build/sign a real RingCT input, then mutate only external `KeyImage` before validation.
+    - **Shared helpers:** function checkers passed to `ValidateTransaction` (`isSpent`, `isCanonicalRingMember`).
+    - **Assertions:** Validation fails specifically on key-image binding mismatch before spent-state acceptance.
+    - **Suggested files:** `transaction_validation_test.go`.
+    - **Status:** implemented in `TestValidateTransactionRejectsTamperedRingCTExternalKeyImage` (Go tests).
+
+17. [DONE] **ValidateTransaction rejects tampered external pseudo-output against signed RingCT payload**
+    - **Scenario:** Transaction has a valid RingCT signature, but external `TxInput.PseudoOutput` is modified after signing.
+    - **Primary path:** `transaction.go` `ValidateTransaction` binding check path + `verifyCommitmentBalance`.
+    - **Test setup:** Build/sign a real RingCT input, then mutate only external `PseudoOutput` before validation.
+    - **Shared helpers:** function checkers passed to `ValidateTransaction` (`isSpent`, `isCanonicalRingMember`).
+    - **Assertions:** Validation fails on pseudo-output binding mismatch, preventing tampered fields from reaching balance acceptance.
+    - **Suggested files:** `transaction_validation_test.go`.
+    - **Status:** implemented in `TestValidateTransactionRejectsTamperedRingCTExternalPseudoOutput` (Go tests).
+
+18. [DONE] **Mempool ingress rejects tampered RingCT external key-image binding**
+    - **Scenario:** Transaction reaches mempool admission with an otherwise-valid RingCT input but externally tampered `TxInput.KeyImage`.
+    - **Primary path:** `mempool.go` `AddTransaction` -> `transaction.go` `ValidateTransaction` binding check.
+    - **Test setup:** Build/sign a valid RingCT test transaction, mutate only external key image, submit via mempool add path.
+    - **Shared helpers:** `mustBuildValidRingCTBindingTestTx`.
+    - **Assertions:** Mempool rejects with binding-mismatch error and remains empty.
+    - **Suggested files:** `mempool_test.go`.
+    - **Status:** implemented in `TestMempoolRejectsTamperedRingCTExternalKeyImage`; passing via `go test ./... -run TestMempoolRejectsTamperedRingCTExternalKeyImage -count=1`.
+
+19. [DONE] **Daemon tx ingest rejects tampered RingCT external key-image binding**
+    - **Scenario:** Transaction reaches daemon tx ingest with an otherwise-valid RingCT input but externally tampered `TxInput.KeyImage`.
+    - **Primary path:** `daemon.go` `processTxData` -> `mempool.go` `AddTransaction` -> `transaction.go` `ValidateTransaction` binding check.
+    - **Test setup:** Build/sign a valid RingCT test transaction, mutate only external key image, submit via daemon tx ingest path.
+    - **Shared helpers:** `mustCreateTestChain`, `mustAddGenesisBlock`, `mustStartTestDaemon`, `mustBuildValidRingCTBindingTestTx`.
+    - **Assertions:** Daemon ingest does not admit transaction into mempool; mempool remains empty.
+    - **Suggested files:** `daemon_tx_test.go`.
+    - **Status:** implemented in `TestDaemonTxIngestRejectsTamperedRingCTExternalKeyImage`; passing via `go test ./... -run TestDaemonTxIngestRejectsTamperedRingCTExternalKeyImage -count=1`.
 
 ### Deferred test restoration after bug crunch
 

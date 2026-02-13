@@ -30,11 +30,17 @@ func (s *APIServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// Subscribe to block events
 	blockCh := s.daemon.SubscribeBlocks()
 	minedCh := s.daemon.SubscribeMinedBlocks()
+	defer s.daemon.UnsubscribeBlocks(blockCh)
+	defer s.daemon.UnsubscribeMinedBlocks(minedCh)
 
 	// Send initial status so the client knows the connection is live
+	syncing := false
+	if s.daemon != nil && s.daemon.syncMgr != nil {
+		syncing = s.daemon.syncMgr.IsSyncing()
+	}
 	s.sendSSE(w, flusher, "connected", map[string]any{
 		"chain_height": s.daemon.Chain().Height(),
-		"syncing":      s.daemon.Stats().Syncing,
+		"syncing":      syncing,
 	})
 
 	// Keepalive ticker (SSE comment line to prevent proxies from killing idle connections)
@@ -84,4 +90,3 @@ func (s *APIServer) sendSSE(w http.ResponseWriter, flusher http.Flusher, event s
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload)
 	flusher.Flush()
 }
-

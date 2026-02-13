@@ -909,11 +909,6 @@ func ValidateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRi
 
 	// Check each input
 	for i, input := range tx.Inputs {
-		// Check key image not already spent
-		if isSpent(input.KeyImage) {
-			return fmt.Errorf("input %d: key image already spent (double-spend)", i)
-		}
-
 		// Verify ring size is exactly RingSize
 		if len(input.RingMembers) != RingSize {
 			return fmt.Errorf("input %d: ring size must be %d, got %d", i, RingSize, len(input.RingMembers))
@@ -930,13 +925,28 @@ func ValidateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRi
 		// Verify RingCT signature (proves key ownership AND amount equality)
 		sigHash := tx.SigningHash()
 		ringSig := &RingCTSignature{
-			Signature:    input.RingSignature,
-			RingSize:     len(input.RingMembers),
-			PseudoOutput: input.PseudoOutput,
+			Signature: input.RingSignature,
+			RingSize:  len(input.RingMembers),
 		}
 
 		if err := VerifyRingCT(input.RingMembers, input.RingCommitments, sigHash[:], ringSig); err != nil {
 			return fmt.Errorf("input %d: invalid RingCT signature: %w", i, err)
+		}
+
+		sigKeyImage, sigPseudoOutput, err := ExtractRingCTBinding(ringSig)
+		if err != nil {
+			return fmt.Errorf("input %d: invalid RingCT signature payload: %w", i, err)
+		}
+		if sigKeyImage != input.KeyImage {
+			return fmt.Errorf("input %d: key image does not match signed RingCT payload", i)
+		}
+		if sigPseudoOutput != input.PseudoOutput {
+			return fmt.Errorf("input %d: pseudo-output does not match signed RingCT payload", i)
+		}
+
+		// Check key image not already spent only after binding it to signature payload.
+		if isSpent(sigKeyImage) {
+			return fmt.Errorf("input %d: key image already spent (double-spend)", i)
 		}
 	}
 

@@ -16,15 +16,15 @@ services:
       - BLOCKNET_WALLET_FILE=/wallet/wallet.dat
       - BLOCKNET_LISTEN=/ip4/0.0.0.0/tcp/28080
       - BLOCKNET_API_ADDR=0.0.0.0:8332
-      - BLOCKNET_EXPLORER_ADDR=:8080
-      - BLOCKNET_WALLET_PASSWORD=${BLOCKNET_WALLET_PASSWORD:-changeme}
+      - BLOCKNET_EXPLORER_ADDR=0.0.0.0:8080
+      - BLOCKNET_WALLET_PASSWORD=${BLOCKNET_WALLET_PASSWORD?set BLOCKNET_WALLET_PASSWORD in docker/.env}
       - BLOCKNET_SEED_MODE=false
     
     # Port mappings
     ports:
       - "28080:28080"   # P2P network
-      - "8332:8332"     # API server
-      - "8080:8080"     # Block explorer
+      - "127.0.0.1:8332:8332"     # API server (localhost-only by default)
+      - "127.0.0.1:8080:8080"     # Block explorer (localhost-only by default)
     
     # Persistent storage
     volumes:

@@ -680,6 +680,13 @@ type Chain struct {
 
 	// Key image set (for double-spend checking)
 	keyImages map[[32]byte]uint64 // key_image -> height spent
+
+	// Indexed canonical ring-member membership for main-chain outputs.
+	// Key format: pubkey(32) || commitment(32).
+	canonicalRingIndex      map[[64]byte]struct{}
+	canonicalRingIndexDirty bool
+	canonicalRingIndexTip   [32]byte
+	canonicalRingIndexReady bool
 }
 
 // NewChain creates a new chain, loading state from storage
@@ -690,12 +697,15 @@ func NewChain(dataDir string) (*Chain, error) {
 	}
 
 	c := &Chain{
-		storage:    storage,
-		blocks:     make(map[[32]byte]*Block),
-		workAt:     make(map[[32]byte]uint64),
-		byHeight:   make(map[uint64][32]byte),
-		timestamps: make([]int64, 0, LWMAWindow+1),
-		keyImages:  make(map[[32]byte]uint64),
+		storage:                 storage,
+		blocks:                  make(map[[32]byte]*Block),
+		workAt:                  make(map[[32]byte]uint64),
+		byHeight:                make(map[uint64][32]byte),
+		timestamps:              make([]int64, 0, LWMAWindow+1),
+		keyImages:               make(map[[32]byte]uint64),
+		canonicalRingIndex:      make(map[[64]byte]struct{}),
+		canonicalRingIndexDirty: true,
+		canonicalRingIndexReady: false,
 	}
 
 	// Load chain state from storage
@@ -785,6 +795,8 @@ func (c *Chain) loadFromStorage() error {
 			c.workAt[h] = adjustedWork
 		}
 	}
+
+	c.canonicalRingIndexDirty = true
 
 	return nil
 }
@@ -989,6 +1001,7 @@ func (c *Chain) addBlockInternal(block *Block) error {
 	c.bestHash = hash
 	c.height = block.Header.Height
 	c.totalWork = blockWork
+	c.canonicalRingIndexDirty = true
 
 	// Track timestamp for LWMA
 	c.timestamps = append(c.timestamps, block.Header.Timestamp)
@@ -1057,14 +1070,64 @@ func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err
 }
 
 func (c *Chain) validateBlockForProcessLocked(block *Block) error {
+	isSpent := c.isKeyImageSpentLocked
+	if block != nil && block.Header.Height > 0 {
+		branchAwareSpent, err := c.branchAwareSpentCheckerLocked(block.Header.PrevHash)
+		if err != nil {
+			return err
+		}
+		isSpent = branchAwareSpent
+	}
+
 	return validateBlockWithContext(
 		block,
 		c.bestHash,
 		c.height,
 		c.getBlockByHashLocked,
-		c.isKeyImageSpentLocked,
+		isSpent,
 		c.isCanonicalRingMemberLocked,
 	)
+}
+
+// branchAwareSpentCheckerLocked returns a spent-check closure that includes
+// key images used on the candidate block's parent branch, even when those
+// ancestors are currently off-main-chain.
+func (c *Chain) branchAwareSpentCheckerLocked(parentHash [32]byte) (KeyImageChecker, error) {
+	branchSpent := make(map[[32]byte]struct{})
+	currentHash := parentHash
+
+	for {
+		parent := c.getBlockByHashLocked(currentHash)
+		if parent == nil {
+			return nil, ErrOrphanBlock
+		}
+
+		mainHashAtHeight, onMainHeight := c.byHeight[parent.Header.Height]
+		if onMainHeight && mainHashAtHeight == currentHash {
+			break
+		}
+
+		for _, tx := range parent.Transactions {
+			if tx.IsCoinbase() {
+				continue
+			}
+			for _, input := range tx.Inputs {
+				branchSpent[input.KeyImage] = struct{}{}
+			}
+		}
+
+		if parent.Header.Height == 0 {
+			break
+		}
+		currentHash = parent.Header.PrevHash
+	}
+
+	return func(keyImage [32]byte) bool {
+		if _, exists := branchSpent[keyImage]; exists {
+			return true
+		}
+		return c.isKeyImageSpentLocked(keyImage)
+	}, nil
 }
 
 func expectedDifficultyFromParent(parent *Block, getParent func([32]byte) *Block) (uint64, error) {
@@ -1179,53 +1242,58 @@ func (c *Chain) isKeyImageSpentLocked(keyImage [32]byte) bool {
 }
 
 func (c *Chain) isCanonicalRingMemberLocked(pubKey, commitment [32]byte) bool {
-	outputs, err := c.storage.GetAllOutputs()
-	if err != nil {
+	if err := c.ensureCanonicalRingIndexLocked(); err != nil {
 		return false
 	}
-	for _, output := range outputs {
-		if output.Output.PublicKey == pubKey && output.Output.Commitment == commitment {
-			if c.isOutputCanonicalOnMainChainLocked(output, pubKey, commitment) {
-				return true
+	_, ok := c.canonicalRingIndex[canonicalRingIndexKey(pubKey, commitment)]
+	return ok
+}
+
+func canonicalRingIndexKey(pubKey, commitment [32]byte) [64]byte {
+	var key [64]byte
+	copy(key[:32], pubKey[:])
+	copy(key[32:], commitment[:])
+	return key
+}
+
+func (c *Chain) ensureCanonicalRingIndexLocked() error {
+	tipHash, tipHeight, _, found := c.storage.GetTip()
+	if !found {
+		c.canonicalRingIndex = make(map[[64]byte]struct{})
+		c.canonicalRingIndexTip = [32]byte{}
+		c.canonicalRingIndexReady = true
+		c.canonicalRingIndexDirty = false
+		return nil
+	}
+
+	if !c.canonicalRingIndexDirty && c.canonicalRingIndexReady && c.canonicalRingIndexTip == tipHash {
+		return nil
+	}
+
+	index := make(map[[64]byte]struct{})
+	for h := uint64(0); h <= tipHeight; h++ {
+		hash, hasHeight := c.storage.GetBlockHashByHeight(h)
+		if !hasHeight {
+			return fmt.Errorf("canonical ring index missing block hash at height %d", h)
+		}
+
+		block := c.getBlockByHashLocked(hash)
+		if block == nil {
+			return fmt.Errorf("canonical ring index missing block data at height %d", h)
+		}
+
+		for _, tx := range block.Transactions {
+			for _, out := range tx.Outputs {
+				index[canonicalRingIndexKey(out.PublicKey, out.Commitment)] = struct{}{}
 			}
 		}
 	}
-	return false
-}
 
-func (c *Chain) isOutputCanonicalOnMainChainLocked(output *UTXO, pubKey, commitment [32]byte) bool {
-	if output == nil {
-		return false
-	}
-
-	mainHash, found := c.storage.GetBlockHashByHeight(output.BlockHeight)
-	if !found {
-		return false
-	}
-
-	block := c.getBlockByHashLocked(mainHash)
-	if block == nil {
-		return false
-	}
-
-	for _, tx := range block.Transactions {
-		txid, err := tx.TxID()
-		if err != nil || txid != output.TxID {
-			continue
-		}
-		idx := int(output.OutputIndex)
-		if idx >= len(tx.Outputs) {
-			return false
-		}
-		candidate := tx.Outputs[idx]
-		if candidate.PublicKey != pubKey || candidate.Commitment != commitment {
-			return false
-		}
-		return candidate.PublicKey == output.Output.PublicKey &&
-			candidate.Commitment == output.Output.Commitment
-	}
-
-	return false
+	c.canonicalRingIndex = index
+	c.canonicalRingIndexTip = tipHash
+	c.canonicalRingIndexReady = true
+	c.canonicalRingIndexDirty = false
+	return nil
 }
 
 func (c *Chain) medianTimestampLocked(n int) int64 {
@@ -1384,6 +1452,7 @@ func (c *Chain) reorganizeTo(newTip [32]byte) error {
 	c.bestHash = newTip
 	c.height = newBlock.Header.Height
 	c.totalWork = c.workAt[newTip]
+	c.canonicalRingIndexDirty = true
 
 	return nil
 }
@@ -1518,6 +1587,7 @@ func (c *Chain) TruncateToHeight(keepHeight uint64) error {
 	c.bestHash = newHash
 	c.height = keepHeight
 	c.totalWork = newWork
+	c.canonicalRingIndexDirty = true
 
 	// Rebuild timestamps window from the kept chain
 	c.timestamps = nil

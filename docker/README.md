@@ -17,7 +17,7 @@ docker-compose up -d
 # View logs
 docker-compose logs -f blocknet-node
 
-# Check status
+# Check status (API is localhost-bound by default in compose ports)
 curl http://localhost:8332/api/status
 ```
 
@@ -36,8 +36,15 @@ Environment variables in `.env`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BLOCKNET_WALLET_PASSWORD` | (required) | Wallet encryption password |
+| `BLOCKNET_ALLOW_WEAK_WALLET_PASSWORD` | `false` | Opt-in unsafe bypass for weak passwords |
 | `BLOCKNET_AUTO_MINE` | `false` | Start mining automatically |
 | `BLOCKNET_MINE_THREADS` | `1` | Mining threads (~2GB RAM each) |
+
+### Security defaults
+
+- Docker compose publishes API/explorer ports on `127.0.0.1` by default.
+- Weak wallet passwords are rejected by default (`changeme` and `<12` chars).
+- To expose API/explorer beyond localhost, explicitly change the `ports:` bindings in `docker-compose.yml`.
 
 ## Mining
 

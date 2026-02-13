@@ -48,7 +48,20 @@ run_daemon() {
         echo "This is required for wallet encryption"
         exit 1
     fi
-    
+
+    if [ "${BLOCKNET_ALLOW_WEAK_WALLET_PASSWORD}" != "true" ]; then
+        if [ "$BLOCKNET_WALLET_PASSWORD" = "changeme" ]; then
+            echo "Error: weak wallet password 'changeme' is not allowed by default"
+            echo "Set a strong BLOCKNET_WALLET_PASSWORD or set BLOCKNET_ALLOW_WEAK_WALLET_PASSWORD=true to opt in (unsafe)"
+            exit 1
+        fi
+        if [ "${#BLOCKNET_WALLET_PASSWORD}" -lt 12 ]; then
+            echo "Error: BLOCKNET_WALLET_PASSWORD must be at least 12 characters by default"
+            echo "Set BLOCKNET_ALLOW_WEAK_WALLET_PASSWORD=true to opt in (unsafe)"
+            exit 1
+        fi
+    fi
+
     if [ -f "$BLOCKNET_WALLET_FILE" ]; then
         # Existing wallet - send password once
         echo "Opening existing wallet..."
