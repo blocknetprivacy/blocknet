@@ -1185,9 +1185,46 @@ func (c *Chain) isCanonicalRingMemberLocked(pubKey, commitment [32]byte) bool {
 	}
 	for _, output := range outputs {
 		if output.Output.PublicKey == pubKey && output.Output.Commitment == commitment {
-			return true
+			if c.isOutputCanonicalOnMainChainLocked(output, pubKey, commitment) {
+				return true
+			}
 		}
 	}
+	return false
+}
+
+func (c *Chain) isOutputCanonicalOnMainChainLocked(output *UTXO, pubKey, commitment [32]byte) bool {
+	if output == nil {
+		return false
+	}
+
+	mainHash, found := c.storage.GetBlockHashByHeight(output.BlockHeight)
+	if !found {
+		return false
+	}
+
+	block := c.getBlockByHashLocked(mainHash)
+	if block == nil {
+		return false
+	}
+
+	for _, tx := range block.Transactions {
+		txid, err := tx.TxID()
+		if err != nil || txid != output.TxID {
+			continue
+		}
+		idx := int(output.OutputIndex)
+		if idx >= len(tx.Outputs) {
+			return false
+		}
+		candidate := tx.Outputs[idx]
+		if candidate.PublicKey != pubKey || candidate.Commitment != commitment {
+			return false
+		}
+		return candidate.PublicKey == output.Output.PublicKey &&
+			candidate.Commitment == output.Output.Commitment
+	}
+
 	return false
 }
 

@@ -651,11 +651,12 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 					}
 
 					var rescue [][]byte
+					var rescuePeer peer.ID
 					for attempt := 0; attempt < 3; attempt++ {
 						if ctx.Err() != nil {
 							return
 						}
-						rescue = sm.fetchBlocksFromAnyPeer(peers, nextHeight, batchSize)
+						rescue, rescuePeer = sm.fetchBlocksFromAnyPeer(peers, nextHeight, batchSize)
 						if len(rescue) > 0 {
 							break
 						}
@@ -671,6 +672,7 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 						return
 					}
 					blockData = rescue[0]
+					sourcePeer = rescuePeer
 					// Buffer the rest so we don't stall again immediately
 					if len(rescue) > 1 {
 						sm.mu.Lock()
@@ -678,6 +680,7 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 							sm.downloadBuffer[nextHeight+uint64(i)] = DownloadedBlock{
 								Height: nextHeight + uint64(i),
 								Data:   rescue[i],
+								Peer:   rescuePeer,
 							}
 						}
 						sm.mu.Unlock()
@@ -1111,9 +1114,10 @@ func (sm *SyncManager) FetchBlocks(ctx context.Context, p peer.ID, hashes [][32]
 // fetchBlocksFromAnyPeer fires concurrent requests to ALL peers for the same
 // block range and returns the first successful batch. This ensures a single
 // slow or dead peer can't stall the sync.
-func (sm *SyncManager) fetchBlocksFromAnyPeer(peers []PeerStatus, startHeight uint64, count int) [][]byte {
+func (sm *SyncManager) fetchBlocksFromAnyPeer(peers []PeerStatus, startHeight uint64, count int) ([][]byte, peer.ID) {
 	type result struct {
 		blocks [][]byte
+		peer   peer.ID
 	}
 
 	ch := make(chan result, len(peers))
@@ -1123,7 +1127,7 @@ func (sm *SyncManager) fetchBlocksFromAnyPeer(peers []PeerStatus, startHeight ui
 			if err != nil || len(blocks) == 0 {
 				ch <- result{}
 			} else {
-				ch <- result{blocks: blocks}
+				ch <- result{blocks: blocks, peer: p}
 			}
 		}(ps.Peer)
 	}
@@ -1132,14 +1136,14 @@ func (sm *SyncManager) fetchBlocksFromAnyPeer(peers []PeerStatus, startHeight ui
 		select {
 		case r := <-ch:
 			if len(r.blocks) > 0 {
-				return r.blocks
+				return r.blocks, r.peer
 			}
 		case <-sm.ctx.Done():
-			return nil
+			return nil, ""
 		}
 	}
 
-	return nil
+	return nil, ""
 }
 
 // fetchBlocksByHeight requests blocks by height range (internal for sync)

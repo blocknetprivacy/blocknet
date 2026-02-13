@@ -139,7 +139,7 @@ func runTests() {
 		return
 	}
 	defer chain.Close()
-	err = chain.addBlockInternal(genesis)
+	err = chain.addGenesisBlock(genesis)
 	if err != nil {
 		log.Fatalf("Failed to add genesis: %v", err)
 	}
@@ -181,7 +181,10 @@ func testLWMA() {
 	defer chain.Close()
 	stealthKeys, _ := GenerateStealthKeys()
 	genesis, _ := CreateGenesisBlock(stealthKeys.SpendPubKey, stealthKeys.ViewPubKey, GetBlockReward(0))
-	chain.addBlockInternal(genesis)
+	if err := chain.addGenesisBlock(genesis); err != nil {
+		fmt.Printf("Failed to add genesis: %v\n", err)
+		return
+	}
 
 	// Add blocks at target interval
 	for i := 0; i < 60; i++ {
@@ -193,7 +196,10 @@ func testLWMA() {
 				Difficulty: chain.NextDifficulty(),
 			},
 		}
-		chain.addBlockInternal(block)
+		if _, _, err := chain.ProcessBlock(block); err != nil {
+			fmt.Printf("Failed to add block %d: %v\n", block.Header.Height, err)
+			return
+		}
 	}
 
 	baseDiff := chain.NextDifficulty()
@@ -209,7 +215,10 @@ func testLWMA() {
 				Difficulty: chain.NextDifficulty(),
 			},
 		}
-		chain.addBlockInternal(block)
+		if _, _, err := chain.ProcessBlock(block); err != nil {
+			fmt.Printf("Failed to add block %d: %v\n", block.Header.Height, err)
+			return
+		}
 	}
 
 	fastDiff := chain.NextDifficulty()
@@ -245,7 +254,10 @@ func testMining(stealthKeys *StealthKeys) {
 	}
 	defer chain.Close()
 	genesis, _ := CreateGenesisBlock(stealthKeys.SpendPubKey, stealthKeys.ViewPubKey, GetBlockReward(0))
-	chain.addBlockInternal(genesis)
+	if err := chain.addGenesisBlock(genesis); err != nil {
+		fmt.Printf("Failed to add genesis: %v\n", err)
+		return
+	}
 
 	target := DifficultyToTarget(MinDifficulty)
 	fmt.Printf("Current target: %x...\n", target[:8])
@@ -269,7 +281,10 @@ func testForkChoice(stealthKeys *StealthKeys) {
 	defer chain.Close()
 	genesis, _ := CreateGenesisBlock(stealthKeys.SpendPubKey, stealthKeys.ViewPubKey, GetBlockReward(0))
 	genesisHash := genesis.Hash()
-	chain.addBlockInternal(genesis)
+	if err := chain.addGenesisBlock(genesis); err != nil {
+		fmt.Printf("Failed to add genesis: %v\n", err)
+		return
+	}
 
 	// Main chain: genesis -> A -> B
 	blockA := &Block{
@@ -280,7 +295,10 @@ func testForkChoice(stealthKeys *StealthKeys) {
 			Difficulty: MinDifficulty,
 		},
 	}
-	chain.addBlockInternal(blockA)
+	if _, _, err := chain.ProcessBlock(blockA); err != nil {
+		fmt.Printf("Failed to add block A: %v\n", err)
+		return
+	}
 
 	blockB := &Block{
 		Header: BlockHeader{
@@ -290,7 +308,10 @@ func testForkChoice(stealthKeys *StealthKeys) {
 			Difficulty: MinDifficulty,
 		},
 	}
-	chain.addBlockInternal(blockB)
+	if _, _, err := chain.ProcessBlock(blockB); err != nil {
+		fmt.Printf("Failed to add block B: %v\n", err)
+		return
+	}
 
 	fmt.Printf("Main chain: genesis -> A -> B (height=%d, work=%d)\n", chain.Height(), chain.TotalWork())
 
@@ -420,7 +441,10 @@ func testMiner(stealthKeys *StealthKeys) {
 	}
 	defer chain.Close()
 	genesis, _ := CreateGenesisBlock(stealthKeys.SpendPubKey, stealthKeys.ViewPubKey, GetBlockReward(0))
-	chain.addBlockInternal(genesis)
+	if err := chain.addGenesisBlock(genesis); err != nil {
+		fmt.Printf("Failed to add genesis: %v\n", err)
+		return
+	}
 
 	miner := NewMiner(chain, nil, MinerConfig{
 		MinerSpendPub: stealthKeys.SpendPubKey,
