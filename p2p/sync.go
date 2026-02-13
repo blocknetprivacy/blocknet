@@ -191,8 +191,15 @@ func (sm *SyncManager) Stop() {
 
 // HandleStream handles incoming sync protocol streams
 func (sm *SyncManager) HandleStream(s network.Stream) {
-	defer s.Close()
-	s.SetDeadline(time.Now().Add(60 * time.Second))
+	defer func() {
+		if err := s.Close(); err != nil {
+			log.Printf("failed to close inbound sync stream: %v", err)
+		}
+	}()
+	if err := s.SetDeadline(time.Now().Add(60 * time.Second)); err != nil {
+		log.Printf("sync stream deadline setup failed for %s: %v", s.Conn().RemotePeer(), err)
+		return
+	}
 
 	msgType, data, err := readSyncMessage(s)
 	if err != nil {
@@ -225,7 +232,9 @@ func (sm *SyncManager) handleStatus(s network.Stream, data []byte) {
 	// Send our status back
 	ourStatus := sm.getStatus()
 	statusData, _ := json.Marshal(ourStatus)
-	writeMessage(s, SyncMsgStatus, statusData)
+	if err := writeMessage(s, SyncMsgStatus, statusData); err != nil {
+		return
+	}
 
 	// Check if we need to sync from this peer
 	if status.TotalWork > ourStatus.TotalWork {
@@ -252,7 +261,9 @@ func (sm *SyncManager) handleGetHeaders(s network.Stream, data []byte) {
 	// Send headers
 	headers = trimByteSliceBatch(headers, MaxHeadersPerRequest, SyncHeadersResponseByteBudget)
 	headersData, _ := json.Marshal(headers)
-	writeMessage(s, SyncMsgHeaders, headersData)
+	if err := writeMessage(s, SyncMsgHeaders, headersData); err != nil {
+		return
+	}
 }
 
 // handleGetBlocks responds to a blocks request
@@ -274,7 +285,9 @@ func (sm *SyncManager) handleGetBlocks(s network.Stream, data []byte) {
 	// Send blocks
 	blocks = trimByteSliceBatch(blocks, MaxBlocksPerRequest, SyncBlocksResponseByteBudget)
 	blocksData, _ := json.Marshal(blocks)
-	writeMessage(s, SyncMsgBlocks, blocksData)
+	if err := writeMessage(s, SyncMsgBlocks, blocksData); err != nil {
+		return
+	}
 }
 
 // handleGetBlocksByHeight handles requests for blocks by height range
@@ -285,7 +298,9 @@ func (sm *SyncManager) handleGetBlocksByHeight(s network.Stream, data []byte) {
 	}
 
 	if req.MaxBlocks <= 0 {
-		writeMessage(s, SyncMsgBlocks, []byte("[]"))
+		if err := writeMessage(s, SyncMsgBlocks, []byte("[]")); err != nil {
+			return
+		}
 		return
 	}
 
@@ -295,7 +310,9 @@ func (sm *SyncManager) handleGetBlocksByHeight(s network.Stream, data []byte) {
 
 	localTip := sm.getStatus().Height
 	if req.StartHeight > localTip {
-		writeMessage(s, SyncMsgBlocks, []byte("[]"))
+		if err := writeMessage(s, SyncMsgBlocks, []byte("[]")); err != nil {
+			return
+		}
 		return
 	}
 
@@ -311,7 +328,9 @@ func (sm *SyncManager) handleGetBlocksByHeight(s network.Stream, data []byte) {
 
 	blocks = trimByteSliceBatch(blocks, MaxBlocksPerRequest, SyncBlocksResponseByteBudget)
 	blocksData, _ := json.Marshal(blocks)
-	writeMessage(s, SyncMsgBlocks, blocksData)
+	if err := writeMessage(s, SyncMsgBlocks, blocksData); err != nil {
+		return
+	}
 }
 
 // handleNewBlock processes a new block announcement and relays to other peers
@@ -347,9 +366,15 @@ func (sm *SyncManager) relayBlock(from peer.ID, data []byte) {
 			if err != nil {
 				return
 			}
-			defer s.Close()
+			defer func() {
+				if err := s.Close(); err != nil {
+					log.Printf("failed to close relay sync stream to %s: %v", pid, err)
+				}
+			}()
 
-			writeMessage(s, SyncMsgNewBlock, data)
+			if err := writeMessage(s, SyncMsgNewBlock, data); err != nil {
+				return
+			}
 		}(p)
 	}
 }
@@ -357,7 +382,9 @@ func (sm *SyncManager) relayBlock(from peer.ID, data []byte) {
 // handleGetMempool responds to a mempool request
 func (sm *SyncManager) handleGetMempool(s network.Stream) {
 	if sm.getMempool == nil {
-		writeMessage(s, SyncMsgMempool, []byte("[]"))
+		if err := writeMessage(s, SyncMsgMempool, []byte("[]")); err != nil {
+			return
+		}
 		return
 	}
 
@@ -365,11 +392,15 @@ func (sm *SyncManager) handleGetMempool(s network.Stream) {
 	txs = trimByteSliceBatch(txs, MaxSyncMempoolTxCount, SyncMempoolResponseByteBudget)
 	data, err := json.Marshal(txs)
 	if err != nil {
-		writeMessage(s, SyncMsgMempool, []byte("[]"))
+		if err := writeMessage(s, SyncMsgMempool, []byte("[]")); err != nil {
+			return
+		}
 		return
 	}
 
-	writeMessage(s, SyncMsgMempool, data)
+	if err := writeMessage(s, SyncMsgMempool, data); err != nil {
+		return
+	}
 }
 
 // syncLoop periodically checks if we need to sync
@@ -488,8 +519,14 @@ func (sm *SyncManager) getStatusFrom(p peer.ID) (ChainStatus, error) {
 	if err != nil {
 		return ChainStatus{}, err
 	}
-	defer s.Close()
-	s.SetDeadline(time.Now().Add(30 * time.Second))
+	defer func() {
+		if err := s.Close(); err != nil {
+			log.Printf("failed to close status sync stream to %s: %v", p, err)
+		}
+	}()
+	if err := s.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return ChainStatus{}, err
+	}
 
 	// Send our status
 	ourStatus := sm.getStatus()
@@ -702,7 +739,7 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 
 			// Log progress every 50 blocks
 			if nextHeight%50 == 0 || nextHeight == targetHeight+1 {
-				// log.Printf("[sync] progress: %d/%d (%.1f%%)", nextHeight-1, targetHeight, float64(nextHeight-1)/float64(targetHeight)*100)
+				log.Printf("[sync] progress: %d/%d (%.1f%%)", nextHeight-1, targetHeight, float64(nextHeight-1)/float64(targetHeight)*100)
 			}
 		}
 	}()
@@ -724,7 +761,7 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 	// After syncing blocks, request mempool from first peer
 	if len(peers) > 0 && sm.getMempool != nil && sm.processTx != nil {
 		if err := sm.fetchAndProcessMempool(peers[0].Peer); err != nil {
-			// log.Printf("[sync] failed to fetch mempool: %v", err)
+			log.Printf("[sync] failed to fetch mempool: %v", err)
 		}
 	}
 
@@ -1033,49 +1070,6 @@ func (sm *SyncManager) syncFrom(p peer.ID, peerStatus ChainStatus) {
 	sm.parallelSyncFrom(peers, peerStatus.Height)
 }
 
-// fetchHeaders fetches headers from a peer
-func (sm *SyncManager) fetchHeaders(p peer.ID, startHeight uint64, max int) ([][]byte, error) {
-	ctx, cancel := context.WithTimeout(sm.ctx, 60*time.Second)
-	defer cancel()
-
-	s, err := sm.node.host.NewStream(ctx, p, ProtocolSync)
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
-	s.SetDeadline(time.Now().Add(60 * time.Second))
-
-	// Send request
-	req := HeadersRequest{
-		StartHeight: startHeight,
-		MaxHeaders:  max,
-	}
-	reqData, _ := json.Marshal(req)
-	if err := writeMessage(s, SyncMsgGetHeaders, reqData); err != nil {
-		return nil, err
-	}
-
-	// Read response
-	msgType, data, err := readSyncMessage(s)
-	if err != nil {
-		return nil, err
-	}
-
-	if msgType != SyncMsgHeaders {
-		return nil, fmt.Errorf("unexpected message type: %d", msgType)
-	}
-	if err := ensureJSONArrayMaxItems(data, MaxHeadersPerRequest); err != nil {
-		return nil, fmt.Errorf("invalid headers response: %w", err)
-	}
-
-	var headers [][]byte
-	if err := json.Unmarshal(data, &headers); err != nil {
-		return nil, err
-	}
-
-	return headers, nil
-}
-
 // FetchBlocks fetches full blocks from a peer
 func (sm *SyncManager) FetchBlocks(ctx context.Context, p peer.ID, hashes [][32]byte) ([][]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
@@ -1085,8 +1079,14 @@ func (sm *SyncManager) FetchBlocks(ctx context.Context, p peer.ID, hashes [][32]
 	if err != nil {
 		return nil, err
 	}
-	defer s.Close()
-	s.SetDeadline(time.Now().Add(120 * time.Second))
+	defer func() {
+		if err := s.Close(); err != nil {
+			log.Printf("failed to close blocks sync stream to %s: %v", p, err)
+		}
+	}()
+	if err := s.SetDeadline(time.Now().Add(120 * time.Second)); err != nil {
+		return nil, err
+	}
 
 	req := BlocksRequest{Hashes: hashes}
 	reqData, _ := json.Marshal(req)
@@ -1158,8 +1158,14 @@ func (sm *SyncManager) fetchBlocksByHeight(p peer.ID, startHeight uint64, max in
 	if err != nil {
 		return nil, err
 	}
-	defer s.Close()
-	s.SetDeadline(time.Now().Add(120 * time.Second))
+	defer func() {
+		if err := s.Close(); err != nil {
+			log.Printf("failed to close blocks-by-height sync stream to %s: %v", p, err)
+		}
+	}()
+	if err := s.SetDeadline(time.Now().Add(120 * time.Second)); err != nil {
+		return nil, err
+	}
 
 	req := BlocksByHeightRequest{
 		StartHeight: startHeight,
@@ -1203,9 +1209,15 @@ func (sm *SyncManager) BroadcastBlock(blockData []byte) {
 			if err != nil {
 				return
 			}
-			defer s.Close()
+			defer func() {
+				if err := s.Close(); err != nil {
+					log.Printf("failed to close broadcast sync stream to %s: %v", pid, err)
+				}
+			}()
 
-			writeMessage(s, SyncMsgNewBlock, blockData)
+			if err := writeMessage(s, SyncMsgNewBlock, blockData); err != nil {
+				return
+			}
 		}(p)
 	}
 }
@@ -1238,8 +1250,14 @@ func (sm *SyncManager) fetchAndProcessMempool(p peer.ID) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
-	s.SetDeadline(time.Now().Add(60 * time.Second))
+	defer func() {
+		if err := s.Close(); err != nil {
+			log.Printf("failed to close mempool sync stream to %s: %v", p, err)
+		}
+	}()
+	if err := s.SetDeadline(time.Now().Add(60 * time.Second)); err != nil {
+		return err
+	}
 
 	// Request mempool
 	if err := writeMessage(s, SyncMsgGetMempool, []byte{}); err != nil {
@@ -1270,8 +1288,12 @@ func (sm *SyncManager) fetchAndProcessMempool(p peer.ID) error {
 
 	// Process each transaction
 	for _, txData := range txs {
-		// Ignore errors - some txs might be duplicates or invalid
-		sm.processTx(txData)
+		// Ignore errors - some txs might be duplicates or invalid.
+		if sm.processTx != nil {
+			if err := sm.processTx(txData); err != nil {
+				continue
+			}
+		}
 	}
 
 	return nil

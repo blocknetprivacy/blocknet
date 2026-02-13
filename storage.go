@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -81,7 +82,9 @@ func NewStorage(dataDir string) (*Storage, error) {
 		return nil
 	})
 	if err != nil {
-		db.Close()
+		if closeErr := db.Close(); closeErr != nil {
+			return nil, fmt.Errorf("failed to create buckets: %w (additionally failed to close db: %v)", err, closeErr)
+		}
 		return nil, fmt.Errorf("failed to create buckets: %w", err)
 	}
 
@@ -137,10 +140,13 @@ func (s *Storage) GetBlock(hash [32]byte) (*Block, error) {
 // HasBlock checks if a block exists
 func (s *Storage) HasBlock(hash [32]byte) bool {
 	var exists bool
-	s.db.View(func(tx *bolt.Tx) error {
+	if err := s.db.View(func(tx *bolt.Tx) error {
 		exists = tx.Bucket(bucketBlocks).Get(hash[:]) != nil
 		return nil
-	})
+	}); err != nil {
+		log.Printf("storage HasBlock view failed: %v", err)
+		return false
+	}
 	return exists
 }
 
@@ -164,14 +170,17 @@ func (s *Storage) GetBlockHashByHeight(height uint64) ([32]byte, bool) {
 	var hash [32]byte
 	var found bool
 
-	s.db.View(func(tx *bolt.Tx) error {
+	if err := s.db.View(func(tx *bolt.Tx) error {
 		data := tx.Bucket(bucketHeights).Get(key)
 		if data != nil {
 			copy(hash[:], data)
 			found = true
 		}
 		return nil
-	})
+	}); err != nil {
+		log.Printf("storage GetBlockHashByHeight view failed: %v", err)
+		return [32]byte{}, false
+	}
 
 	return hash, found
 }
@@ -251,10 +260,13 @@ func (s *Storage) GetAllOutputs() ([]*UTXO, error) {
 // CountOutputs returns total number of outputs
 func (s *Storage) CountOutputs() int {
 	var count int
-	s.db.View(func(tx *bolt.Tx) error {
+	if err := s.db.View(func(tx *bolt.Tx) error {
 		count = tx.Bucket(bucketOutputs).Stats().KeyN
 		return nil
-	})
+	}); err != nil {
+		log.Printf("storage CountOutputs view failed: %v", err)
+		return 0
+	}
 	return count
 }
 
@@ -274,7 +286,7 @@ func (s *Storage) MarkKeyImageSpent(keyImage [32]byte, height uint64) error {
 
 // IsKeyImageSpent checks if a key image has been used
 func (s *Storage) IsKeyImageSpent(keyImage [32]byte) (spent bool, height uint64) {
-	s.db.View(func(tx *bolt.Tx) error {
+	if err := s.db.View(func(tx *bolt.Tx) error {
 		data := tx.Bucket(bucketKeyImages).Get(keyImage[:])
 		if data != nil {
 			spent = true
@@ -283,7 +295,10 @@ func (s *Storage) IsKeyImageSpent(keyImage [32]byte) (spent bool, height uint64)
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		log.Printf("storage IsKeyImageSpent view failed: %v", err)
+		return false, 0
+	}
 	return
 }
 
@@ -297,10 +312,13 @@ func (s *Storage) UnmarkKeyImageSpent(keyImage [32]byte) error {
 // GetSpentKeyImageCount returns number of spent key images
 func (s *Storage) GetSpentKeyImageCount() int {
 	var count int
-	s.db.View(func(tx *bolt.Tx) error {
+	if err := s.db.View(func(tx *bolt.Tx) error {
 		count = tx.Bucket(bucketKeyImages).Stats().KeyN
 		return nil
-	})
+	}); err != nil {
+		log.Printf("storage GetSpentKeyImageCount view failed: %v", err)
+		return 0
+	}
 	return count
 }
 
@@ -310,7 +328,7 @@ func (s *Storage) GetSpentKeyImageCount() int {
 
 // GetTip returns the best block hash and height
 func (s *Storage) GetTip() (hash [32]byte, height uint64, work uint64, found bool) {
-	s.db.View(func(tx *bolt.Tx) error {
+	if err := s.db.View(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(bucketMeta)
 
 		if data := meta.Get(metaKeyTip); data != nil {
@@ -327,7 +345,10 @@ func (s *Storage) GetTip() (hash [32]byte, height uint64, work uint64, found boo
 		}
 
 		return nil
-	})
+	}); err != nil {
+		log.Printf("storage GetTip view failed: %v", err)
+		return [32]byte{}, 0, 0, false
+	}
 	return
 }
 

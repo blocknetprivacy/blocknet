@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -138,7 +137,11 @@ func runTests() {
 		fmt.Printf("Failed to create chain: %v\n", err)
 		return
 	}
-	defer chain.Close()
+	defer func() {
+		if err := chain.Close(); err != nil {
+			fmt.Printf("Warning: failed to close test chain: %v\n", err)
+		}
+	}()
 	err = chain.addGenesisBlock(genesis)
 	if err != nil {
 		log.Fatalf("Failed to add genesis: %v", err)
@@ -178,7 +181,11 @@ func testLWMA() {
 		fmt.Printf("Failed to create chain: %v\n", err)
 		return
 	}
-	defer chain.Close()
+	defer func() {
+		if err := chain.Close(); err != nil {
+			fmt.Printf("Warning: failed to close test chain: %v\n", err)
+		}
+	}()
 	stealthKeys, _ := GenerateStealthKeys()
 	genesis, _ := CreateGenesisBlock(stealthKeys.SpendPubKey, stealthKeys.ViewPubKey, GetBlockReward(0))
 	if err := chain.addGenesisBlock(genesis); err != nil {
@@ -252,7 +259,11 @@ func testMining(stealthKeys *StealthKeys) {
 		fmt.Printf("Failed to create chain: %v\n", err)
 		return
 	}
-	defer chain.Close()
+	defer func() {
+		if err := chain.Close(); err != nil {
+			fmt.Printf("Warning: failed to close test chain: %v\n", err)
+		}
+	}()
 	genesis, _ := CreateGenesisBlock(stealthKeys.SpendPubKey, stealthKeys.ViewPubKey, GetBlockReward(0))
 	if err := chain.addGenesisBlock(genesis); err != nil {
 		fmt.Printf("Failed to add genesis: %v\n", err)
@@ -278,7 +289,11 @@ func testForkChoice(stealthKeys *StealthKeys) {
 		fmt.Printf("Failed to create chain: %v\n", err)
 		return
 	}
-	defer chain.Close()
+	defer func() {
+		if err := chain.Close(); err != nil {
+			fmt.Printf("Warning: failed to close test chain: %v\n", err)
+		}
+	}()
 	genesis, _ := CreateGenesisBlock(stealthKeys.SpendPubKey, stealthKeys.ViewPubKey, GetBlockReward(0))
 	genesisHash := genesis.Hash()
 	if err := chain.addGenesisBlock(genesis); err != nil {
@@ -431,38 +446,6 @@ func testRingCT() {
 	}
 
 	fmt.Println("\n✓ RingCT working! Inflation attacks are prevented.")
-}
-
-func testMiner(stealthKeys *StealthKeys) {
-	chain, err := NewChain("./data_test_miner2")
-	if err != nil {
-		fmt.Printf("Failed to create chain: %v\n", err)
-		return
-	}
-	defer chain.Close()
-	genesis, _ := CreateGenesisBlock(stealthKeys.SpendPubKey, stealthKeys.ViewPubKey, GetBlockReward(0))
-	if err := chain.addGenesisBlock(genesis); err != nil {
-		fmt.Printf("Failed to add genesis: %v\n", err)
-		return
-	}
-
-	miner := NewMiner(chain, nil, MinerConfig{
-		MinerSpendPub: stealthKeys.SpendPubKey,
-		MinerViewPub:  stealthKeys.ViewPubKey,
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	blockChan := make(chan *Block, 1)
-	go miner.Start(ctx, blockChan)
-
-	select {
-	case block := <-blockChan:
-		fmt.Printf("Mined block at height %d!\n", block.Header.Height)
-	case <-ctx.Done():
-		fmt.Println("Mining test timed out (expected with high difficulty)")
-	}
 }
 
 // testHashDerivedBlindings tests that hash-derived blinding factors work correctly.

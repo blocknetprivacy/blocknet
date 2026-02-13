@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -30,7 +31,9 @@ func writeCookie(dataDir, token string) error {
 
 // deleteCookie removes the cookie file.
 func deleteCookie(dataDir string) {
-	os.Remove(filepath.Join(dataDir, cookieFilename))
+	if err := os.Remove(filepath.Join(dataDir, cookieFilename)); err != nil && !os.IsNotExist(err) {
+		log.Printf("Warning: failed to remove API cookie file: %v", err)
+	}
 }
 
 // authMiddleware rejects requests that don't carry a valid Bearer token.

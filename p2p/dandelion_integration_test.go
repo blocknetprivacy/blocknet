@@ -45,9 +45,17 @@ func mustConnectNodes(t *testing.T, from, to *Node) {
 
 func TestHandleStemStream_PenalizesMalformedStemPayload(t *testing.T) {
 	a := mustNewTestNode(t)
-	defer a.Stop()
+	defer func() {
+		if err := a.Stop(); err != nil {
+			t.Errorf("failed to stop node a: %v", err)
+		}
+	}()
 	b := mustNewTestNode(t)
-	defer b.Stop()
+	defer func() {
+		if err := b.Stop(); err != nil {
+			t.Errorf("failed to stop node b: %v", err)
+		}
+	}()
 
 	mustConnectNodes(t, a, b)
 	b.SetStemSanityValidator(func(data []byte) bool { return false })
@@ -62,7 +70,9 @@ func TestHandleStemStream_PenalizesMalformedStemPayload(t *testing.T) {
 	if err := writeLengthPrefixed(s, []byte("malformed-stem")); err != nil {
 		t.Fatalf("failed to write stem payload: %v", err)
 	}
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatalf("failed to close dandelion stream: %v", err)
+	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -77,7 +87,11 @@ func TestHandleStemStream_PenalizesMalformedStemPayload(t *testing.T) {
 
 func TestHandleFluffTx_UsesCanonicalFluffSemanticsAndCacheCap(t *testing.T) {
 	n := mustNewTestNode(t)
-	defer n.Stop()
+	defer func() {
+		if err := n.Stop(); err != nil {
+			t.Errorf("failed to stop node: %v", err)
+		}
+	}()
 
 	n.dandel.txCacheSize = 2
 

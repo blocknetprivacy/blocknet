@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 )
@@ -19,7 +20,10 @@ func (s *APIServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Disable write timeout for this long-lived connection.
 	rc := http.NewResponseController(w)
-	rc.SetWriteDeadline(time.Time{})
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to initialize SSE stream")
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -38,10 +42,13 @@ func (s *APIServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if s.daemon != nil && s.daemon.syncMgr != nil {
 		syncing = s.daemon.syncMgr.IsSyncing()
 	}
-	s.sendSSE(w, flusher, "connected", map[string]any{
+	if err := s.sendSSE(w, flusher, "connected", map[string]any{
 		"chain_height": s.daemon.Chain().Height(),
 		"syncing":      syncing,
-	})
+	}); err != nil {
+		log.Printf("SSE connected event write failed: %v", err)
+		return
+	}
 
 	// Keepalive ticker (SSE comment line to prevent proxies from killing idle connections)
 	keepalive := time.NewTicker(30 * time.Second)
@@ -56,37 +63,46 @@ func (s *APIServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if block == nil {
 				continue
 			}
-			s.sendSSE(w, flusher, "new_block", map[string]any{
+			if err := s.sendSSE(w, flusher, "new_block", map[string]any{
 				"height":    block.Header.Height,
 				"hash":      fmt.Sprintf("%x", block.Hash()),
 				"timestamp": block.Header.Timestamp,
 				"tx_count":  len(block.Transactions),
-			})
+			}); err != nil {
+				return
+			}
 
 		case block := <-minedCh:
 			if block == nil {
 				continue
 			}
-			s.sendSSE(w, flusher, "mined_block", map[string]any{
+			if err := s.sendSSE(w, flusher, "mined_block", map[string]any{
 				"height": block.Header.Height,
 				"hash":   fmt.Sprintf("%x", block.Hash()),
 				"reward": GetBlockReward(block.Header.Height),
-			})
+			}); err != nil {
+				return
+			}
 
 		case <-keepalive.C:
 			// SSE comment line — keeps the connection alive through proxies/load balancers
-			fmt.Fprintf(w, ": keepalive\n\n")
+			if _, err := fmt.Fprintf(w, ": keepalive\n\n"); err != nil {
+				return
+			}
 			flusher.Flush()
 		}
 	}
 }
 
 // sendSSE writes a single SSE event.
-func (s *APIServer) sendSSE(w http.ResponseWriter, flusher http.Flusher, event string, data any) {
+func (s *APIServer) sendSSE(w http.ResponseWriter, flusher http.Flusher, event string, data any) error {
 	payload, err := json.Marshal(data)
 	if err != nil {
-		return
+		return err
 	}
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload)
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload); err != nil {
+		return err
+	}
 	flusher.Flush()
+	return nil
 }

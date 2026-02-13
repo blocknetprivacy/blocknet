@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -337,7 +338,9 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		BlockHeight: height,
 		Memo:        memo,
 	})
-	s.wallet.Save()
+	if err := s.wallet.Save(); err != nil {
+		log.Printf("Warning: wallet persistence failed after send %x: %v", result.TxID, err)
+	}
 
 	resp := map[string]any{
 		"txid":   fmt.Sprintf("%x", result.TxID),
@@ -468,7 +471,10 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 	walletHeight := wl.SyncedHeight()
 	if walletHeight > chainHeight {
 		if removed := wl.RewindToHeight(chainHeight); removed > 0 {
-			wl.Save()
+			if err := wl.Save(); err != nil {
+				writeError(w, http.StatusInternalServerError, "wallet rewind persistence failed: "+err.Error())
+				return
+			}
 		}
 	}
 
@@ -482,7 +488,10 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 			scanner.ScanBlock(blockToScanData(block))
 		}
 		wl.SetSyncedHeight(chainHeight)
-		wl.Save()
+		if err := wl.Save(); err != nil {
+			writeError(w, http.StatusInternalServerError, "wallet sync persistence failed: "+err.Error())
+			return
+		}
 	}
 
 	// Publish to API server
@@ -573,7 +582,10 @@ func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
 			scanner.ScanBlock(blockToScanData(block))
 		}
 		wl.SetSyncedHeight(chainHeight)
-		wl.Save()
+		if err := wl.Save(); err != nil {
+			writeError(w, http.StatusInternalServerError, "wallet import persistence failed: "+err.Error())
+			return
+		}
 	}
 
 	// Publish to API server
@@ -844,7 +856,10 @@ func (s *APIServer) handlePurgeData(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Stop daemon first to release database locks
-	s.daemon.Stop()
+	if err := s.daemon.Stop(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to stop daemon before purge: "+err.Error())
+		return
+	}
 
 	// Remove data directory
 	if err := os.RemoveAll(s.dataDir); err != nil {
@@ -872,7 +887,9 @@ func (s *APIServer) handlePurgeData(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("Warning: failed to write JSON response: %v", err)
+	}
 }
 
 // writeError writes a JSON error response.

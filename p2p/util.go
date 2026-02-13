@@ -49,11 +49,6 @@ func writeLengthPrefixed(w io.Writer, data []byte) error {
 	return err
 }
 
-// readLengthPrefixed reads length-prefixed data
-func readLengthPrefixed(r io.Reader) ([]byte, error) {
-	return readLengthPrefixedWithLimit(r, MaxMessageSize)
-}
-
 // readLengthPrefixedWithLimit reads length-prefixed data with an explicit cap.
 func readLengthPrefixedWithLimit(r io.Reader, maxSize uint32) ([]byte, error) {
 	// Read length prefix
@@ -82,11 +77,6 @@ func writeMessage(w io.Writer, msgType byte, data []byte) error {
 		return err
 	}
 	return writeLengthPrefixed(w, data)
-}
-
-// readMessage reads a message type byte followed by length-prefixed data
-func readMessage(r io.Reader) (byte, []byte, error) {
-	return readMessageWithLimit(r, func(_ byte) (uint32, error) { return MaxMessageSize, nil })
 }
 
 // readMessageWithLimit reads a type byte then a length-prefixed payload using

@@ -141,7 +141,7 @@ func (pc *PedersenCommitment) Verify() error {
 	)
 
 	if result != 0 {
-		return fmt.Errorf("Pedersen commitment verification failed")
+		return fmt.Errorf("pedersen commitment verification failed")
 	}
 
 	return nil

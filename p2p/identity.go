@@ -256,7 +256,9 @@ func (im *IdentityManager) StartRotationLoop() func() {
 				return
 			case <-ticker.C:
 				if im.ShouldRotate() {
-					im.Rotate()
+					if _, err := im.Rotate(); err != nil {
+						log.Printf("identity rotation failed: %v", err)
+					}
 				}
 			}
 		}

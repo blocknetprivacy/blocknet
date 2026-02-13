@@ -254,8 +254,15 @@ func (n *Node) registerProtocols() {
 
 // handleBlockStream handles incoming block announcements
 func (n *Node) handleBlockStream(s network.Stream) {
-	defer s.Close()
-	s.SetReadDeadline(time.Now().Add(30 * time.Second))
+	defer func() {
+		if err := s.Close(); err != nil {
+			log.Printf("failed to close block stream: %v", err)
+		}
+	}()
+	if err := s.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		log.Printf("failed to set block stream read deadline from %s: %v", s.Conn().RemotePeer(), err)
+		return
+	}
 
 	// Read block data
 	data, err := readLengthPrefixedWithLimit(s, MaxBlockStreamPayloadSize)
@@ -275,8 +282,15 @@ func (n *Node) handleBlockStream(s network.Stream) {
 // handleTxStream handles incoming transaction announcements (fluff phase).
 // All ProtocolTx ingress must pass through Dandelion fluff semantics.
 func (n *Node) handleTxStream(s network.Stream) {
-	defer s.Close()
-	s.SetReadDeadline(time.Now().Add(30 * time.Second))
+	defer func() {
+		if err := s.Close(); err != nil {
+			log.Printf("failed to close tx stream: %v", err)
+		}
+	}()
+	if err := s.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		log.Printf("failed to set tx stream read deadline from %s: %v", s.Conn().RemotePeer(), err)
+		return
+	}
 
 	data, err := readLengthPrefixedWithLimit(s, MaxTxStreamPayloadSize)
 	if err != nil {
@@ -288,7 +302,11 @@ func (n *Node) handleTxStream(s network.Stream) {
 
 // handleSyncStream handles chain sync requests
 func (n *Node) handleSyncStream(s network.Stream) {
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			log.Printf("failed to close sync stream: %v", err)
+		}
+	}()
 	// Sync protocol will be implemented with the sync handler
 }
 
@@ -377,7 +395,7 @@ func (n *Node) SetStemSanityValidator(validator func(data []byte) bool) {
 func (n *Node) BroadcastBlock(data []byte) {
 	peers := n.host.Network().Peers()
 	for _, p := range peers {
-		go n.sendToPeer(p, ProtocolBlock, data)
+		n.sendToPeerAsync(p, ProtocolBlock, data)
 	}
 }
 
@@ -386,7 +404,7 @@ func (n *Node) RelayBlock(sender peer.ID, data []byte) {
 	peers := n.host.Network().Peers()
 	for _, p := range peers {
 		if p != sender {
-			go n.sendToPeer(p, ProtocolBlock, data)
+			n.sendToPeerAsync(p, ProtocolBlock, data)
 		}
 	}
 }
@@ -406,9 +424,21 @@ func (n *Node) sendToPeer(p peer.ID, proto protocol.ID, data []byte) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			log.Printf("failed to close outbound %s stream to %s: %v", proto, p, err)
+		}
+	}()
 
 	return writeLengthPrefixed(s, data)
+}
+
+func (n *Node) sendToPeerAsync(p peer.ID, proto protocol.ID, data []byte) {
+	go func(pid peer.ID, pr protocol.ID, payload []byte) {
+		if err := n.sendToPeer(pid, pr, payload); err != nil {
+			log.Printf("failed to send %s message to peer %s: %v", pr, pid, err)
+		}
+	}(p, proto, data)
 }
 
 // IdentityAge returns how long the current identity has been active

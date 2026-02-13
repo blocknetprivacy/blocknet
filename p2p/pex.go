@@ -202,7 +202,9 @@ func (pex *PeerExchange) doExchange() {
 	peers := pex.node.host.Network().Peers()
 	if len(peers) == 0 {
 		// No peers, try seeds again
-		pex.connectToSeeds()
+		if err := pex.connectToSeeds(); err != nil {
+			log.Printf("PEX seed reconnect failed: %v", err)
+		}
 		return
 	}
 
@@ -232,7 +234,11 @@ func (pex *PeerExchange) exchangeWith(p peer.ID) {
 	if err != nil {
 		return
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			log.Printf("PEX failed to close exchange stream with %s: %v", p, err)
+		}
+	}()
 
 	// Send GetPeers request
 	if err := writeMessage(s, PEXMsgGetPeers, nil); err != nil {
@@ -470,7 +476,11 @@ func (pex *PeerExchange) tryConnect(pid peer.ID, addrs []multiaddr.Multiaddr) {
 
 // HandleStream handles incoming PEX protocol streams
 func (pex *PeerExchange) HandleStream(s network.Stream) {
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			log.Printf("PEX failed to close inbound stream: %v", err)
+		}
+	}()
 
 	// Read message
 	msgType, _, err := readPEXMessage(s)
@@ -495,7 +505,9 @@ func (pex *PeerExchange) handleGetPeers(s network.Stream) {
 		return
 	}
 
-	writeMessage(s, PEXMsgPeers, data)
+	if err := writeMessage(s, PEXMsgPeers, data); err != nil {
+		log.Printf("PEX failed to write peers response: %v", err)
+	}
 }
 
 func readPEXMessage(r network.Stream) (byte, []byte, error) {
@@ -671,7 +683,9 @@ func (pex *PeerExchange) banPeerLocked(pid peer.ID, reason string, duration time
 
 	// Disconnect immediately
 	if pex.node != nil && pex.node.host != nil {
-		pex.node.host.Network().ClosePeer(pid)
+		if err := pex.node.host.Network().ClosePeer(pid); err != nil {
+			log.Printf("PEX failed to disconnect banned peer %s: %v", pid, err)
+		}
 	}
 
 	// Remove from known peers
@@ -759,7 +773,9 @@ func (pex *PeerExchange) reconnectLoop() {
 		case <-ticker.C:
 			peers := pex.node.host.Network().Peers()
 			if len(peers) == 0 {
-				pex.connectToSeeds()
+				if err := pex.connectToSeeds(); err != nil {
+					log.Printf("PEX reconnect loop seed dial failed: %v", err)
+				}
 			}
 		}
 	}

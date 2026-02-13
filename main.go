@@ -103,7 +103,9 @@ func createViewOnlyWallet(filename, spendPubHex, viewPrivHex string) error {
 	// Prompt for password
 	fmt.Print("Enter password for new view-only wallet: ")
 	var password string
-	fmt.Scanln(&password)
+	if _, err := fmt.Scanln(&password); err != nil {
+		return fmt.Errorf("failed to read password: %w", err)
+	}
 	if len(password) < 3 {
 		return fmt.Errorf("password must be at least 3 characters")
 	}

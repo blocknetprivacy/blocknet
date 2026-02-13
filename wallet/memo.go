@@ -84,7 +84,9 @@ func buildMemoEnvelope(memo []byte, sharedSecret [32]byte, outputIndex int) ([Me
 func memoChecksum(payload []byte) [32]byte {
 	h := sha3.New256()
 	h.Write([]byte("blocknet_memo_checksum"))
-	binary.Write(h, binary.LittleEndian, uint16(len(payload)))
+	var payloadLen [2]byte
+	binary.LittleEndian.PutUint16(payloadLen[:], uint16(len(payload)))
+	h.Write(payloadLen[:])
 	h.Write(payload)
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
@@ -95,14 +97,18 @@ func deriveMemoMask(sharedSecret [32]byte, outputIndex int) [MemoSize]byte {
 	h := sha3.New256()
 	h.Write([]byte("blocknet_memo_mask"))
 	h.Write(sharedSecret[:])
-	binary.Write(h, binary.LittleEndian, uint32(outputIndex))
+	var outputIndexBytes [4]byte
+	binary.LittleEndian.PutUint32(outputIndexBytes[:], uint32(outputIndex))
+	h.Write(outputIndexBytes[:])
 	seed := h.Sum(nil)
 
 	var mask [MemoSize]byte
 	for i := 0; i < 4; i++ {
 		hi := sha3.New256()
 		hi.Write(seed)
-		binary.Write(hi, binary.LittleEndian, uint32(i))
+		var blockIndex [4]byte
+		binary.LittleEndian.PutUint32(blockIndex[:], uint32(i))
+		hi.Write(blockIndex[:])
 		block := hi.Sum(nil)
 		copy(mask[i*32:(i+1)*32], block)
 	}

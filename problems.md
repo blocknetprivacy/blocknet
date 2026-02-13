@@ -604,6 +604,12 @@ This file is a live backlog of negative findings only.
    - **Impact:** Critical relaunch issues may stagnate despite being documented.  
    - **Required fix:** Introduce lightweight owner + target release metadata for open findings and enforce updates during triage.
 
+84. [DONE] `medium` - Runtime paths had widespread unchecked error returns in API/daemon/P2P/storage/wallet flows  
+   - **Location:** `api_auth.go`, `api_handlers.go`, `api_server.go`, `api_sse.go`, `explorer.go`, `main.go`, `cli.go`, `daemon.go`, `block.go`, `storage.go`, `p2p/*`, `wallet/builder.go`, `wallet/memo.go`, `wallet/scanner.go`, `tests.go`  
+   - **Problem:** Multiple file/network/storage/persistence/stream operations ignored returned errors, allowing silent failures in shutdown, persistence, stream I/O, and maintenance paths.  
+   - **Impact:** Silent operational faults can mask degraded state, reduce auditability, and weaken fail-closed behavior on security-sensitive network/storage boundaries.  
+   - **What changed:** Added explicit error handling on all errcheck-reported call sites in scope, using fail-closed returns where safety-critical, plus structured warning logs for non-fatal cleanup/best-effort paths; replaced hash-writer `binary.Write` calls with deterministic endian byte encoding to avoid ignored writer errors.
+
 ## Giant Work Queue
 
 ### P0 - Must ship immediately
@@ -652,6 +658,7 @@ This file is a live backlog of negative findings only.
 36. [TODO] Replace O(total_outputs) canonical ring-member scans with indexed lookup for validation paths.
 37. [TODO] Add SSE subscriber unsubscribe/cleanup lifecycle to prevent channel leak growth.
 38. [TODO] Harden docker-compose defaults for API exposure and wallet-password safety.
+39. [DONE] Harden unchecked runtime error handling across API/daemon/P2P/wallet paths and remove silent errcheck failures.
 
 ## High-Risk Regression Test Plan (real paths only, no mocks)
 

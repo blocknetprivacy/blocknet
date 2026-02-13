@@ -345,7 +345,9 @@ func encryptAmount(amount uint64, blinding [32]byte, outputIndex int) [8]byte {
 	h := sha3.New256()
 	h.Write([]byte("blocknet_amount"))
 	h.Write(blinding[:])
-	binary.Write(h, binary.LittleEndian, uint32(outputIndex))
+	var outputIndexBytes [4]byte
+	binary.LittleEndian.PutUint32(outputIndexBytes[:], uint32(outputIndex))
+	h.Write(outputIndexBytes[:])
 	mask := h.Sum(nil)
 
 	var amountBytes [8]byte
@@ -363,7 +365,9 @@ func DecryptAmount(encrypted [8]byte, blinding [32]byte, outputIndex int) uint64
 	h := sha3.New256()
 	h.Write([]byte("blocknet_amount"))
 	h.Write(blinding[:])
-	binary.Write(h, binary.LittleEndian, uint32(outputIndex))
+	var outputIndexBytes [4]byte
+	binary.LittleEndian.PutUint32(outputIndexBytes[:], uint32(outputIndex))
+	h.Write(outputIndexBytes[:])
 	mask := h.Sum(nil)
 
 	var amountBytes [8]byte

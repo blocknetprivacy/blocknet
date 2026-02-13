@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -631,7 +632,9 @@ func renderTemplate(w http.ResponseWriter, tmplStr string, data interface{}) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	tmpl.Execute(w, data)
+	if err := tmpl.Execute(w, data); err != nil {
+		log.Printf("explorer template render failed: %v", err)
+	}
 }
 
 // Base CSS matches website exactly, with explorer-specific additions

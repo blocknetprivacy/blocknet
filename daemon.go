@@ -32,9 +32,8 @@ type Daemon struct {
 	miner   *Miner
 
 	// P2P layer
-	node      *p2p.Node
-	syncMgr   *p2p.SyncManager
-	dandelion *p2p.DandelionRouter
+	node    *p2p.Node
+	syncMgr *p2p.SyncManager
 
 	// Identity
 	stealthKeys *StealthKeys
@@ -128,12 +127,16 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 	if !chain.HasGenesis() {
 		genesis, err := GetGenesisBlock()
 		if err != nil {
-			chain.Close()
+			if closeErr := chain.Close(); closeErr != nil {
+				log.Printf("Warning: failed to close chain after genesis create error: %v", closeErr)
+			}
 			cancel()
 			return nil, fmt.Errorf("failed to create genesis: %w", err)
 		}
 		if err := chain.addGenesisBlock(genesis); err != nil {
-			chain.Close()
+			if closeErr := chain.Close(); closeErr != nil {
+				log.Printf("Warning: failed to close chain after genesis add error: %v", closeErr)
+			}
 			cancel()
 			return nil, fmt.Errorf("failed to add genesis: %w", err)
 		}
@@ -151,7 +154,9 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 			}
 			log.Printf("Truncating chain from height %d to %d and re-syncing", chain.Height(), truncateTo)
 			if err := chain.TruncateToHeight(truncateTo); err != nil {
-				chain.Close()
+				if closeErr := chain.Close(); closeErr != nil {
+					log.Printf("Warning: failed to close chain after truncate error: %v", closeErr)
+				}
 				cancel()
 				return nil, fmt.Errorf("failed to truncate chain: %w", err)
 			}

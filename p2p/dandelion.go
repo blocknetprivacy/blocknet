@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"log"
 	"math/big"
 	"sync"
 	"time"
@@ -159,12 +160,16 @@ func (d *DandelionRouter) BroadcastTx(data []byte) {
 	d.enforceTxCacheLimitLocked()
 
 	// Send via stem
-	go d.sendStem(stemPeer, data)
+	d.sendStemAsync(stemPeer, data)
 }
 
 // HandleStemStream handles incoming stem phase transactions
 func (d *DandelionRouter) HandleStemStream(s network.Stream) {
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			log.Printf("failed to close dandelion stem stream: %v", err)
+		}
+	}()
 
 	// Read transaction data
 	data, err := readLengthPrefixedWithLimit(s, MaxDandelionStreamPayloadSize)
@@ -233,7 +238,7 @@ func (d *DandelionRouter) handleStemTx(from peer.ID, data []byte) {
 		d.txCache[hash] = rec
 		d.enforceTxCacheLimitLocked()
 
-		go d.sendStem(stemPeer, data)
+		d.sendStemAsync(stemPeer, data)
 	}
 }
 
@@ -257,7 +262,7 @@ func (d *DandelionRouter) fluffTx(rec *txRecord) {
 			continue
 		}
 
-		go d.node.sendToPeer(p, ProtocolTx, data)
+		d.node.sendToPeerAsync(p, ProtocolTx, data)
 	}
 }
 
@@ -272,7 +277,11 @@ func (d *DandelionRouter) sendStem(p peer.ID, data []byte) error {
 		d.stemFailed(data)
 		return err
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			log.Printf("failed to close dandelion stem stream to %s: %v", p, err)
+		}
+	}()
 
 	if err := writeLengthPrefixed(s, data); err != nil {
 		d.stemFailed(data)
@@ -280,6 +289,14 @@ func (d *DandelionRouter) sendStem(p peer.ID, data []byte) error {
 	}
 
 	return nil
+}
+
+func (d *DandelionRouter) sendStemAsync(p peer.ID, data []byte) {
+	go func(pid peer.ID, payload []byte) {
+		if err := d.sendStem(pid, payload); err != nil {
+			log.Printf("failed to send stem tx to %s: %v", pid, err)
+		}
+	}(p, data)
 }
 
 // stemFailed handles stem routing failure - transitions to fluff
@@ -517,7 +534,7 @@ func (d *DandelionRouter) rebroadcast(exclude peer.ID, data []byte) {
 		if p == exclude {
 			continue
 		}
-		go d.node.sendToPeer(p, ProtocolTx, data)
+		d.node.sendToPeerAsync(p, ProtocolTx, data)
 	}
 }
 
@@ -546,11 +563,6 @@ func (d *DandelionRouter) TxCacheSize() int {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return len(d.txCache)
-}
-
-// hashesEqual compares two transaction hashes
-func hashesEqual(a, b [32]byte) bool {
-	return bytes.Equal(a[:], b[:])
 }
 
 // cryptoRandIntn returns a cryptographically random int in [0, n).

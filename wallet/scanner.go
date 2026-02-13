@@ -177,7 +177,9 @@ func DeriveBlinding(sharedSecret [32]byte, outputIndex int) [32]byte {
 	h := sha3.New256()
 	h.Write([]byte("blocknet_blinding"))
 	h.Write(sharedSecret[:])
-	binary.Write(h, binary.LittleEndian, uint32(outputIndex))
+	var outputIndexBytes [4]byte
+	binary.LittleEndian.PutUint32(outputIndexBytes[:], uint32(outputIndex))
+	h.Write(outputIndexBytes[:])
 	sum := h.Sum(nil)
 
 	var blinding [32]byte
@@ -196,8 +198,12 @@ func DeriveCoinbaseConsensusBlinding(txPubKey [32]byte, blockHeight uint64, outp
 	h := sha3.New256()
 	h.Write([]byte("blocknet_coinbase_consensus_blinding"))
 	h.Write(txPubKey[:])
-	binary.Write(h, binary.LittleEndian, blockHeight)
-	binary.Write(h, binary.LittleEndian, uint32(outputIndex))
+	var blockHeightBytes [8]byte
+	binary.LittleEndian.PutUint64(blockHeightBytes[:], blockHeight)
+	h.Write(blockHeightBytes[:])
+	var outputIndexBytes [4]byte
+	binary.LittleEndian.PutUint32(outputIndexBytes[:], uint32(outputIndex))
+	h.Write(outputIndexBytes[:])
 	sum := h.Sum(nil)
 
 	var blinding [32]byte

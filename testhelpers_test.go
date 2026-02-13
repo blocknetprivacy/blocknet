@@ -4,8 +4,6 @@ import (
 	"blocknet/p2p"
 	"bytes"
 	"context"
-	"encoding/binary"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -88,31 +86,6 @@ func mustStartTestDaemon(t *testing.T, chain *Chain) (*Daemon, func()) {
 	}
 
 	return d, cleanup
-}
-
-func mustSubmitBlockData(t *testing.T, d *Daemon, b *Block) {
-	t.Helper()
-
-	data, err := json.Marshal(b)
-	if err != nil {
-		t.Fatalf("failed to marshal block: %v", err)
-	}
-	if err := d.processBlockData(data); err != nil {
-		t.Fatalf("failed to process block data: %v", err)
-	}
-}
-
-func mustSendLengthPrefixedPayload(t *testing.T, s network.Stream, payload []byte) {
-	t.Helper()
-
-	var lenBuf [4]byte
-	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(payload)))
-	if _, err := s.Write(lenBuf[:]); err != nil {
-		t.Fatalf("failed to write length prefix: %v", err)
-	}
-	if _, err := s.Write(payload); err != nil {
-		t.Fatalf("failed to write payload: %v", err)
-	}
 }
 
 func mustMakeHTTPJSONRequest(

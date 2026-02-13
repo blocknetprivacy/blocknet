@@ -272,7 +272,9 @@ func (c *CLI) Run() error {
 	go func() {
 		<-sigChan
 		fmt.Println("\nShutting down...")
-		c.shutdown()
+		if err := c.shutdown(); err != nil {
+			fmt.Printf("Warning: shutdown encountered errors: %v\n", err)
+		}
 		os.Exit(0)
 	}()
 
@@ -290,7 +292,9 @@ func (c *CLI) Run() error {
 			removed := c.wallet.RewindToHeight(chainHeight)
 			if removed > 0 {
 				fmt.Printf("Chain reset detected: removed %d orphaned outputs, rewound wallet to height %d\n", removed, chainHeight)
-				c.wallet.Save()
+				if err := c.wallet.Save(); err != nil {
+					fmt.Printf("Warning: failed to persist rewound wallet: %v\n", err)
+				}
 			}
 		}
 	}
@@ -1079,7 +1083,9 @@ func (c *CLI) cmdPurgeData() error {
 
 	// Stop daemon first to release database locks
 	fmt.Println("Stopping daemon...")
-	c.daemon.Stop()
+	if err := c.daemon.Stop(); err != nil {
+		return fmt.Errorf("failed to stop daemon before purge: %w", err)
+	}
 
 	// Remove data directory
 	fmt.Printf("Purging blockchain data from %s...\n", c.dataDir)
@@ -1108,7 +1114,9 @@ func (c *CLI) shutdown() error {
 	}
 
 	fmt.Println("Stopping daemon...")
-	c.daemon.Stop()
+	if err := c.daemon.Stop(); err != nil {
+		return fmt.Errorf("failed to stop daemon: %w", err)
+	}
 
 	fmt.Println("Goodbye!")
 	return nil
@@ -1298,7 +1306,9 @@ func (c *CLI) autoScanBlocks() {
 			blockData := blockToScanData(block)
 			found, spent := scanner.ScanBlock(blockData)
 			if found > 0 || spent > 0 {
-				w.Save()
+				if err := w.Save(); err != nil {
+					fmt.Printf("Warning: failed to persist wallet scan updates: %v\n", err)
+				}
 			}
 		}
 	}

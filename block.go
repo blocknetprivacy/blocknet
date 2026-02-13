@@ -364,8 +364,7 @@ func validateBlockWithContext(
 	}
 
 	// Parent/height consistency checks (for non-genesis blocks).
-	var parent *Block
-	parent = getParent(header.PrevHash)
+	parent := getParent(header.PrevHash)
 	if parent == nil {
 		return ErrOrphanBlock
 	}
@@ -701,7 +700,9 @@ func NewChain(dataDir string) (*Chain, error) {
 
 	// Load chain state from storage
 	if err := c.loadFromStorage(); err != nil {
-		storage.Close()
+		if closeErr := storage.Close(); closeErr != nil {
+			return nil, fmt.Errorf("failed to load chain state: %w (additionally failed to close storage: %v)", err, closeErr)
+		}
 		return nil, fmt.Errorf("failed to load chain state: %w", err)
 	}
 
@@ -1544,7 +1545,9 @@ func (c *Chain) TruncateToHeight(keepHeight uint64) error {
 		block := c.getBlockByHeightLocked(h)
 		if block == nil {
 			// Already missing, just clean up the index
-			c.storage.RemoveMainChainBlock(h)
+			if err := c.storage.RemoveMainChainBlock(h); err != nil {
+				return fmt.Errorf("failed to remove main-chain index at height %d: %w", h, err)
+			}
 			delete(c.byHeight, h)
 			continue
 		}
@@ -1554,13 +1557,17 @@ func (c *Chain) TruncateToHeight(keepHeight uint64) error {
 			if !tx.IsCoinbase() {
 				for _, input := range tx.Inputs {
 					delete(c.keyImages, input.KeyImage)
-					c.storage.UnmarkKeyImageSpent(input.KeyImage)
+					if err := c.storage.UnmarkKeyImageSpent(input.KeyImage); err != nil {
+						return fmt.Errorf("failed to unmark key image at height %d: %w", h, err)
+					}
 				}
 			}
 		}
 
 		// Remove from height index
-		c.storage.RemoveMainChainBlock(h)
+		if err := c.storage.RemoveMainChainBlock(h); err != nil {
+			return fmt.Errorf("failed to remove main-chain block at height %d: %w", h, err)
+		}
 		delete(c.byHeight, h)
 		hash := block.Hash()
 		delete(c.blocks, hash)

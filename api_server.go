@@ -286,7 +286,9 @@ func (s *APIServer) Stop() {
 	if s.server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		s.server.Shutdown(ctx)
+		if err := s.server.Shutdown(ctx); err != nil {
+			log.Printf("Warning: API shutdown error: %v", err)
+		}
 	}
 	deleteCookie(s.dataDir)
 }
