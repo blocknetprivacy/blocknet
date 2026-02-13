@@ -1,0 +1,27 @@
+---
+description: Problem-solving and scope discipline for security/consensus fixes
+alwaysApply: true
+---
+
+# Rules of Engagement
+
+Use this sequence when working findings in `problems.md`:
+
+1. Validate the concern is real before changing code.
+2. Map full impact surface (consensus, API, daemon, wallet, explorer, storage, P2P).
+3. Implement the smallest correct fix that is DRY, clean, and strictly in scope.
+4. Do not run tests, do not run `go test`, and do not do git tinkering during fix passes unless explicitly requested.
+5. Update the matching finding entry in `problems.md` using existing style.
+
+# Regression Coverage and Backlog Rules
+
+- Do not write placeholder regression-coverage claims.
+- Only add a regression-coverage line when a test was actually added.
+- Do not add deferred backlog tests unless they are genuinely needed.
+- If no test was added, omit the regression-coverage line.
+- If a deferred test is added, keep numbering tied to the finding ID.
+
+# Scope Discipline
+
+- Do not change anything outside what was requested.
+- If a better or broader approach exists, propose it first and wait for approval.

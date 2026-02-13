@@ -1253,13 +1253,12 @@ func (c *CLI) createTxBuilder() *wallet.Builder {
 			blinding, _ := GenerateBlinding()
 			return blinding
 		},
-		ComputeTxID: func(txData []byte) [32]byte {
+		ComputeTxID: func(txData []byte) ([32]byte, error) {
 			tx, err := DeserializeTx(txData)
 			if err != nil {
-				return ComputeTxHash(txData)
+				return [32]byte{}, err
 			}
-			txID, _ := tx.TxID()
-			return txID
+			return tx.TxID()
 		},
 		DeriveStealthAddress: func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error) {
 			output, err := DeriveStealthAddress(spendPub, viewPub)

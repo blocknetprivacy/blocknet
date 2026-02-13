@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"math/big"
 	"sync"
 	"time"
@@ -70,6 +71,9 @@ type DandelionRouter struct {
 
 	// Handler for fluffed transactions
 	onTx func(from peer.ID, data []byte)
+	// Lightweight stem-phase transaction sanity check callback.
+	// If unset, no extra stem validation is performed.
+	stemSanityCheck func(data []byte) bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -110,6 +114,14 @@ func (d *DandelionRouter) SetTxHandler(handler func(from peer.ID, data []byte)) 
 	d.onTx = handler
 }
 
+// SetStemSanityValidator sets a lightweight validator for stem payloads.
+// Returning false rejects the stem transaction before cache/relay.
+func (d *DandelionRouter) SetStemSanityValidator(validator func(data []byte) bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.stemSanityCheck = validator
+}
+
 // BroadcastTx starts the Dandelion++ process for a local transaction
 func (d *DandelionRouter) BroadcastTx(data []byte) {
 	hash := sha256.Sum256(data)
@@ -137,12 +149,14 @@ func (d *DandelionRouter) BroadcastTx(data []byte) {
 		// No stem peer available, go directly to fluff
 		rec.state = TxStateFluff
 		d.txCache[hash] = rec
+		d.enforceTxCacheLimitLocked()
 		d.fluffTx(rec)
 		return
 	}
 
 	rec.stemPeer = stemPeer
 	d.txCache[hash] = rec
+	d.enforceTxCacheLimitLocked()
 
 	// Send via stem
 	go d.sendStem(stemPeer, data)
@@ -159,6 +173,14 @@ func (d *DandelionRouter) HandleStemStream(s network.Stream) {
 	}
 
 	fromPeer := s.Conn().RemotePeer()
+	d.mu.RLock()
+	stemSanityCheck := d.stemSanityCheck
+	d.mu.RUnlock()
+	if stemSanityCheck != nil && !stemSanityCheck(data) {
+		d.node.PenalizePeer(fromPeer, ScorePenaltyInvalid, "invalid stem tx payload")
+		return
+	}
+
 	d.handleStemTx(fromPeer, data)
 }
 
@@ -175,7 +197,9 @@ func (d *DandelionRouter) handleStemTx(from peer.ID, data []byte) {
 	}
 
 	// Decide: continue stem or fluff? (crypto/rand for privacy)
-	shouldFluff := cryptoRandFloat64() > StemProbability
+	// On RNG failure, fail open to fluff to preserve liveness.
+	randFloat, randErr := cryptoRandFloat64()
+	shouldFluff := randErr != nil || randFloat > StemProbability
 
 	rec := &txRecord{
 		hash:      hash,
@@ -188,6 +212,7 @@ func (d *DandelionRouter) handleStemTx(from peer.ID, data []byte) {
 		// Transition to fluff phase
 		rec.state = TxStateFluff
 		d.txCache[hash] = rec
+		d.enforceTxCacheLimitLocked()
 		d.fluffTx(rec)
 	} else {
 		// Continue stem to next hop
@@ -199,12 +224,14 @@ func (d *DandelionRouter) handleStemTx(from peer.ID, data []byte) {
 			// No other stem peer, fluff
 			rec.state = TxStateFluff
 			d.txCache[hash] = rec
+			d.enforceTxCacheLimitLocked()
 			d.fluffTx(rec)
 			return
 		}
 
 		rec.stemPeer = stemPeer
 		d.txCache[hash] = rec
+		d.enforceTxCacheLimitLocked()
 
 		go d.sendStem(stemPeer, data)
 	}
@@ -287,7 +314,12 @@ func (d *DandelionRouter) getOutboundStemPeer() peer.ID {
 		return ""
 	}
 
-	d.outboundStem = peers[cryptoRandIntn(len(peers))]
+	idx, err := cryptoRandIntn(len(peers))
+	if err != nil {
+		d.outboundStem = peers[0]
+		return d.outboundStem
+	}
+	d.outboundStem = peers[idx]
 	return d.outboundStem
 }
 
@@ -307,7 +339,11 @@ func (d *DandelionRouter) getStemPeerExcluding(exclude peer.ID) peer.ID {
 		return ""
 	}
 
-	return candidates[cryptoRandIntn(len(candidates))]
+	idx, err := cryptoRandIntn(len(candidates))
+	if err != nil {
+		return candidates[0]
+	}
+	return candidates[idx]
 }
 
 // rotateEpoch changes stem routing for a new epoch
@@ -327,7 +363,14 @@ func (d *DandelionRouter) rotateEpoch() {
 	for _, p := range peers {
 		// Each peer has 50% chance of being a stem neighbor
 		// This provides anonymity set while limiting routing graph complexity
-		if cryptoRandFloat64() < 0.5 {
+		randFloat, err := cryptoRandFloat64()
+		if err != nil {
+			if len(p) > 0 && p[len(p)-1]%2 == 0 {
+				d.stemNeighbors = append(d.stemNeighbors, p)
+			}
+			continue
+		}
+		if randFloat < 0.5 {
 			d.stemNeighbors = append(d.stemNeighbors, p)
 		}
 	}
@@ -417,6 +460,7 @@ func (d *DandelionRouter) HandleFluffTx(from peer.ID, data []byte) {
 		fromPeer:  from,
 	}
 	d.txCache[hash] = rec
+	d.enforceTxCacheLimitLocked()
 
 	handler := d.onTx
 	d.mu.Unlock()
@@ -428,6 +472,41 @@ func (d *DandelionRouter) HandleFluffTx(from peer.ID, data []byte) {
 
 	// Rebroadcast to peers (except sender)
 	d.rebroadcast(from, data)
+}
+
+// enforceTxCacheLimitLocked evicts oldest entries until cache is within limit.
+// Caller must hold d.mu.
+func (d *DandelionRouter) enforceTxCacheLimitLocked() {
+	if d.txCacheSize <= 0 {
+		return
+	}
+	for len(d.txCache) > d.txCacheSize {
+		var (
+			oldestHash [32]byte
+			oldestAt   time.Time
+			oldestSet  bool
+		)
+		for hash, rec := range d.txCache {
+			if !oldestSet {
+				oldestHash = hash
+				oldestAt = rec.createdAt
+				oldestSet = true
+				continue
+			}
+			if rec.createdAt.Before(oldestAt) {
+				oldestHash = hash
+				oldestAt = rec.createdAt
+				continue
+			}
+			if rec.createdAt.Equal(oldestAt) && bytes.Compare(hash[:], oldestHash[:]) < 0 {
+				oldestHash = hash
+			}
+		}
+		if !oldestSet {
+			return
+		}
+		delete(d.txCache, oldestHash)
+	}
 }
 
 // rebroadcast sends a fluff transaction to all peers except the sender
@@ -475,19 +554,22 @@ func hashesEqual(a, b [32]byte) bool {
 }
 
 // cryptoRandIntn returns a cryptographically random int in [0, n).
-func cryptoRandIntn(n int) int {
+func cryptoRandIntn(n int) (int, error) {
+	if n <= 0 {
+		return 0, errors.New("cryptoRandIntn: n must be > 0")
+	}
 	val, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
 	if err != nil {
-		panic("crypto/rand failed: " + err.Error())
+		return 0, err
 	}
-	return int(val.Int64())
+	return int(val.Int64()), nil
 }
 
 // cryptoRandFloat64 returns a cryptographically random float64 in [0.0, 1.0).
-func cryptoRandFloat64() float64 {
+func cryptoRandFloat64() (float64, error) {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		panic("crypto/rand failed: " + err.Error())
+		return 0, err
 	}
-	return float64(binary.LittleEndian.Uint64(b[:])>>11) / (1 << 53)
+	return float64(binary.LittleEndian.Uint64(b[:])>>11) / (1 << 53), nil
 }

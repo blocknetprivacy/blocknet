@@ -283,8 +283,24 @@ func (sm *SyncManager) handleGetBlocksByHeight(s network.Stream, data []byte) {
 		return
 	}
 
+	if req.MaxBlocks <= 0 {
+		writeMessage(s, SyncMsgBlocks, []byte("[]"))
+		return
+	}
+
 	if req.MaxBlocks > MaxBlocksPerRequest {
 		req.MaxBlocks = MaxBlocksPerRequest
+	}
+
+	localTip := sm.getStatus().Height
+	if req.StartHeight > localTip {
+		writeMessage(s, SyncMsgBlocks, []byte("[]"))
+		return
+	}
+
+	available := localTip - req.StartHeight + 1
+	if uint64(req.MaxBlocks) > available {
+		req.MaxBlocks = int(available)
 	}
 
 	blocks, err := sm.getBlocksByHeight(req.StartHeight, req.MaxBlocks)

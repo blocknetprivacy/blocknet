@@ -41,7 +41,7 @@ type TransferConfig struct {
 		message []byte,
 	) (signature []byte, keyImage [32]byte, err error)
 	GenerateBlinding func() [32]byte
-	ComputeTxID      func(txData []byte) [32]byte
+	ComputeTxID      func(txData []byte) ([32]byte, error)
 
 	// Scalar arithmetic for blinding factors
 	BlindingAdd func(a, b [32]byte) ([32]byte, error)
@@ -261,7 +261,10 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 
 	// Serialize full transaction
 	txData := serializeTx(txPubKey, inputsData, outputs, fee)
-	txID := b.config.ComputeTxID(txData)
+	txID, err := b.config.ComputeTxID(txData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute tx ID: %w", err)
+	}
 
 	return &TransferResult{
 		TxData:       txData,

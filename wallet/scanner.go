@@ -74,14 +74,19 @@ func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
 					continue
 				}
 
-				// Derive the shared secret for amount decryption
-				outputSecret, err := s.wallet.deriveOutputSecret(tx.TxPubKey, keys.ViewPrivKey)
-				if err != nil {
-					continue
+				var outputSecret [32]byte
+				var blinding [32]byte
+				if tx.IsCoinbase {
+					blinding = DeriveCoinbaseConsensusBlinding(tx.TxPubKey, block.Height, out.Index)
+				} else {
+					// Derive the shared secret for amount decryption.
+					outputSecret, err = s.wallet.deriveOutputSecret(tx.TxPubKey, keys.ViewPrivKey)
+					if err != nil {
+						continue
+					}
+					// Derive the blinding factor from shared secret.
+					blinding = DeriveBlinding(outputSecret, out.Index)
 				}
-
-			// Derive the blinding factor from shared secret
-			blinding := DeriveBlinding(outputSecret, out.Index)
 
 				// Decrypt the amount
 				amount := DecryptAmount(out.EncryptedAmount, blinding, out.Index)
@@ -100,28 +105,29 @@ func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
 					}
 				}
 
-			owned := &OwnedOutput{
-				TxID:           tx.TxID,
-				OutputIndex:    out.Index,
-				Amount:         amount,
-				Blinding:       blinding,
-				OneTimePrivKey: oneTimePriv,
-				OneTimePubKey:  out.PubKey,
-				Commitment:     out.Commitment,
-				BlockHeight:    block.Height,
-				IsCoinbase:     tx.IsCoinbase,
-				Spent:          false,
-			}
-
-			// Decrypt payment ID if present in block aux data
-			if block.PaymentIDs != nil {
-				auxKey := fmt.Sprintf("%d:%d", txIdx, out.Index)
-				if encPID, ok := block.PaymentIDs[auxKey]; ok {
-					owned.PaymentID = DecryptPaymentID(encPID, outputSecret)
+				owned := &OwnedOutput{
+					TxID:           tx.TxID,
+					OutputIndex:    out.Index,
+					Amount:         amount,
+					Blinding:       blinding,
+					OneTimePrivKey: oneTimePriv,
+					OneTimePubKey:  out.PubKey,
+					Commitment:     out.Commitment,
+					BlockHeight:    block.Height,
+					IsCoinbase:     tx.IsCoinbase,
+					Spent:          false,
 				}
-			}
 
-			s.wallet.AddOutput(owned)
+				// Decrypt payment ID if present in block aux data.
+				// Coinbase outputs do not carry sender-encrypted payment IDs.
+				if !tx.IsCoinbase && block.PaymentIDs != nil {
+					auxKey := fmt.Sprintf("%d:%d", txIdx, out.Index)
+					if encPID, ok := block.PaymentIDs[auxKey]; ok {
+						owned.PaymentID = DecryptPaymentID(encPID, outputSecret)
+					}
+				}
+
+				s.wallet.AddOutput(owned)
 				found++
 			}
 		}
@@ -174,6 +180,21 @@ func DeriveBlinding(sharedSecret [32]byte, outputIndex int) [32]byte {
 	// For Ristretto255, scalars are mod 2^252 + 27742317777372353535851937790883648493
 	// The hash output is already 32 bytes, which is fine for this purpose
 	// as the Rust side handles canonical reduction
+	return blinding
+}
+
+// DeriveCoinbaseConsensusBlinding derives the deterministic consensus blinding
+// for coinbase outputs from public transaction data.
+func DeriveCoinbaseConsensusBlinding(txPubKey [32]byte, blockHeight uint64, outputIndex int) [32]byte {
+	h := sha3.New256()
+	h.Write([]byte("blocknet_coinbase_consensus_blinding"))
+	h.Write(txPubKey[:])
+	binary.Write(h, binary.LittleEndian, blockHeight)
+	binary.Write(h, binary.LittleEndian, uint32(outputIndex))
+	sum := h.Sum(nil)
+
+	var blinding [32]byte
+	copy(blinding[:], sum)
 	return blinding
 }
 

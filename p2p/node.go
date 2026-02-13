@@ -186,11 +186,18 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 		cancel:   cancel,
 	}
 
-	// Create libp2p host (gater disabled for now - was causing connection issues)
+	// Create peer exchange before host so ban state is available to connection gating.
+	node.pex = NewPeerExchange(node, cfg.SeedNodes)
+	banGater := NewBanGater(func(pid peer.ID) bool {
+		return node.IsBanned(pid)
+	})
+
+	// Create libp2p host with banned-peer admission gating enabled.
 	h, err := libp2p.New(
 		libp2p.Identity(privKey),
 		libp2p.ListenAddrs(listenAddrs...),
 		libp2p.ConnectionManager(connMgr),
+		libp2p.ConnectionGater(banGater),
 		libp2p.UserAgent(cfg.UserAgent),
 		// Enable NAT port mapping
 		libp2p.NATPortMap(),
@@ -214,9 +221,6 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 		node.pendingID = newID
 		node.mu.Unlock()
 	})
-
-	// Create peer exchange
-	node.pex = NewPeerExchange(node, cfg.SeedNodes)
 
 	// Create Dandelion router
 	node.dandel = NewDandelionRouter(node)
@@ -366,6 +370,12 @@ func (n *Node) SetTxHandler(handler func(from peer.ID, data []byte)) {
 
 	// Also set on Dandelion router
 	n.dandel.SetTxHandler(handler)
+}
+
+// SetStemSanityValidator sets a lightweight stem-phase transaction validator.
+// Invalid stem payloads are rejected before cache/relay in Dandelion.
+func (n *Node) SetStemSanityValidator(validator func(data []byte) bool) {
+	n.dandel.SetStemSanityValidator(validator)
 }
 
 // BroadcastBlock sends a block to all connected peers

@@ -458,7 +458,7 @@ func testHashDerivedBlindings() {
 		}
 
 		// Create a coinbase transaction - this uses derived blindings internally
-		_, err = CreateCoinbase(keys.SpendPubKey, keys.ViewPubKey, 50_000_000_000)
+		_, err = CreateCoinbase(keys.SpendPubKey, keys.ViewPubKey, 50_000_000_000, 0)
 		if err != nil {
 			failures++
 			fmt.Printf("  Iteration %d failed: %v\n", i, err)
@@ -486,7 +486,7 @@ func testOrphanBlocks(chain *Chain, keys *StealthKeys) {
 	fakeParent[1] = 0xAD
 
 	// Create coinbase for orphan block
-	coinbase, err := CreateCoinbase(keys.SpendPubKey, keys.ViewPubKey, GetBlockReward(currentHeight+2))
+	coinbase, err := CreateCoinbase(keys.SpendPubKey, keys.ViewPubKey, GetBlockReward(currentHeight+2), currentHeight+2)
 	if err != nil {
 		log.Fatalf("Failed to create coinbase for orphan test: %v", err)
 	}
@@ -521,7 +521,7 @@ func testOrphanBlocks(chain *Chain, keys *StealthKeys) {
 
 	// Now verify that a valid child block works
 	// Create block at height 1 (valid child of genesis)
-	validCoinbase, _ := CreateCoinbase(keys.SpendPubKey, keys.ViewPubKey, GetBlockReward(currentHeight+1))
+	validCoinbase, _ := CreateCoinbase(keys.SpendPubKey, keys.ViewPubKey, GetBlockReward(currentHeight+1), currentHeight+1)
 	validBlock := &Block{
 		Header: BlockHeader{
 			Version:    1,

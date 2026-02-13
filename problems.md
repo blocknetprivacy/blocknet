@@ -30,7 +30,6 @@ This file is a live backlog of negative findings only.
    - **Required fix:** Restrict to genesis-only API or force validation in this path; explicitly fail non-genesis unvalidated calls.
    - **Status:** fixed (2026-02-12)  
    - **What changed:** Removed exported `AddBlock` usage path; introduced unexported `addGenesisBlock` for empty-chain genesis init only; added explicit fail-fast guards in `addBlockInternal` to reject any non-genesis or non-empty-chain unvalidated insertion and force non-genesis flow through `ProcessBlock`.  
-   - **Regression coverage:** deferred to `Deferred Test Backlog` per fix-first cadence.
 
 ### High
 
@@ -41,7 +40,6 @@ This file is a live backlog of negative findings only.
    - **Required fix:** Add parent-chain-context difficulty/timestamp validation for fork blocks too (not only best-tip extensions).
    - **Status:** fixed (2026-02-12)  
    - **What changed:** Unified chain-context validation now derives expected LWMA difficulty and median-time from the block's actual parent branch for all non-genesis blocks (tip and non-tip), then enforces both checks in shared `validateBlockWithContext`; both `ValidateBlockP2P` and `ProcessBlock` use this same path.  
-   - **Regression coverage:** deferred to `Deferred Test Backlog` per fix-first cadence.
 
 4. [DONE] `high` - Global P2P payload cap is shared across different protocol payload classes  
    - **Location:** `p2p/util.go` (`MaxMessageSize`, `readLengthPrefixed`), `p2p/sync.go` (`readMessage` paths), `p2p/node.go`/`p2p/dandelion.go` (direct `readLengthPrefixed` paths)  
@@ -50,7 +48,6 @@ This file is a live backlog of negative findings only.
    - **Required fix:** Enforce protocol/message-class-specific hard caps before allocation/decode (sync by message type; block/tx/dandelion by stream protocol), while preserving sync batching with explicit response byte budgets.
    - **Status:** fixed (2026-02-12)  
    - **What changed:** Added explicit per-class read caps before allocation via `readLengthPrefixedWithLimit`/`readMessageWithLimit`; wired sync and PEX to message-type-specific limits (`readSyncMessage`, `readPEXMessage`), and block/tx/dandelion direct streams to protocol-specific caps. Added sync response byte-budget trimming for headers/blocks/mempool so batching remains supported but bounded.
-   - **Regression coverage:** deferred to `Deferred Test Backlog` per fix-first cadence.
 
 5. [DONE] `high` - Sync mempool fetch unmarshals unbounded `[][]byte` payloads  
    - **Location:** `p2p/sync.go` (`fetchAndProcessMempool`, `handleGetMempool`), `p2p/util.go`  
@@ -59,7 +56,6 @@ This file is a live backlog of negative findings only.
    - **Required fix:** Enforce max entry count and byte budget; use streaming decode with limits.
    - **Status:** fixed (2026-02-12)  
    - **What changed:** Added `MaxSyncMempoolTxCount` (5000, aligned with default mempool capacity) in `p2p/util.go`. On the receiving side (`fetchAndProcessMempool`), decoded `[][]byte` is now capped by entry count and decoded byte budget via `trimByteSliceBatch` before any processing loop. On the sending side (`handleGetMempool`), replaced the no-op `len(txs)` count parameter with the same `MaxSyncMempoolTxCount` cap so honest nodes also bound entry count.  
-   - **Regression coverage:** deferred to `Deferred Test Backlog` per fix-first cadence.
 
 6. [DONE] `high` - `findTxBoundary()` parses attacker-controlled counts without safety bounds  
    - **Location:** `tx_aux.go` (`findTxBoundary`)  
@@ -68,7 +64,6 @@ This file is a live backlog of negative findings only.
    - **Required fix:** Apply hard limits matching `DeserializeTx` and fail fast on overflow/over-budget paths.
    - **Status:** fixed (2026-02-12)  
    - **What changed:** Added hard caps in `findTxBoundary` derived from protocol constants (`maxInputs=256`, `maxOutputs=256`, `maxRingSize=RingSize` (16), `maxProofSize=1024` per Bulletproof buffer, `maxSigSize=96+64*RingSize` (1120) per RingCT CLSAG buffer); each field is checked immediately after decode and returns `len(data)` (no valid boundary) on violation, preventing CPU burn and malformed-tail parsing. Values are tighter than `DeserializeTx`'s looser local caps.  
-   - **Regression coverage:** deferred to `Deferred Test Backlog` per fix-first cadence.
 
 7. [DONE] `high` - Expensive `submitblock` path has no route-level abuse throttling  
    - **Location:** `api_handlers.go` (`handleSubmitBlock`)  
@@ -77,7 +72,6 @@ This file is a live backlog of negative findings only.
    - **Required fix:** Add token/IP bucket rate limit + concurrent validation cap for this route.
    - **Status:** fixed (2026-02-12)  
    - **What changed:** Added route-scoped abuse controls for `POST /api/mining/submitblock`: per-client token-bucket limiting keyed by request IP (`2 req/s`, burst `4`, stale-entry TTL cleanup) plus a bounded concurrent validation gate (`2` in-flight submits). Over-limit and saturated requests now fail fast with `429` before calling `SubmitBlock`.  
-   - **Regression coverage:** deferred to `Deferred Test Backlog` per fix-first cadence.
 
 8. [WONTFIX] `high` - Destructive purge endpoint password gate can be weakened by server state  
    - **Location:** `api_handlers.go` (`handlePurgeData`)  
@@ -98,85 +92,111 @@ This file is a live backlog of negative findings only.
 
 ### Medium
 
-10. `medium` - Chain validation and chain mutation use separate locking windows in some network paths  
+10. [DONE] `medium` - Chain validation and chain mutation use separate locking windows in some network paths  
     - **Location:** `daemon.go` (`handleBlock`, `processBlockData`)  
     - **Problem:** Validation occurs before the state-mutation lock is taken; chain context can drift between validation and insert attempt.  
     - **Impact:** Non-deterministic accept/reject behavior and edge-case inconsistency under high block race conditions.  
     - **Required fix:** Validate and process under a consistent state snapshot/lock or retry validation after lock acquisition.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Removed pre-lock `ValidateBlockP2P` calls from network ingest paths (`handleBlock`, `processBlockData`) so chain-aware validation and state mutation are performed together in the single authoritative `Chain.ProcessBlock` path under chain lock. This removes the pre-check/post-insert drift window and avoids duplicate validation work on accepted/rejected network blocks.  
 
-11. `medium` - Tx identity is not canonical across all call-sites  
+11. [DONE] `medium` - Tx identity is not canonical across all call-sites  
     - **Location:** `transaction.go` (`TxID`), `crypto.go` (`ComputeTxHash`), builder callbacks in `api_handlers.go` and `cli.go`  
     - **Problem:** Different hash derivations may be used depending on decode success/fallback path.  
     - **Impact:** Potential tx-tracking mismatches and indexing inconsistency under malformed/edge payloads.  
     - **Required fix:** Define one canonical txid derivation and remove mixed fallback behavior.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Canonicalized txid derivation in wallet transfer wiring by changing `TransferConfig.ComputeTxID` to return `([32]byte, error)` and making builder transfer fail closed on txid derivation errors. API/CLI builder callbacks now use only `DeserializeTx(txData)` -> `tx.TxID()` and no longer fall back to `ComputeTxHash(txData)`, eliminating mixed hash behavior across decode paths.  
 
-12. `medium` - Explorer stats endpoint does unbounded historical iteration per request  
+12. [DONE] `medium` - Explorer stats endpoint does unbounded historical iteration per request  
     - **Location:** `explorer.go` (`handleStats`)  
     - **Problem:** CPU-heavy full-chain scanning from unauthenticated route.  
     - **Impact:** Public endpoint DoS pressure as chain size grows.  
     - **Required fix:** Cache snapshot + cap traversal + background precompute.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Added explorer stats snapshot caching with background precompute (`startStatsPrecompute` + periodic refresh), bounded per-refresh historical traversal (`explorerStatsMaxTraversal`), and request-path serving from cached snapshot in `handleStats`. Also removed per-request full emission scanning by making `getSupplyInfo` incremental and cached.
 
-13. `medium` - Storage layer assumes caller correctness for consensus-critical writes  
+13. [DONE] `medium` - Storage layer assumes caller correctness for consensus-critical writes  
     - **Location:** `storage.go` (`CommitBlock`, `CommitReorg`, `SaveBlock`)  
     - **Problem:** No internal sanity checks on write path for block linkage/basic structure.  
     - **Impact:** Upstream bug in chain layer immediately persists corrupt state.  
     - **Required fix:** Add minimal invariant checks in storage write transaction (height/hash/tip linkage sanity).
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Added storage-layer invariant enforcement in write transactions: `SaveBlock` now rejects nil blocks and non-genesis blocks whose parent is missing; `CommitBlock` now enforces non-nil commit/block, commit hash/height consistency with block header, parent existence for non-genesis, and strict main-tip linkage against current metadata (empty-chain genesis-only, otherwise `height = tip+1` and `prev = tip`). `CommitReorg` now validates reorg shape before mutation (current tip exists, new height math, disconnect set matches indexed main-chain hashes/heights, connect chain parent/height continuity, and `NewTip` consistency) before applying updates.  
 
-14. `medium` - Coinbase amount consensus enforcement remains structurally weak  
+14. [DONE] `medium` - Coinbase amount consensus enforcement remains structurally weak  
     - **Location:** `transaction.go` (`validateCoinbase`) + reward creation path  
     - **Problem:** Validation checks proof structure but does not strictly enforce minted amount against protocol reward schedule.  
     - **Impact:** Inflation-detection guarantees are weaker than explicit amount-consensus models.  
     - **Required fix:** Introduce enforceable coinbase-amount commitment rules compatible with privacy model.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Enforced deterministic coinbase amount consensus by deriving a public coinbase blinding from `tx_public_key + block_height + output_index`, switching `CreateCoinbase` to use that consensus blinding, and adding block-level validation (`validateCoinbaseConsensus`) that recomputes and verifies both the expected reward commitment and encrypted amount against `GetBlockReward(height)`. Tightened coinbase structural rules (`validateCoinbase`) to require zero fee and exactly one output, and updated wallet scanning to use the same deterministic derivation for coinbase output amount recovery.  
 
 ### Low
 
-15. `low` - Genesis treatment relies on bypass path rather than explicit rule branching  
+15. [DONE] `low` - Genesis treatment relies on bypass path rather than explicit rule branching  
     - **Location:** `block.go` (genesis creation vs regular validation paths)  
     - **Problem:** Genesis acceptance is handled by special call-path behavior, not explicit consensus branching in validator.  
     - **Impact:** Maintenance risk and future refactor hazards.  
     - **Required fix:** Make genesis validation explicit and deterministic in code.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Added an explicit genesis branch in shared validator flow (`validateBlockWithContext` -> `validateGenesisBlock`) with deterministic rules (`height=0`, `PrevHash=GenesisPrevHash()`, fixed timestamp/difficulty/nonce, empty tx set, zero merkle root, size cap). Updated `addGenesisBlock` to call chain validation before persistence, removing the prior unvalidated bypass treatment.
 
-16. `low` - Serialization comments and invariants are partially inconsistent  
+16. [DONE] `low` - Serialization comments and invariants are partially inconsistent  
     - **Location:** `block.go` (`Serialize` comments and byte-size notes)  
     - **Problem:** Documentation mismatches can cause future consensus-serialization bugs.  
     - **Impact:** Engineering risk, not immediate exploit.  
     - **Required fix:** Correct comments and add invariant assertions for serialized lengths.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Replaced stale/misleading header-serialization notes with canonical size constants, removed dead placeholder buffer logic from `BlockHeader.Serialize`, and added explicit invariant assertions in both full-header and PoW-header serialization paths to guarantee written byte counts exactly match canonical serialized lengths. Also switched block size accounting to reuse the same canonical header-size constant.
 
-17. `low` - Sync `GetBlocksByHeight` request sanity checks are incomplete  
+17. [DONE] `low` - Sync `GetBlocksByHeight` request sanity checks are incomplete  
     - **Location:** `p2p/sync.go` (`handleGetBlocksByHeight`)  
     - **Problem:** Missing stricter validation around start height and range intent.  
     - **Impact:** Minor resource inefficiency and protocol noise potential.  
     - **Required fix:** Enforce range bounds relative to local tip.
+   - **Status:** fixed (2026-02-12)  
+   - **What changed:** Hardened `handleGetBlocksByHeight` request checks to fail fast on non-positive `max_blocks`, return empty responses when `start_height` is above local tip, and clamp requested block count to the locally available height span (`tip - start + 1`) before serving blocks.
 
-18. `low` - Explorer server path lacks the same body-size middleware used by API server  
+18. [DONE] `low` - Explorer server path lacks the same body-size middleware used by API server  
     - **Location:** `explorer.go` startup/router setup  
     - **Problem:** Missing consistent request body cap hardening.  
     - **Impact:** Minor memory abuse surface.  
     - **Required fix:** Apply `MaxBytesReader`/equivalent middleware to explorer routes.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Updated explorer startup to wrap the handler with the same `maxBodySize(..., 1<<20)` middleware used by the API server, ensuring consistent `http.MaxBytesReader` request body caps across explorer routes.
 
-19. `high` - Dandelion stem path forwards unvalidated transaction payloads  
+19. [DONE] `high` - Dandelion stem path forwards unvalidated transaction payloads  
     - **Location:** `p2p/dandelion.go` (`HandleStemStream`, `handleStemTx`, `sendStem`)  
     - **Problem:** Stem transactions are accepted/cached/routed before deserialization or structural validation. Validation only occurs later when fluff handler reaches daemon/mempool path.  
     - **Impact:** Attackers can inject large volumes of malformed payloads into stem routing and cache/memory/relay bandwidth without paying validation cost.  
     - **Required fix:** Apply lightweight tx sanity checks (size + deserialize) before caching/routing in stem phase; penalize peers sending malformed stems.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Added a stem-phase sanity validator hook in the Dandelion router and wired it from daemon startup to perform `DecodeTxWithAux` + `DeserializeTx` on incoming stem payloads before cache/relay. `HandleStemStream` now rejects malformed stem transactions early and applies peer penalty (`ScorePenaltyInvalid`) for invalid stem payloads.
 
-20. `high` - Dandelion tx cache limit is configured but not enforced  
+20. [DONE] `high` - Dandelion tx cache limit is configured but not enforced  
     - **Location:** `p2p/dandelion.go` (`txCacheSize`, `BroadcastTx`, `handleStemTx`, `HandleFluffTx`)  
     - **Problem:** `txCacheSize` field exists but there is no eviction-by-size enforcement; only age-based cleanup runs every 5s with 30-minute retention.  
     - **Impact:** Memory growth under unique tx spam remains high for long windows.  
     - **Required fix:** Enforce strict max cache entries with deterministic eviction policy (LRU/time-bucketed).
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Added strict tx-cache cap enforcement on all Dandelion insert paths (`BroadcastTx`, `handleStemTx`, `HandleFluffTx`) via a single locked helper that evicts oldest entries until `txCacheSize` is respected. Eviction is deterministic by `createdAt` with lexicographic tx-hash tie-breaking, retaining existing age-based cleanup as a secondary bound.
 
-21. `medium` - Dandelion randomness failures hard-crash the node  
+21. [DONE] `medium` - Dandelion randomness failures hard-crash the node  
     - **Location:** `p2p/dandelion.go` (`cryptoRandIntn`, `cryptoRandFloat64`)  
     - **Problem:** RNG failure triggers `panic`, taking down the process.  
     - **Impact:** Single entropy subsystem failure becomes total node outage.  
     - **Required fix:** Return errors/fallback behavior instead of panicking inside network message handling paths.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Replaced `panic`-based RNG helpers with error-returning variants and handled failures at each call site. `handleStemTx` now fails open to fluff when randomness is unavailable, stem-peer selection falls back deterministically to the first candidate peer, and epoch neighbor selection uses deterministic parity fallback instead of crashing.
 
-22. `high` - Banned-peer gating is explicitly disabled at host layer  
+22. [DONE] `high` - Banned-peer gating is explicitly disabled at host layer  
     - **Location:** `p2p/node.go` (`NewNode`, comment around gater disabled)  
     - **Problem:** Connection gater is not wired into libp2p host; ban lists may not be enforced at connection admission boundary.  
     - **Impact:** Banned peers can continue reconnect attempts and consume resources depending on upper-layer checks.  
     - **Required fix:** Re-enable and stabilize connection gater integration or equivalent hard admission filter.
+    - **Status:** fixed (2026-02-12)  
+    - **What changed:** Re-enabled host-layer banned-peer admission filtering by wiring `libp2p.ConnectionGater` in `NewNode` using existing `BanGater`. Also initialized `PeerExchange` before host construction so ban-state checks are available to the gater from startup onward.
 
 23. `high` - Sync fetch decode paths trust unbounded header/block array counts within message budget  
     - **Location:** `p2p/sync.go` (`FetchHeaders`, `FetchBlocks`, `fetchBlocksByHeight`)  
@@ -328,6 +348,10 @@ This file is a live backlog of negative findings only.
 6. (c) Add a regression test that crafts tx data with `ringSize > 128` in an input and proves `findTxBoundary` returns `len(data)`.
 6. (d) Add a regression test that crafts tx data with `proofLen > 10240` in an output and proves `findTxBoundary` returns `len(data)`.
 6. (e) Add a regression test that crafts tx data with `sigLen > 131072` in an input and proves `findTxBoundary` returns `len(data)`.
+11. (a) Add a regression test that verifies API/CLI transfer builder `ComputeTxID` derives txid via `DeserializeTx(txData)` + `tx.TxID()` only, with no `ComputeTxHash` fallback path.
+11. (b) Add a regression test that forces txid derivation failure in transfer flow and proves builder returns an error instead of emitting a fallback txid.
+12. (a) Add a regression test that repeatedly calls explorer `/stats` on a long chain and proves request-path processing does not rescan full history each time (serves cached snapshot).
+12. (b) Add a regression test that advances chain tip and proves stats refresh is bounded to configured traversal cap while background precompute updates served data.
 
 ### Deferred test restoration after bug crunch
 

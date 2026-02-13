@@ -37,6 +37,10 @@ const (
 	MinDifficulty    = uint64(4)            // Floor difficulty (Argon2id 2GB is slow, ~15s/hash)
 	LWMAMinSolvetime = 1                    // Minimum solvetime (prevent div by zero, timestamp attacks)
 	LWMAMaxSolvetime = BlockIntervalSec * 6 // Max solvetime (6x target, prevents difficulty drops from stuck blocks)
+
+	// Canonical block-header serialization sizes.
+	blockHeaderSerializedSize        = 4 + 8 + 32 + 32 + 8 + 8 + 8
+	blockHeaderSerializedSizeNoNonce = 4 + 8 + 32 + 32 + 8 + 8
 )
 
 // ============================================================================
@@ -60,20 +64,14 @@ func (h *BlockHeader) Hash() [32]byte {
 	return sha3.Sum256(data)
 }
 
-// Serialize converts header to bytes for hashing
+// Serialize converts header to canonical bytes for hashing.
 func (h *BlockHeader) Serialize() []byte {
-	buf := make([]byte, 80) // Fixed size: 4+8+32+32+8+8+8 = 100, but we use 80 for alignment
-
-	binary.LittleEndian.PutUint32(buf[0:4], h.Version)
-	binary.LittleEndian.PutUint64(buf[4:12], h.Height)
-	// PrevHash and MerkleRoot go at fixed offsets
-	// We'll use a simpler serialization
 	return h.serializeFull()
 }
 
 // serializeFull serializes all header fields
 func (h *BlockHeader) serializeFull() []byte {
-	buf := make([]byte, 4+8+32+32+8+8+8) // 100 bytes total
+	buf := make([]byte, blockHeaderSerializedSize)
 
 	offset := 0
 	binary.LittleEndian.PutUint32(buf[offset:], h.Version)
@@ -95,6 +93,10 @@ func (h *BlockHeader) serializeFull() []byte {
 	offset += 8
 
 	binary.LittleEndian.PutUint64(buf[offset:], h.Nonce)
+	offset += 8
+	if offset != len(buf) {
+		panic("block header serialization invariant violated")
+	}
 
 	return buf
 }
@@ -102,7 +104,7 @@ func (h *BlockHeader) serializeFull() []byte {
 // SerializeForPoW serializes header WITHOUT nonce for Argon2id input
 // The nonce is passed separately to the PoW function
 func (h *BlockHeader) SerializeForPoW() []byte {
-	buf := make([]byte, 4+8+32+32+8+8) // 92 bytes (no nonce)
+	buf := make([]byte, blockHeaderSerializedSizeNoNonce)
 
 	offset := 0
 	binary.LittleEndian.PutUint32(buf[offset:], h.Version)
@@ -121,6 +123,10 @@ func (h *BlockHeader) SerializeForPoW() []byte {
 	offset += 8
 
 	binary.LittleEndian.PutUint64(buf[offset:], h.Difficulty)
+	offset += 8
+	if offset != len(buf) {
+		panic("block header PoW serialization invariant violated")
+	}
 
 	return buf
 }
@@ -152,7 +158,7 @@ func (b *Block) Hash() [32]byte {
 
 // Size returns the approximate serialized size of the block
 func (b *Block) Size() int {
-	size := 100 // Header size
+	size := blockHeaderSerializedSize // Canonical serialized header size
 	for _, tx := range b.Transactions {
 		size += tx.Size()
 	}
@@ -280,6 +286,9 @@ func ValidateBlock(block *Block, chain *Chain) error {
 			return fmt.Errorf("invalid transaction %d: %w", i, err)
 		}
 	}
+	if err := validateCoinbaseConsensus(block.Transactions[0], header.Height); err != nil {
+		return fmt.Errorf("invalid coinbase consensus commitment: %w", err)
+	}
 
 	return nil
 }
@@ -349,21 +358,22 @@ func validateBlockWithContext(
 	if header.Version == 0 {
 		return fmt.Errorf("invalid block version")
 	}
+	if header.Height == 0 {
+		return validateGenesisBlock(block)
+	}
 
 	// Parent/height consistency checks (for non-genesis blocks).
 	var parent *Block
-	if header.Height > 0 {
-		parent = getParent(header.PrevHash)
-		if parent == nil {
-			return ErrOrphanBlock
-		}
-		if header.Height != parent.Header.Height+1 {
-			return fmt.Errorf("invalid height linkage: parent=%d child=%d", parent.Header.Height, header.Height)
-		}
-		// Basic timestamp sanity for non-tip extensions.
-		if header.Timestamp <= parent.Header.Timestamp {
-			return fmt.Errorf("timestamp %d <= parent timestamp %d", header.Timestamp, parent.Header.Timestamp)
-		}
+	parent = getParent(header.PrevHash)
+	if parent == nil {
+		return ErrOrphanBlock
+	}
+	if header.Height != parent.Header.Height+1 {
+		return fmt.Errorf("invalid height linkage: parent=%d child=%d", parent.Header.Height, header.Height)
+	}
+	// Basic timestamp sanity for non-tip extensions.
+	if header.Timestamp <= parent.Header.Timestamp {
+		return fmt.Errorf("timestamp %d <= parent timestamp %d", header.Timestamp, parent.Header.Timestamp)
 	}
 
 	// For blocks extending the current tip, height must align with our tip.
@@ -375,22 +385,20 @@ func validateBlockWithContext(
 
 	// Enforce parent-branch difficulty + median-time rules for all non-genesis blocks,
 	// including non-tip side-chain/fork blocks.
-	if header.Height > 0 {
-		expectedDifficulty, err := expectedDifficultyFromParent(parent, getParent)
-		if err != nil {
-			return fmt.Errorf("failed to derive expected difficulty from parent context: %w", err)
-		}
-		if header.Difficulty != expectedDifficulty {
-			return fmt.Errorf("invalid difficulty: expected %d, got %d", expectedDifficulty, header.Difficulty)
-		}
+	expectedDifficulty, err := expectedDifficultyFromParent(parent, getParent)
+	if err != nil {
+		return fmt.Errorf("failed to derive expected difficulty from parent context: %w", err)
+	}
+	if header.Difficulty != expectedDifficulty {
+		return fmt.Errorf("invalid difficulty: expected %d, got %d", expectedDifficulty, header.Difficulty)
+	}
 
-		medianTime, err := medianTimestampFromParent(parent, getParent, 11)
-		if err != nil {
-			return fmt.Errorf("failed to derive median timestamp from parent context: %w", err)
-		}
-		if err := validateTimestampWithMedian(header, medianTime); err != nil {
-			return fmt.Errorf("invalid timestamp: %w", err)
-		}
+	medianTime, err := medianTimestampFromParent(parent, getParent, 11)
+	if err != nil {
+		return fmt.Errorf("failed to derive median timestamp from parent context: %w", err)
+	}
+	if err := validateTimestampWithMedian(header, medianTime); err != nil {
+		return fmt.Errorf("invalid timestamp: %w", err)
 	}
 
 	if header.Difficulty < MinDifficulty {
@@ -441,6 +449,9 @@ func validateBlockWithContext(
 			seenKeyImages[input.KeyImage] = struct{}{}
 		}
 	}
+	if err := validateCoinbaseConsensus(block.Transactions[0], header.Height); err != nil {
+		return fmt.Errorf("invalid coinbase consensus commitment: %w", err)
+	}
 
 	merkleRoot, err := block.ComputeMerkleRoot()
 	if err != nil {
@@ -448,6 +459,68 @@ func validateBlockWithContext(
 	}
 	if merkleRoot != header.MerkleRoot {
 		return fmt.Errorf("invalid merkle root")
+	}
+
+	return nil
+}
+
+func validateGenesisBlock(block *Block) error {
+	if block == nil {
+		return fmt.Errorf("nil block")
+	}
+	header := &block.Header
+
+	if header.Height != 0 {
+		return fmt.Errorf("invalid genesis height: expected 0, got %d", header.Height)
+	}
+	if header.PrevHash != GenesisPrevHash() {
+		return fmt.Errorf("invalid genesis prev hash")
+	}
+	if header.Timestamp != GenesisTimestamp {
+		return fmt.Errorf("invalid genesis timestamp: expected %d, got %d", GenesisTimestamp, header.Timestamp)
+	}
+	if header.Difficulty != MinDifficulty {
+		return fmt.Errorf("invalid genesis difficulty: expected %d, got %d", MinDifficulty, header.Difficulty)
+	}
+	if header.Nonce != 0 {
+		return fmt.Errorf("invalid genesis nonce: expected 0, got %d", header.Nonce)
+	}
+	if len(block.Transactions) != 0 {
+		return fmt.Errorf("invalid genesis transactions: expected 0, got %d", len(block.Transactions))
+	}
+	if header.MerkleRoot != [32]byte{} {
+		return fmt.Errorf("invalid genesis merkle root")
+	}
+	if block.Size() > MaxBlockSize {
+		return fmt.Errorf("block too large: %d > %d", block.Size(), MaxBlockSize)
+	}
+
+	return nil
+}
+
+func validateCoinbaseConsensus(coinbase *Transaction, blockHeight uint64) error {
+	if coinbase == nil {
+		return fmt.Errorf("coinbase missing")
+	}
+	if len(coinbase.Outputs) != 1 {
+		return fmt.Errorf("expected exactly one output, got %d", len(coinbase.Outputs))
+	}
+
+	expectedReward := GetBlockReward(blockHeight)
+	expectedBlinding := deriveCoinbaseConsensusBlinding(coinbase.TxPublicKey, blockHeight, 0)
+	expectedCommitment, err := CreatePedersenCommitmentWithBlinding(expectedReward, expectedBlinding)
+	if err != nil {
+		return fmt.Errorf("failed to derive expected commitment: %w", err)
+	}
+
+	output := coinbase.Outputs[0]
+	if output.Commitment != expectedCommitment {
+		return fmt.Errorf("output commitment does not match expected reward commitment")
+	}
+
+	expectedEncryptedAmount := EncryptAmount(expectedReward, expectedBlinding, 0)
+	if output.EncryptedAmount != expectedEncryptedAmount {
+		return fmt.Errorf("encrypted amount does not match expected reward commitment")
 	}
 
 	return nil
@@ -812,6 +885,9 @@ func (c *Chain) addGenesisBlock(block *Block) error {
 	}
 	if _, _, _, found := c.storage.GetTip(); found {
 		return fmt.Errorf("genesis already exists; refusing unvalidated write path")
+	}
+	if err := c.validateBlockForProcessLocked(block); err != nil {
+		return fmt.Errorf("invalid genesis block: %w", err)
 	}
 
 	return c.addBlockInternal(block)
@@ -1507,7 +1583,7 @@ func GetGenesisBlock() (*Block, error) {
 // CreateGenesisBlock creates a genesis block (for testing - use GetGenesisBlock for mainnet)
 func CreateGenesisBlock(minerSpendPub, minerViewPub [32]byte, reward uint64) (*Block, error) {
 	// Create coinbase for genesis
-	coinbase, err := CreateCoinbase(minerSpendPub, minerViewPub, reward)
+	coinbase, err := CreateCoinbase(minerSpendPub, minerViewPub, reward, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create genesis coinbase: %w", err)
 	}

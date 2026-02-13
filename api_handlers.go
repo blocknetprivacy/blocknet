@@ -672,7 +672,7 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 	reward := GetBlockReward(height)
 
 	// Create coinbase paying to the loaded wallet
-	coinbase, err := CreateCoinbase(s.wallet.SpendPubKey(), s.wallet.ViewPubKey(), reward)
+	coinbase, err := CreateCoinbase(s.wallet.SpendPubKey(), s.wallet.ViewPubKey(), reward, height)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create coinbase: "+err.Error())
 		return
@@ -939,13 +939,12 @@ func (s *APIServer) createTxBuilder() *wallet.Builder {
 			blinding, _ := GenerateBlinding()
 			return blinding
 		},
-		ComputeTxID: func(txData []byte) [32]byte {
+		ComputeTxID: func(txData []byte) ([32]byte, error) {
 			tx, err := DeserializeTx(txData)
 			if err != nil {
-				return ComputeTxHash(txData)
+				return [32]byte{}, err
 			}
-			txID, _ := tx.TxID()
-			return txID
+			return tx.TxID()
 		},
 		DeriveStealthAddress: func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error) {
 			output, err := DeriveStealthAddress(spendPub, viewPub)

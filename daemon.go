@@ -227,6 +227,11 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 	// Set up P2P handlers
 	node.SetBlockHandler(d.handleBlock)
 	node.SetTxHandler(d.handleTx)
+	node.SetStemSanityValidator(func(data []byte) bool {
+		txData, _ := DecodeTxWithAux(data)
+		_, err := DeserializeTx(txData)
+		return err == nil
+	})
 
 	// Store explorer config
 	d.explorerAddr = cfg.ExplorerAddr
@@ -365,18 +370,15 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 		return
 	}
 
-	// Validate PoW and consensus structure before accepting
-	if err := ValidateBlockP2P(&block, d.chain); err != nil {
-		log.Printf("Rejected announced block at height %d from %s: %v", block.Header.Height, from.String()[:8], err)
-		return
-	}
-
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	prevBest := d.chain.BestHash()
 	accepted, isMainChain, err := d.chain.ProcessBlock(&block)
 	if err != nil || !accepted {
+		if err != nil {
+			log.Printf("Rejected announced block at height %d from %s: %v", block.Header.Height, from.String()[:8], err)
+		}
 		return
 	}
 
@@ -474,18 +476,13 @@ func (d *Daemon) processBlockData(data []byte) error {
 		return err
 	}
 
-	// Validate PoW and consensus structure before accepting from peers.
-	if err := ValidateBlockP2P(&block, d.chain); err != nil {
-		return fmt.Errorf("rejected p2p block at height %d: %w", block.Header.Height, err)
-	}
-
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	prevBest := d.chain.BestHash()
 	accepted, isMainChain, err := d.chain.ProcessBlock(&block)
 	if err != nil {
-		return err
+		return fmt.Errorf("rejected p2p block at height %d: %w", block.Header.Height, err)
 	}
 	if !accepted {
 		return ErrDuplicateBlock

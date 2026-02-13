@@ -1018,8 +1018,11 @@ func validateCoinbase(tx *Transaction) error {
 	if len(tx.Inputs) != 0 {
 		return fmt.Errorf("coinbase must have no inputs")
 	}
-	if len(tx.Outputs) == 0 {
-		return fmt.Errorf("coinbase must have at least one output")
+	if tx.Fee != 0 {
+		return fmt.Errorf("coinbase fee must be zero")
+	}
+	if len(tx.Outputs) != 1 {
+		return fmt.Errorf("coinbase must have exactly one output")
 	}
 
 	// Verify range proofs on outputs
@@ -1033,28 +1036,26 @@ func validateCoinbase(tx *Transaction) error {
 	return nil
 }
 
+func deriveCoinbaseConsensusBlinding(txPublicKey [32]byte, blockHeight uint64, outputIndex int) [32]byte {
+	h := sha3.New256()
+	h.Write([]byte("blocknet_coinbase_consensus_blinding"))
+	h.Write(txPublicKey[:])
+	var heightBuf [8]byte
+	binary.LittleEndian.PutUint64(heightBuf[:], blockHeight)
+	h.Write(heightBuf[:])
+	var indexBuf [4]byte
+	binary.LittleEndian.PutUint32(indexBuf[:], uint32(outputIndex))
+	h.Write(indexBuf[:])
+	sum := h.Sum(nil)
+
+	var blinding [32]byte
+	copy(blinding[:], sum)
+	return blinding
+}
+
 // ============================================================================
 // Coinbase Transaction
 // ============================================================================
-
-// deriveAmountKey derives the key for amount encryption from shared secret
-// Must match wallet.DeriveBlinding
-func deriveAmountKey(sharedSecret [32]byte, outputIndex int) [32]byte {
-	h := sha3.New256()
-	h.Write([]byte("blocknet_blinding"))
-	h.Write(sharedSecret[:])
-	var buf [4]byte
-	buf[0] = byte(outputIndex)
-	buf[1] = byte(outputIndex >> 8)
-	buf[2] = byte(outputIndex >> 16)
-	buf[3] = byte(outputIndex >> 24)
-	h.Write(buf[:])
-	sum := h.Sum(nil)
-
-	var key [32]byte
-	copy(key[:], sum)
-	return key
-}
 
 // CoinbaseResult contains the coinbase transaction and the data needed to spend it
 type CoinbaseResult struct {
@@ -1064,24 +1065,17 @@ type CoinbaseResult struct {
 	TxPubKey [32]byte // Needed for deriving one-time private key
 }
 
-// CreateCoinbase creates a coinbase (mining reward) transaction
-func CreateCoinbase(recipientSpendPub, recipientViewPub [32]byte, reward uint64) (*CoinbaseResult, error) {
+// CreateCoinbase creates a coinbase (mining reward) transaction.
+// The output commitment blinding is deterministic from public data so
+// validators can enforce amount consensus without access to wallet secrets.
+func CreateCoinbase(recipientSpendPub, recipientViewPub [32]byte, reward uint64, blockHeight uint64) (*CoinbaseResult, error) {
 	// Derive stealth address for reward
 	stealthOut, err := DeriveStealthAddress(recipientSpendPub, recipientViewPub)
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive stealth address: %w", err)
 	}
 
-	// Derive shared secret for amount encryption and blinding derivation
-	// Sender uses: ECDH(txPriv, viewPub) -> shared secret
-	// Recipient uses: ECDH(viewPriv, txPub) -> same shared secret
-	sharedSecret, err := DeriveStealthSecretSender(stealthOut.TxPrivKey, recipientViewPub)
-	if err != nil {
-		return nil, fmt.Errorf("failed to derive shared secret: %w", err)
-	}
-
-	// Derive blinding factor from shared secret (must match wallet.DeriveBlinding)
-	blinding := deriveAmountKey(sharedSecret, 0)
+	blinding := deriveCoinbaseConsensusBlinding(stealthOut.TxPubKey, blockHeight, 0)
 
 	// Create commitment with derived blinding (so scanner can reproduce it)
 	commitment, err := CreatePedersenCommitmentWithBlinding(reward, blinding)
@@ -1095,7 +1089,8 @@ func CreateCoinbase(recipientSpendPub, recipientViewPub [32]byte, reward uint64)
 		return nil, fmt.Errorf("failed to create range proof: %w", err)
 	}
 
-	// Encrypt the amount for the recipient
+	// Encrypt with the same consensus blinding so wallet scanners can recover
+	// coinbase amounts with the deterministic consensus derivation.
 	encryptedAmount := EncryptAmount(reward, blinding, 0)
 
 	tx := &Transaction{

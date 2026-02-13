@@ -28,6 +28,34 @@ type Storage struct {
 	db *bolt.DB
 }
 
+func heightKey(height uint64) []byte {
+	key := make([]byte, 8)
+	binary.BigEndian.PutUint64(key, height)
+	return key
+}
+
+func readTipMeta(meta *bolt.Bucket) (hash [32]byte, height uint64, found bool, err error) {
+	tipData := meta.Get(metaKeyTip)
+	heightData := meta.Get(metaKeyHeight)
+
+	if tipData == nil {
+		if heightData != nil {
+			return hash, 0, false, fmt.Errorf("height metadata present without tip metadata")
+		}
+		return hash, 0, false, nil
+	}
+	if len(tipData) != 32 {
+		return hash, 0, false, fmt.Errorf("invalid tip hash length: got %d", len(tipData))
+	}
+	if len(heightData) != 8 {
+		return hash, 0, false, fmt.Errorf("invalid tip height length: got %d", len(heightData))
+	}
+
+	copy(hash[:], tipData)
+	height = binary.BigEndian.Uint64(heightData)
+	return hash, height, true, nil
+}
+
 // NewStorage opens or creates the chain database
 func NewStorage(dataDir string) (*Storage, error) {
 	// Ensure data directory exists
@@ -71,6 +99,10 @@ func (s *Storage) Close() error {
 
 // SaveBlock stores a block by its hash
 func (s *Storage) SaveBlock(block *Block) error {
+	if block == nil {
+		return fmt.Errorf("cannot save nil block")
+	}
+
 	hash := block.Hash()
 	data, err := json.Marshal(block)
 	if err != nil {
@@ -78,7 +110,11 @@ func (s *Storage) SaveBlock(block *Block) error {
 	}
 
 	return s.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketBlocks).Put(hash[:], data)
+		blocks := tx.Bucket(bucketBlocks)
+		if block.Header.Height > 0 && blocks.Get(block.Header.PrevHash[:]) == nil {
+			return fmt.Errorf("block %x at height %d has missing parent %x", hash[:8], block.Header.Height, block.Header.PrevHash[:8])
+		}
+		return blocks.Put(hash[:], data)
 	})
 }
 
@@ -114,8 +150,7 @@ func (s *Storage) HasBlock(hash [32]byte) bool {
 
 // SetMainChainBlock sets the block hash at a height (main chain)
 func (s *Storage) SetMainChainBlock(height uint64, hash [32]byte) error {
-	key := make([]byte, 8)
-	binary.BigEndian.PutUint64(key, height)
+	key := heightKey(height)
 
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketHeights).Put(key, hash[:])
@@ -124,8 +159,7 @@ func (s *Storage) SetMainChainBlock(height uint64, hash [32]byte) error {
 
 // GetBlockHashByHeight gets the main chain block hash at height
 func (s *Storage) GetBlockHashByHeight(height uint64) ([32]byte, bool) {
-	key := make([]byte, 8)
-	binary.BigEndian.PutUint64(key, height)
+	key := heightKey(height)
 
 	var hash [32]byte
 	var found bool
@@ -144,8 +178,7 @@ func (s *Storage) GetBlockHashByHeight(height uint64) ([32]byte, bool) {
 
 // RemoveMainChainBlock removes a height from main chain index (for reorgs)
 func (s *Storage) RemoveMainChainBlock(height uint64) error {
-	key := make([]byte, 8)
-	binary.BigEndian.PutUint64(key, height)
+	key := heightKey(height)
 
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketHeights).Delete(key)
@@ -335,13 +368,25 @@ type BlockCommit struct {
 
 // CommitBlock atomically writes a block and all related changes
 func (s *Storage) CommitBlock(commit *BlockCommit) error {
+	if commit == nil {
+		return fmt.Errorf("nil block commit")
+	}
+	if commit.Block == nil {
+		return fmt.Errorf("nil block in block commit")
+	}
+	if commit.Height != commit.Block.Header.Height {
+		return fmt.Errorf("commit height mismatch: commit=%d block=%d", commit.Height, commit.Block.Header.Height)
+	}
+	if commit.Hash != commit.Block.Hash() {
+		return fmt.Errorf("commit hash mismatch with block header hash")
+	}
+
 	blockData, err := json.Marshal(commit.Block)
 	if err != nil {
 		return err
 	}
 
-	heightBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(heightBytes, commit.Height)
+	heightBytes := heightKey(commit.Height)
 
 	return s.db.Update(func(tx *bolt.Tx) error {
 		blocks := tx.Bucket(bucketBlocks)
@@ -349,6 +394,30 @@ func (s *Storage) CommitBlock(commit *BlockCommit) error {
 		outputs := tx.Bucket(bucketOutputs)
 		keyImages := tx.Bucket(bucketKeyImages)
 		meta := tx.Bucket(bucketMeta)
+
+		if commit.Block.Header.Height > 0 && blocks.Get(commit.Block.Header.PrevHash[:]) == nil {
+			return fmt.Errorf("main-chain commit block parent missing: height=%d prev=%x", commit.Block.Header.Height, commit.Block.Header.PrevHash[:8])
+		}
+
+		if commit.IsMainTip {
+			tipHash, tipHeight, found, err := readTipMeta(meta)
+			if err != nil {
+				return fmt.Errorf("invalid tip metadata: %w", err)
+			}
+
+			if !found {
+				if commit.Height != 0 {
+					return fmt.Errorf("cannot commit non-genesis tip to empty chain: height=%d", commit.Height)
+				}
+			} else {
+				if commit.Height != tipHeight+1 {
+					return fmt.Errorf("tip height linkage mismatch: current=%d new=%d", tipHeight, commit.Height)
+				}
+				if commit.Block.Header.PrevHash != tipHash {
+					return fmt.Errorf("tip hash linkage mismatch: expected prev %x got %x", tipHash[:8], commit.Block.Header.PrevHash[:8])
+				}
+			}
+		}
 
 		// Store block
 		if err := blocks.Put(commit.Hash[:], blockData); err != nil {
@@ -414,26 +483,113 @@ type ReorgCommit struct {
 
 // CommitReorg atomically performs a chain reorganization
 func (s *Storage) CommitReorg(commit *ReorgCommit) error {
+	if commit == nil {
+		return fmt.Errorf("nil reorg commit")
+	}
+	if len(commit.Connect) == 0 {
+		return fmt.Errorf("reorg commit requires at least one block to connect")
+	}
+
 	return s.db.Update(func(tx *bolt.Tx) error {
+		blocks := tx.Bucket(bucketBlocks)
 		heights := tx.Bucket(bucketHeights)
 		outputs := tx.Bucket(bucketOutputs)
 		keyImages := tx.Bucket(bucketKeyImages)
 		meta := tx.Bucket(bucketMeta)
+
+		currentTip, currentHeight, found, err := readTipMeta(meta)
+		if err != nil {
+			return fmt.Errorf("invalid current tip metadata: %w", err)
+		}
+		if !found {
+			return fmt.Errorf("cannot apply reorg on empty chain")
+		}
+		if len(commit.Disconnect) > int(currentHeight+1) {
+			return fmt.Errorf("disconnect set too deep for current height: disconnect=%d currentHeight=%d", len(commit.Disconnect), currentHeight)
+		}
+
+		expectedNewHeight := currentHeight - uint64(len(commit.Disconnect)) + uint64(len(commit.Connect))
+		if commit.NewHeight != expectedNewHeight {
+			return fmt.Errorf("reorg new height mismatch: expected=%d got=%d", expectedNewHeight, commit.NewHeight)
+		}
+
+		baseHash := currentTip
+		baseHeight := currentHeight
+		if len(commit.Disconnect) > 0 {
+			for i, block := range commit.Disconnect {
+				if block == nil {
+					return fmt.Errorf("disconnect[%d] is nil", i)
+				}
+				hash := block.Hash()
+				expectedHeight := currentHeight - uint64(i)
+				if block.Header.Height != expectedHeight {
+					return fmt.Errorf("disconnect[%d] height mismatch: expected=%d got=%d", i, expectedHeight, block.Header.Height)
+				}
+				mainHash := heights.Get(heightKey(expectedHeight))
+				if mainHash == nil {
+					return fmt.Errorf("main-chain height %d missing during disconnect", expectedHeight)
+				}
+				var indexedHash [32]byte
+				copy(indexedHash[:], mainHash)
+				if indexedHash != hash {
+					return fmt.Errorf("disconnect[%d] hash mismatch with height index at %d", i, expectedHeight)
+				}
+				if i > 0 {
+					prev := commit.Disconnect[i-1]
+					if prev.Header.PrevHash != hash {
+						return fmt.Errorf("disconnect linkage mismatch between heights %d and %d", prev.Header.Height, block.Header.Height)
+					}
+				}
+			}
+
+			lowestDisconnected := commit.Disconnect[len(commit.Disconnect)-1]
+			if lowestDisconnected.Header.Height == 0 {
+				return fmt.Errorf("reorg cannot disconnect genesis block")
+			}
+			baseHash = lowestDisconnected.Header.PrevHash
+			baseHeight = lowestDisconnected.Header.Height - 1
+		}
+
+		if blocks.Get(baseHash[:]) == nil {
+			return fmt.Errorf("reorg base block not found: %x", baseHash[:8])
+		}
+
+		expectedPrevHash := baseHash
+		expectedConnectHeight := baseHeight + 1
+		for i, block := range commit.Connect {
+			if block == nil {
+				return fmt.Errorf("connect[%d] is nil", i)
+			}
+			hash := block.Hash()
+			if block.Header.Height != expectedConnectHeight {
+				return fmt.Errorf("connect[%d] height mismatch: expected=%d got=%d", i, expectedConnectHeight, block.Header.Height)
+			}
+			if block.Header.PrevHash != expectedPrevHash {
+				return fmt.Errorf("connect[%d] parent mismatch: expected prev %x got %x", i, expectedPrevHash[:8], block.Header.PrevHash[:8])
+			}
+			expectedPrevHash = hash
+			expectedConnectHeight++
+		}
+		if commit.NewTip != expectedPrevHash {
+			return fmt.Errorf("reorg new tip mismatch: expected=%x got=%x", expectedPrevHash[:8], commit.NewTip[:8])
+		}
 
 		// Disconnect blocks (reverse order, unmark key images)
 		for i := len(commit.Disconnect) - 1; i >= 0; i-- {
 			block := commit.Disconnect[i]
 
 			// Remove from height index
-			heightKey := make([]byte, 8)
-			binary.BigEndian.PutUint64(heightKey, block.Header.Height)
-			heights.Delete(heightKey)
+			if err := heights.Delete(heightKey(block.Header.Height)); err != nil {
+				return err
+			}
 
 			// Unmark key images from this block's transactions
 			for _, txn := range block.Transactions {
 				if !txn.IsCoinbase() {
 					for _, input := range txn.Inputs {
-						keyImages.Delete(input.KeyImage[:])
+						if err := keyImages.Delete(input.KeyImage[:]); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -443,10 +599,8 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 		}
 
 		// Connect new blocks (forward order)
-		blocks := tx.Bucket(bucketBlocks)
 		for _, block := range commit.Connect {
-			heightKey := make([]byte, 8)
-			binary.BigEndian.PutUint64(heightKey, block.Header.Height)
+			hKey := heightKey(block.Header.Height)
 			hash := block.Hash()
 
 			// Save block data
@@ -459,7 +613,9 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 			}
 
 			// Add to height index
-			heights.Put(heightKey, hash[:])
+			if err := heights.Put(hKey, hash[:]); err != nil {
+				return err
+			}
 
 			// Add outputs
 			for _, txn := range block.Transactions {
@@ -471,9 +627,14 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 						Output:      out,
 						BlockHeight: block.Header.Height,
 					}
-					data, _ := json.Marshal(newOutput)
+					data, err := json.Marshal(newOutput)
+					if err != nil {
+						return fmt.Errorf("failed to marshal output: %w", err)
+					}
 					key := outpointKey(txid, uint32(idx))
-					outputs.Put(key, data)
+					if err := outputs.Put(key, data); err != nil {
+						return err
+					}
 				}
 			}
 
@@ -481,7 +642,9 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 			for _, txn := range block.Transactions {
 				if !txn.IsCoinbase() {
 					for _, input := range txn.Inputs {
-						keyImages.Put(input.KeyImage[:], heightKey)
+						if err := keyImages.Put(input.KeyImage[:], hKey); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -493,9 +656,15 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 		binary.BigEndian.PutUint64(heightBytes, commit.NewHeight)
 		binary.BigEndian.PutUint64(workBytes, commit.NewWork)
 
-		meta.Put(metaKeyTip, commit.NewTip[:])
-		meta.Put(metaKeyHeight, heightBytes)
-		meta.Put(metaKeyWork, workBytes)
+		if err := meta.Put(metaKeyTip, commit.NewTip[:]); err != nil {
+			return err
+		}
+		if err := meta.Put(metaKeyHeight, heightBytes); err != nil {
+			return err
+		}
+		if err := meta.Put(metaKeyWork, workBytes); err != nil {
+			return err
+		}
 
 		return nil
 	})

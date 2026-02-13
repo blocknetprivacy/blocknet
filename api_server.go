@@ -13,6 +13,8 @@ import (
 	"golang.org/x/time/rate"
 )
 
+const maxRequestBodyBytes int64 = 1 << 20 // 1MB
+
 // APIServer serves the authenticated JSON API for GUI wallets.
 type APIServer struct {
 	daemon  *Daemon
@@ -134,7 +136,7 @@ func (s *APIServer) Start(addr string) error {
 
 	var handler http.Handler = mux
 	handler = authMiddleware(token, handler)
-	handler = maxBodySize(handler, 1<<20) // 1MB
+	handler = maxBodySize(handler, maxRequestBodyBytes)
 
 	s.server = &http.Server{
 		Addr:         addr,

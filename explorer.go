@@ -8,13 +8,55 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+)
+
+const (
+	explorerStatsMaxPoints      = 1000
+	explorerStatsMaxTraversal   = 20000
+	explorerStatsRefreshEvery   = 30 * time.Second
+	explorerStatsStaleAfter     = 90 * time.Second
+	explorerHashrateSampleCount = 10
 )
 
 // Explorer serves the block explorer web interface
 type Explorer struct {
 	daemon *Daemon
 	mux    *http.ServeMux
+
+	statsMu         sync.RWMutex
+	statsSnapshot   explorerStatsSnapshot
+	statsReady      bool
+	statsRefreshing bool
+
+	supplyMu      sync.Mutex
+	supplyHeight  uint64
+	supplyEmitted uint64
+}
+
+type chartPoint struct {
+	H  uint64 `json:"h"`
+	D  uint64 `json:"d"`
+	N  uint64 `json:"n"`
+	Tx int    `json:"tx"`
+	S  int    `json:"s"`
+	Bt int64  `json:"bt"`
+}
+
+type explorerStatsSnapshot struct {
+	Height       uint64
+	Difficulty   uint64
+	Hashrate     string
+	AvgBlockTime string
+	TotalTx      int
+	Emitted      string
+	Remaining    string
+	PctEmitted   string
+	Peers        int
+	DataJSON     template.JS
+	GenesisTs    int64
+	ComputedAt   time.Time
 }
 
 // NewExplorer creates a new explorer server
@@ -25,6 +67,7 @@ func NewExplorer(daemon *Daemon) *Explorer {
 	e.mux.HandleFunc("/tx/", e.handleTx)
 	e.mux.HandleFunc("/search", e.handleSearch)
 	e.mux.HandleFunc("/stats", e.handleStats)
+	e.startStatsPrecompute()
 	return e
 }
 
@@ -35,17 +78,27 @@ func (e *Explorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Start starts the explorer HTTP server
 func (e *Explorer) Start(addr string) error {
-	return http.ListenAndServe(addr, e)
+	handler := maxBodySize(e, maxRequestBodyBytes)
+	return http.ListenAndServe(addr, handler)
 }
 
 // Supply info
 func (e *Explorer) getSupplyInfo() (emitted, remaining uint64, pctEmitted float64) {
 	height := e.daemon.chain.Height()
 
-	// Calculate emitted supply
-	for h := uint64(1); h <= height; h++ {
-		emitted += GetBlockReward(h)
+	e.supplyMu.Lock()
+	defer e.supplyMu.Unlock()
+
+	// Handle chain rewind/reorg conservatively by rebuilding from zero.
+	if e.supplyHeight > height {
+		e.supplyHeight = 0
+		e.supplyEmitted = 0
 	}
+	for h := e.supplyHeight + 1; h <= height; h++ {
+		e.supplyEmitted += GetBlockReward(h)
+	}
+	e.supplyHeight = height
+	emitted = e.supplyEmitted
 
 	// Target supply is ~10M coins (before tail emission)
 	targetSupply := uint64(10_000_000 * 100_000_000) // in smallest units
@@ -57,6 +110,169 @@ func (e *Explorer) getSupplyInfo() (emitted, remaining uint64, pctEmitted float6
 		pctEmitted = float64(emitted) / float64(targetSupply) * 100
 	}
 	return
+}
+
+func (e *Explorer) startStatsPrecompute() {
+	e.refreshStatsSnapshotAsync()
+	go func() {
+		ticker := time.NewTicker(explorerStatsRefreshEvery)
+		defer ticker.Stop()
+		for range ticker.C {
+			e.refreshStatsSnapshotAsync()
+		}
+	}()
+}
+
+func (e *Explorer) getStatsSnapshot() (explorerStatsSnapshot, bool) {
+	e.statsMu.RLock()
+	defer e.statsMu.RUnlock()
+	return e.statsSnapshot, e.statsReady
+}
+
+func (e *Explorer) shouldRefreshStats(s explorerStatsSnapshot) bool {
+	currentHeight := e.daemon.chain.Height()
+	if s.Height != currentHeight {
+		return true
+	}
+	return time.Since(s.ComputedAt) > explorerStatsStaleAfter
+}
+
+func (e *Explorer) refreshStatsSnapshotAsync() {
+	e.statsMu.Lock()
+	if e.statsRefreshing {
+		e.statsMu.Unlock()
+		return
+	}
+	e.statsRefreshing = true
+	e.statsMu.Unlock()
+
+	go func() {
+		snapshot := e.buildStatsSnapshot()
+		e.statsMu.Lock()
+		e.statsSnapshot = snapshot
+		e.statsReady = true
+		e.statsRefreshing = false
+		e.statsMu.Unlock()
+	}()
+}
+
+func (e *Explorer) refreshStatsSnapshotSync() explorerStatsSnapshot {
+	snapshot := e.buildStatsSnapshot()
+	e.statsMu.Lock()
+	e.statsSnapshot = snapshot
+	e.statsReady = true
+	e.statsRefreshing = false
+	e.statsMu.Unlock()
+	return snapshot
+}
+
+func (e *Explorer) buildStatsSnapshot() explorerStatsSnapshot {
+	chain := e.daemon.chain
+	height := chain.Height()
+
+	startHeight := uint64(0)
+	if height+1 > explorerStatsMaxTraversal {
+		startHeight = height + 1 - explorerStatsMaxTraversal
+	}
+
+	sampleSpan := height - startHeight + 1
+	step := uint64(1)
+	if sampleSpan > uint64(explorerStatsMaxPoints) {
+		step = sampleSpan / uint64(explorerStatsMaxPoints)
+		if step == 0 {
+			step = 1
+		}
+	}
+
+	var points []chartPoint
+	var totalTx int
+	var btSum float64
+	var btCount int
+
+	prevTs := int64(0)
+	if startHeight > 0 {
+		prevBlock := chain.GetBlockByHeight(startHeight - 1)
+		if prevBlock != nil {
+			prevTs = prevBlock.Header.Timestamp
+		}
+	}
+
+	for h := startHeight; h <= height; h++ {
+		block := chain.GetBlockByHeight(h)
+		if block == nil {
+			continue
+		}
+		totalTx += len(block.Transactions)
+
+		bt := int64(0)
+		if prevTs > 0 {
+			bt = block.Header.Timestamp - prevTs
+			if bt > 0 {
+				btSum += float64(bt)
+				btCount++
+			}
+		}
+		prevTs = block.Header.Timestamp
+
+		if (h-startHeight)%step == 0 || h == height {
+			points = append(points, chartPoint{
+				H:  h,
+				D:  block.Header.Difficulty,
+				N:  block.Header.Nonce,
+				Tx: len(block.Transactions),
+				S:  block.Size(),
+				Bt: bt,
+			})
+		}
+	}
+
+	jsonData, _ := json.Marshal(points)
+
+	var avgBt float64
+	if btCount > 0 {
+		avgBt = btSum / float64(btCount)
+	}
+
+	var hashrate float64
+	if height >= 2 {
+		var totalTime int64
+		var count int
+		for h := height; h > 0 && count < explorerHashrateSampleCount; h-- {
+			block := chain.GetBlockByHeight(h)
+			prevBlock := chain.GetBlockByHeight(h - 1)
+			if block != nil && prevBlock != nil {
+				blockTime := block.Header.Timestamp - prevBlock.Header.Timestamp
+				if blockTime > 0 {
+					totalTime += blockTime
+					count++
+				}
+			}
+		}
+		if count > 0 && totalTime > 0 {
+			hashrate = float64(chain.NextDifficulty()) / (float64(totalTime) / float64(count))
+		}
+	}
+
+	emitted, remaining, pctEmitted := e.getSupplyInfo()
+	genesisTs := int64(0)
+	if genesis := chain.GetBlockByHeight(0); genesis != nil {
+		genesisTs = genesis.Header.Timestamp
+	}
+
+	return explorerStatsSnapshot{
+		Height:       height,
+		Difficulty:   chain.NextDifficulty(),
+		Hashrate:     fmt.Sprintf("%.2f", hashrate),
+		AvgBlockTime: fmt.Sprintf("%.0f", avgBt),
+		TotalTx:      totalTx,
+		Emitted:      fmt.Sprintf("%.2f", float64(emitted)/100_000_000),
+		Remaining:    fmt.Sprintf("%.2f", float64(remaining)/100_000_000),
+		PctEmitted:   fmt.Sprintf("%.4f", pctEmitted),
+		Peers:        len(e.daemon.node.Peers()),
+		DataJSON:     template.JS(jsonData),
+		GenesisTs:    genesisTs,
+		ComputedAt:   time.Now(),
+	}
 }
 
 func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -285,7 +501,7 @@ func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	
+
 	if !found {
 		http.Error(w, "Transaction not found", http.StatusNotFound)
 		return
@@ -345,100 +561,25 @@ func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Explorer) handleStats(w http.ResponseWriter, r *http.Request) {
-	chain := e.daemon.chain
-	height := chain.Height()
-
-	// Sample blocks for chart data
-	maxPoints := 1000
-	step := uint64(1)
-	if height > uint64(maxPoints) {
-		step = height / uint64(maxPoints)
+	snapshot, ready := e.getStatsSnapshot()
+	if !ready {
+		snapshot = e.refreshStatsSnapshotSync()
+	} else if e.shouldRefreshStats(snapshot) {
+		e.refreshStatsSnapshotAsync()
 	}
-
-	type chartPoint struct {
-		H  uint64 `json:"h"`
-		D  uint64 `json:"d"`
-		N  uint64 `json:"n"`
-		Tx int    `json:"tx"`
-		S  int    `json:"s"`
-		Bt int64  `json:"bt"`
-	}
-
-	var points []chartPoint
-	var prevTs int64
-	var totalTx int
-	var btSum float64
-	var btCount int
-
-	for h := uint64(0); h <= height; h++ {
-		block := chain.GetBlockByHeight(h)
-		if block == nil {
-			continue
-		}
-		totalTx += len(block.Transactions)
-		bt := int64(0)
-		if h > 0 && prevTs > 0 {
-			bt = block.Header.Timestamp - prevTs
-			if bt > 0 {
-				btSum += float64(bt)
-				btCount++
-			}
-		}
-		prevTs = block.Header.Timestamp
-		if h%step == 0 || h == height {
-			points = append(points, chartPoint{
-				H:  h,
-				D:  block.Header.Difficulty,
-				N:  block.Header.Nonce,
-				Tx: len(block.Transactions),
-				S:  block.Size(),
-				Bt: bt,
-			})
-		}
-	}
-
-	jsonData, _ := json.Marshal(points)
-
-	var avgBt float64
-	if btCount > 0 {
-		avgBt = btSum / float64(btCount)
-	}
-
-	// Current hashrate estimate
-	var hashrate float64
-	if height >= 2 {
-		var totalTime int64
-		var count int
-		for h := height; h > 0 && count < 10; h-- {
-			block := chain.GetBlockByHeight(h)
-			prevBlock := chain.GetBlockByHeight(h - 1)
-			if block != nil && prevBlock != nil {
-				blockTime := block.Header.Timestamp - prevBlock.Header.Timestamp
-				if blockTime > 0 {
-					totalTime += blockTime
-					count++
-				}
-			}
-		}
-		if count > 0 && totalTime > 0 {
-			hashrate = float64(chain.NextDifficulty()) / (float64(totalTime) / float64(count))
-		}
-	}
-
-	emitted, remaining, pctEmitted := e.getSupplyInfo()
 
 	data := map[string]interface{}{
-		"Height":       height,
-		"Difficulty":   chain.NextDifficulty(),
-		"Hashrate":     fmt.Sprintf("%.2f", hashrate),
-		"AvgBlockTime": fmt.Sprintf("%.0f", avgBt),
-		"TotalTx":      totalTx,
-		"Emitted":      fmt.Sprintf("%.2f", float64(emitted)/100_000_000),
-		"Remaining":    fmt.Sprintf("%.2f", float64(remaining)/100_000_000),
-		"PctEmitted":   fmt.Sprintf("%.4f", pctEmitted),
-		"Peers":        len(e.daemon.node.Peers()),
-		"DataJSON":     template.JS(jsonData),
-		"GenesisTs":    chain.GetBlockByHeight(0).Header.Timestamp,
+		"Height":       snapshot.Height,
+		"Difficulty":   snapshot.Difficulty,
+		"Hashrate":     snapshot.Hashrate,
+		"AvgBlockTime": snapshot.AvgBlockTime,
+		"TotalTx":      snapshot.TotalTx,
+		"Emitted":      snapshot.Emitted,
+		"Remaining":    snapshot.Remaining,
+		"PctEmitted":   snapshot.PctEmitted,
+		"Peers":        snapshot.Peers,
+		"DataJSON":     snapshot.DataJSON,
+		"GenesisTs":    snapshot.GenesisTs,
 	}
 
 	renderTemplate(w, explorerStatsTmpl, data)
@@ -812,7 +953,7 @@ footer{margin-top:64px;padding-top:24px;border-top:1px dashed #333;color:#444;fo
 <div class="stat"><div class="stat-v">{{.AvgBlockTime}}s</div><div class="stat-k">Avg Block Time</div></div>
 </div>
 <div class="box stats">
-<div class="stat"><div class="stat-v">{{.TotalTx}}</div><div class="stat-k">Total Transactions</div></div>
+<div class="stat"><div class="stat-v">{{.TotalTx}}</div><div class="stat-k">Window Transactions</div></div>
 <div class="stat"><div class="stat-v">{{.Emitted}}</div><div class="stat-k">Coins Emitted</div></div>
 <div class="stat"><div class="stat-v">{{.PctEmitted}}%</div><div class="stat-k">Emission Progress</div></div>
 <div class="stat"><div class="stat-v">{{.Peers}}</div><div class="stat-k">Peers</div></div>

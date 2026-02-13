@@ -102,7 +102,13 @@ var errNewBlock = fmt.Errorf("new block received, restarting")
 // Returns the mined block or nil if cancelled.
 func (m *Miner) MineBlock(ctx context.Context, mempool []*Transaction, auxData map[[32]byte]*TxAuxData) (*Block, error) {
 	// Create coinbase transaction
-	coinbase, err := CreateCoinbase(m.config.MinerSpendPub, m.config.MinerViewPub, GetBlockReward(m.chain.Height()+1))
+	nextHeight := m.chain.Height() + 1
+	coinbase, err := CreateCoinbase(
+		m.config.MinerSpendPub,
+		m.config.MinerViewPub,
+		GetBlockReward(nextHeight),
+		nextHeight,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create coinbase: %w", err)
 	}
