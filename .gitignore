@@ -1,0 +1,31 @@
+# Binary
+blocknet
+bnt
+*.exe
+
+# Build
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Go
+vendor/
+
+# Wallet files — NEVER commit these
+*.wallet.dat
+
+# bnt runtime
+config.json
+*.log
+blocknet-data-mainnet
+blocknet-data-testnet
+notes
