@@ -54,9 +54,7 @@ The `load` command:
 
 3. Prompts for your wallet password.
 
-4. Loads the wallet into the running core.
-
-5. Asks if you'd like to save the wallet path to config for auto-loading on future starts.
+4. Loads the wallet into the running core and saves the wallet path to config for [auto-loading](#auto-loading-on-startup) on future starts.
 
 ```
 > load
@@ -74,18 +72,28 @@ The `load` command:
   Wallet loaded
   Address: 9PNo...
   Backup: /Users/you/.config/bnt/wallets/main.wallet.dat
-
-  Save wallet path to config for auto-load? [y/N]: y
-  Saved. Next start will use this wallet automatically.
 ```
 
-Only one wallet can be loaded at a time. To switch wallets, use [`unload`](reference-core.md#unload) to release the current one and then `load` a different one — no restart needed. Alternatively, [restart the core](reference-blocknet.md#blocknet-restart-mainnettestnet) (`blocknet restart mainnet`) and load a different one on the next attach.
+If you choose "Create a new wallet", the core generates a fresh wallet with a new BIP39 seed:
+
+```
+  Choose: 4
+  Wallet name (without extension):
+> savings
+  Password: ********
+
+  Wallet created
+  Address:  9PNo...
+  Filename: savings.wallet.dat
+```
+
+Only one wallet can be loaded at a time. To switch wallets, use [`unload`](reference-core.md#unload) to release the current one and then `load` a different one — no restart needed.
 
 ---
 
 ### Auto-loading on startup
 
-If you save a wallet path to config (via the `load` prompt or by editing [`config.json`](reference-config.md) manually), the core will load that wallet automatically every time it starts. See the [`wallet_file`](reference-config.md#paths) field in the Configuration Reference.
+When you load or create a wallet, the path is saved to config automatically. The core will load that wallet every time it starts. You can also set it manually by editing [`config.json`](reference-config.md). See the [`wallet_file`](reference-config.md#paths) field in the Configuration Reference.
 
 ```json
 {

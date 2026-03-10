@@ -5,16 +5,30 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 )
 
-func testSession(t *testing.T, handler http.Handler, input string) *AttachSession {
+// testSessionWithWallet sets up a session with a config that already has
+// WalletFile pointed at the given name inside the wallets dir, so that
+// cmdLoad doesn't attempt a core restart.
+func testSessionWithWallet(t *testing.T, handler http.Handler, input, walletName string) *AttachSession {
 	t.Helper()
 	tmpDir := t.TempDir()
 	t.Setenv("BNT_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
+
+	walletsDir := filepath.Join(tmpDir, "wallets")
+	os.MkdirAll(walletsDir, 0755)
+	walletPath := filepath.Join(walletsDir, walletName)
+
+	cfg := DefaultConfig()
+	cfg.Cores[Mainnet].WalletFile = walletPath
+	cfgData, _ := json.Marshal(cfg)
+	os.WriteFile(filepath.Join(tmpDir, "config.json"), cfgData, 0644)
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -28,7 +42,8 @@ func testSession(t *testing.T, handler http.Handler, input string) *AttachSessio
 }
 
 func TestCmdLoad_StaleStateAfterFailedAuth(t *testing.T) {
-	session := testSession(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Input: choose found wallet (option 1), password "testpass"
+	session := testSessionWithWallet(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/wallet/balance":
 			w.WriteHeader(http.StatusBadRequest)
@@ -37,7 +52,10 @@ func TestCmdLoad_StaleStateAfterFailedAuth(t *testing.T) {
 			w.WriteHeader(http.StatusConflict)
 			json.NewEncoder(w).Encode(map[string]string{"error": "wallet already loaded"})
 		}
-	}), "2\ntestpass\n")
+	}), "1\ntestpass\n", "testwallet.wallet.dat")
+
+	walletsDir := filepath.Join(os.Getenv("BNT_CONFIG_DIR"), "wallets")
+	os.WriteFile(filepath.Join(walletsDir, "testwallet.wallet.dat"), []byte("dummy"), 0600)
 
 	err := session.cmdLoad()
 	if err == nil {
@@ -54,7 +72,8 @@ func TestCmdLoad_StaleStateAfterFailedAuth(t *testing.T) {
 func TestCmdLoad_RaceConditionWalletLoadedDuringMenu(t *testing.T) {
 	var balanceCalls atomic.Int32
 
-	session := testSession(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// No wallet file created → 0 found wallets → option 2 is "create new"
+	session := testSessionWithWallet(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/wallet/balance":
 			n := balanceCalls.Add(1)
@@ -68,8 +87,11 @@ func TestCmdLoad_RaceConditionWalletLoadedDuringMenu(t *testing.T) {
 		case "/api/wallet/load":
 			t.Error("POST /api/wallet/load should not have been called")
 			w.WriteHeader(http.StatusConflict)
+		case "/api/wallet/create":
+			t.Error("POST /api/wallet/create should not have been called")
+			w.WriteHeader(http.StatusConflict)
 		}
-	}), "2\ntestpass\n")
+	}), "2\ntestwallet\ntestpass\n", "testwallet.wallet.dat")
 
 	err := session.cmdLoad()
 	if err != nil {
@@ -81,19 +103,59 @@ func TestCmdLoad_RaceConditionWalletLoadedDuringMenu(t *testing.T) {
 }
 
 func TestCmdLoad_NormalSuccess(t *testing.T) {
-	session := testSession(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	session := testSessionWithWallet(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/wallet/balance":
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]string{"error": "no wallet loaded"})
 		case "/api/wallet/load":
+			var req map[string]string
+			json.NewDecoder(r.Body).Decode(&req)
+			if req["filepath"] != "testwallet.wallet.dat" {
+				t.Errorf("expected filepath 'testwallet.wallet.dat', got %q", req["filepath"])
+			}
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]any{"loaded": true, "address": "bnt1testaddress"})
+			json.NewEncoder(w).Encode(map[string]any{
+				"loaded":   true,
+				"address":  "bnt1testaddress",
+				"filename": "testwallet.wallet.dat",
+			})
 		}
-	}), "2\ntestpass\n")
+	}), "1\ntestpass\n", "testwallet.wallet.dat")
+
+	walletsDir := filepath.Join(os.Getenv("BNT_CONFIG_DIR"), "wallets")
+	os.WriteFile(filepath.Join(walletsDir, "testwallet.wallet.dat"), []byte("dummy"), 0600)
 
 	err := session.cmdLoad()
 	if err != nil {
 		t.Fatalf("expected successful load, got: %v", err)
+	}
+}
+
+func TestCmdCreate_NormalSuccess(t *testing.T) {
+	// No wallet file → 0 found wallets → option 2 is "create new"
+	session := testSessionWithWallet(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/wallet/balance":
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "no wallet loaded"})
+		case "/api/wallet/create":
+			var req map[string]string
+			json.NewDecoder(r.Body).Decode(&req)
+			if req["filename"] != "testwallet.wallet.dat" {
+				t.Errorf("expected filename 'testwallet.wallet.dat', got %q", req["filename"])
+			}
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]any{
+				"created":  true,
+				"address":  "bnt1testaddress",
+				"filename": "testwallet.wallet.dat",
+			})
+		}
+	}), "2\ntestwallet\ntestpass\n", "testwallet.wallet.dat")
+
+	err := session.cmdLoad()
+	if err != nil {
+		t.Fatalf("expected successful create, got: %v", err)
 	}
 }

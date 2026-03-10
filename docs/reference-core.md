@@ -27,7 +27,7 @@ Closing the shell (`quit` or Ctrl-C) does not stop the core. See [reference-bloc
 #### Wallet
 | Command | Description |
 |---|---|
-| `load` | Load a wallet file into the core |
+| `load` | Load or create a wallet |
 | `unload` | Unload the current wallet |
 | `balance` | Show wallet balance |
 | `address` | Show receiving address |
@@ -72,12 +72,12 @@ Closing the shell (`quit` or Ctrl-C) does not stop the core. See [reference-bloc
 
 #### `load`
 
-Loads a wallet file into the running core. See the [Wallet Management](reference-wallet.md) guide for the full story on loading, backups, auto-load, and recovery.
+Loads or creates a wallet in the running core. See the [Wallet Management](reference-wallet.md) guide for the full story on loading, backups, auto-load, and recovery.
 
 **Use this when:**
-you just started the core and need to open your wallet.
+you just started the core and need to open your wallet, or you want to create a new one.
 
-**Example:**
+**Example — loading an existing wallet:**
 ```
 > load
   Found wallet files:
@@ -91,14 +91,27 @@ you just started the core and need to open your wallet.
 
   Wallet loaded
   Address: 9PNo...
+```
 
-  Save wallet path to config for auto-load? [y/N]: y
-  Saved. Next start will use this wallet automatically.
+**Example — creating a new wallet:**
+```
+> load
+  ...
+  4) Create a new wallet
+
+  Choose: 4
+  Wallet name (without extension):
+> savings
+  Password: ********
+
+  Wallet created
+  Address:  9PNo...
+  Filename: savings.wallet.dat
 ```
 
 **Notes:**
-- Only one wallet can be loaded per core session. Use [`unload`](#unload) to switch wallets without restarting, or [restart the core](troubleshooting.md#cant-switch-wallets).
-- Saving to config makes future starts [auto-load](reference-wallet.md#auto-loading-on-startup) this wallet via the `--wallet` flag. See the [Configuration Reference](reference-config.md#paths) for the `wallet_file` field.
+- Only one wallet can be loaded per core session. Use [`unload`](#unload) to switch wallets, then `load` again.
+- The selected wallet path is saved to config automatically so future starts [auto-load](reference-wallet.md#auto-loading-on-startup) it via the `--wallet` flag. See the [Configuration Reference](reference-config.md#paths) for the `wallet_file` field.
 
 ---
 
@@ -161,6 +174,18 @@ someone asks where to send you coins.
 # Address
 
   9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFb...
+
+  Get a short name like @name or $name at https://blocknet.id
+```
+
+**Example — view-only wallet:**
+```
+> addr
+
+# Address
+
+  9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFb...
+  (view-only wallet — cannot send or sign)
 
   Get a short name like @name or $name at https://blocknet.id
 ```
@@ -522,19 +547,29 @@ you want to confirm wallet state is persisted.
 
 **Aliases:** `scan`
 
-Triggers a blockchain rescan for wallet outputs.
+Rescans the blockchain for wallet outputs. This is not peer-to-peer sync — it scans blocks that are already downloaded, looking for outputs that belong to your wallet.
 
 **Use this when:**
-wallet looks behind chain height or missing transactions. See [Sync is slow or stuck](troubleshooting.md#sync-is-slow-or-stuck) if the scanner isn't catching up.
+your wallet balance looks wrong or you're missing transactions. See [Sync is slow or stuck](troubleshooting.md#sync-is-slow-or-stuck) if the scanner isn't catching up.
 
 **Example:**
 ```
 > sync
 
 # Sync
-  Known blocks:   14207
-  Blocks scanned: 14200
-  Sync triggered — the core will scan for new outputs.
+  Scanning for wallet outputs...
+  Scanned 7 blocks to height 14207
+  Outputs found: 1
+  Outputs spent: 0
+```
+
+**Example — already up to date:**
+```
+> sync
+
+# Sync
+  Scanning for wallet outputs...
+  Wallet is up to date at height 14207.
 ```
 
 ---

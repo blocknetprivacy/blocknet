@@ -27,6 +27,16 @@ func (s *AttachSession) cmdLoad() error {
 		return nil
 	}
 
+	cfg, err := LoadConfig(ConfigFile())
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	cc := cfg.Cores[s.network]
+	if cc == nil {
+		return fmt.Errorf("no config for %s", s.network)
+	}
+	dataDir := cc.ResolveDataDir(s.network)
+
 	home, _ := os.UserHomeDir()
 	searchDirs := []string{
 		WalletsDir(),
@@ -34,13 +44,8 @@ func (s *AttachSession) cmdLoad() error {
 		home,
 	}
 
-	cfg, cfgErr := LoadConfig(ConfigFile())
-	if cfgErr == nil {
-		if cc := cfg.Cores[s.network]; cc != nil {
-			dataDir := cc.ResolveDataDir(s.network)
-			abs, _ := filepath.Abs(dataDir)
-			searchDirs = append(searchDirs, abs)
-		}
+	if abs, err := filepath.Abs(dataDir); err == nil {
+		searchDirs = append(searchDirs, abs)
 	}
 
 	cwd, _ := os.Getwd()
@@ -85,6 +90,7 @@ func (s *AttachSession) cmdLoad() error {
 	}
 
 	var walletPath string
+	var createFilename string
 	switch {
 	case choice <= len(wallets):
 		walletPath = wallets[choice-1]
@@ -111,7 +117,20 @@ func (s *AttachSession) cmdLoad() error {
 			return fmt.Errorf("file not found: %s", walletPath)
 		}
 	case choice == len(wallets)+2:
-		walletPath = ""
+		fmt.Println("  Wallet name (without extension):")
+		fmt.Print("\n> ")
+		nameLine, err := s.reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		name := strings.TrimSpace(nameLine)
+		if name == "" {
+			return fmt.Errorf("empty wallet name")
+		}
+		if !strings.HasSuffix(name, ".wallet.dat") {
+			name += ".wallet.dat"
+		}
+		createFilename = name
 	}
 
 	password, err := s.readPassword("  Password: ")
@@ -138,26 +157,84 @@ func (s *AttachSession) cmdLoad() error {
 		return nil
 	}
 
+	if createFilename != "" {
+		createCtx, createCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer createCancel()
+
+		raw, err := s.client.Post(createCtx, "/api/wallet/create", map[string]string{
+			"password": password,
+			"filename": createFilename,
+		})
+		if err != nil {
+			if apiErr, ok := err.(*APIError); ok && apiErr.StatusCode == 409 {
+				return fmt.Errorf("%s\n  Use 'load' and select it to open the existing wallet", apiErr.Message)
+			}
+			return s.handleAPIError(err)
+		}
+
+		var resp struct {
+			Created  bool   `json:"created"`
+			Address  string `json:"address"`
+			Filename string `json:"filename"`
+		}
+		json.Unmarshal(raw, &resp)
+
+		fmt.Printf("\n  Wallet created\n")
+		fmt.Printf("  Address:  %s\n", resp.Address)
+		fmt.Printf("  Filename: %s\n", resp.Filename)
+
+		cc.WalletFile = filepath.Join(filepath.Dir(cc.WalletFile), resp.Filename)
+		EnsureConfigDir()
+		SaveConfig(ConfigFile(), cfg)
+
+		s.locked = false
+		return nil
+	}
+
+	if walletPath != "" && walletPath != cc.WalletFile {
+		cc.WalletFile = walletPath
+		EnsureConfigDir()
+		if err := SaveConfig(ConfigFile(), cfg); err != nil {
+			return fmt.Errorf("save config: %w", err)
+		}
+	}
+
 	loadCtx, loadCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer loadCancel()
 
-	loadReq := map[string]string{
+	raw, err := s.client.Post(loadCtx, "/api/wallet/load", map[string]string{
 		"password": password,
-	}
-	if walletPath != "" {
-		loadReq["wallet_file"] = walletPath
-	}
-	raw, err := s.client.Post(loadCtx, "/api/wallet/load", loadReq)
+		"filepath": filepath.Base(walletPath),
+	})
 	if err != nil {
-		if apiErr, ok := err.(*APIError); ok && strings.Contains(strings.ToLower(apiErr.Message), "already loaded") {
-			return fmt.Errorf("the core thinks a wallet is already loaded, but it isn't usable.\n  This can happen after a failed or timed-out load attempt.\n  Restart the core with 'blocknet restart %s' to clear the stale state", s.network)
+		if apiErr, ok := err.(*APIError); ok {
+			lower := strings.ToLower(apiErr.Message)
+			if strings.Contains(lower, "already loaded") {
+				return fmt.Errorf("the core thinks a wallet is already loaded, but it isn't usable.\n  This can happen after a failed or timed-out load attempt.\n  Restart the core with 'blocknet restart %s' to clear the stale state", s.network)
+			}
+			switch apiErr.StatusCode {
+			case 401:
+				if strings.Contains(lower, "wrong password") {
+					return fmt.Errorf("wrong password")
+				}
+				return fmt.Errorf("unauthorized — check api.cookie")
+			case 403:
+				return fmt.Errorf("wallet file not readable (check file permissions)")
+			case 404:
+				return fmt.Errorf("wallet file not found by the core\n  Ensure it is in the core's wallet directory")
+			case 422:
+				return fmt.Errorf("wallet file is corrupted\n  Restore from backup or re-import from seed")
+			case 500:
+				return fmt.Errorf("the core returned: %s\n  Check the core log: blocknet logs %s", apiErr.Message, s.network)
+			}
 		}
 		return s.handleAPIError(err)
 	}
 
 	var resp struct {
-		Loaded  bool   `json:"loaded"`
-		Address string `json:"address"`
+		Loaded   bool   `json:"loaded"`
+		Address  string `json:"address"`
+		Filename string `json:"filename"`
 	}
 	json.Unmarshal(raw, &resp)
 
@@ -180,22 +257,6 @@ func (s *AttachSession) cmdLoad() error {
 		}
 	}
 
-	if walletPath != "" && cfgErr == nil {
-		fmt.Print("\n  Save wallet path to config for auto-load? [y/N]: ")
-		confirmLine, _ := s.reader.ReadString('\n')
-		if strings.ToLower(strings.TrimSpace(confirmLine)) == "y" {
-			cc := cfg.Cores[s.network]
-			if cc != nil {
-				cc.WalletFile = walletPath
-				EnsureConfigDir()
-				if err := SaveConfig(ConfigFile(), cfg); err != nil {
-					fmt.Fprintf(os.Stderr, "  warning: could not save config: %v\n", err)
-				} else {
-					fmt.Println("  Saved. Next start will use this wallet automatically.")
-				}
-			}
-		}
-	}
 	return nil
 }
 
@@ -228,6 +289,7 @@ func (s *AttachSession) cmdBalance() error {
 		Pending            uint64 `json:"pending"`
 		PendingUnconfirmed uint64 `json:"pending_unconfirmed"`
 		PendingUnconfETA   int64  `json:"pending_unconfirmed_eta"`
+		Total              uint64 `json:"total"`
 		OutputsTotal       int    `json:"outputs_total"`
 		OutputsUnspent     int    `json:"outputs_unspent"`
 	}
@@ -242,7 +304,7 @@ func (s *AttachSession) cmdBalance() error {
 		eta := time.Duration(bal.PendingUnconfETA) * time.Second
 		fmt.Printf("  pending:    %s (est unlock ~%s)\n", FormatAmount(bal.PendingUnconfirmed), eta.Round(time.Minute))
 	}
-	fmt.Printf("  total:      %s\n", FormatAmount(bal.Spendable+bal.Pending))
+	fmt.Printf("  total:      %s\n", FormatAmount(bal.Total))
 	fmt.Printf("  outputs:    %d unspent", bal.OutputsUnspent)
 	if bal.OutputsTotal > bal.OutputsUnspent {
 		fmt.Printf(", %d spent", bal.OutputsTotal-bal.OutputsUnspent)
@@ -261,12 +323,17 @@ func (s *AttachSession) cmdAddress() error {
 	}
 
 	var resp struct {
-		Address string `json:"address"`
+		Address  string `json:"address"`
+		ViewOnly bool   `json:"view_only"`
 	}
 	json.Unmarshal(raw, &resp)
 
 	fmt.Printf("\n%s\n\n", SectionHead("Address", s.noColor))
-	fmt.Printf("  %s\n\n", resp.Address)
+	fmt.Printf("  %s\n", resp.Address)
+	if resp.ViewOnly {
+		fmt.Println("  (view-only wallet — cannot send or sign)")
+	}
+	fmt.Println()
 
 	idURL := "https://blocknet.id"
 	if !s.noColor {
@@ -1095,33 +1162,35 @@ func (s *AttachSession) cmdSave() error {
 }
 
 func (s *AttachSession) cmdSync() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	raw, err := s.client.Get(ctx, "/api/wallet/balance")
-	if err == nil {
-		var bal struct {
-			ChainHeight uint64 `json:"chain_height"`
-		}
-		json.Unmarshal(raw, &bal)
+	fmt.Printf("\n%s\n", SectionHead("Sync", s.noColor))
+	fmt.Println("  Scanning for wallet outputs...")
 
-		rawOut, errOut := s.client.Get(ctx, "/api/wallet/outputs")
-		if errOut == nil {
-			var outs struct {
-				SyncedHeight uint64 `json:"synced_height"`
-			}
-			json.Unmarshal(rawOut, &outs)
-			fmt.Printf("\n%s\n", SectionHead("Sync", s.noColor))
-			fmt.Printf("  Known blocks:   %d\n", bal.ChainHeight)
-			fmt.Printf("  Blocks scanned: %d\n", outs.SyncedHeight)
-		}
-	}
-
-	_, err = s.client.Post(ctx, "/api/wallet/sync", nil)
+	raw, err := s.client.Post(ctx, "/api/wallet/sync", nil)
 	if err != nil {
 		return s.handleAPIError(err)
 	}
 
-	fmt.Println("  Sync triggered — the core will scan for new outputs.")
+	var resp struct {
+		Status        string `json:"status"`
+		SyncedHeight  uint64 `json:"synced_height"`
+		ChainHeight   uint64 `json:"chain_height"`
+		BlocksScanned int    `json:"blocks_scanned"`
+		OutputsFound  int    `json:"outputs_found"`
+		OutputsSpent  int    `json:"outputs_spent"`
+	}
+	json.Unmarshal(raw, &resp)
+
+	if resp.Status == "already synced" {
+		fmt.Printf("  Wallet is up to date at height %d.\n", resp.SyncedHeight)
+	} else {
+		fmt.Printf("  Scanned %d blocks to height %d\n", resp.BlocksScanned, resp.SyncedHeight)
+		fmt.Printf("  Outputs found: %d\n", resp.OutputsFound)
+		if resp.OutputsSpent > 0 {
+			fmt.Printf("  Outputs spent: %d\n", resp.OutputsSpent)
+		}
+	}
 	return nil
 }
