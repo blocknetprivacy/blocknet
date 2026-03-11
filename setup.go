@@ -264,17 +264,17 @@ func cmdSetup(_ []string) error {
 	fmt.Printf("\n%s\n\n", SectionHead("Advanced", NoColor))
 
 	fmt.Println("  That covers the basics! Want to configure advanced settings?")
-	fmt.Printf("  %s(testnet, API ports, network tuning)%s\n", dim, reset)
-	fmt.Printf("  yes or no %s(default: no)%s: ", cyan, reset)
-	if parseYes(readLine(reader), false) {
+	fmt.Printf("  %s(testnet, API ports, explorer, network tuning)%s\n", dim, reset)
+	fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
+	if parseYes(readLine(reader), true) {
 		fmt.Println()
 
 		// --- Testnet ---
 		fmt.Printf("\n%s\n\n", ErrorHead("Testnet", NoColor))
 
 		fmt.Println("  Enable testnet? A separate network for testing — coins have no value.")
-		fmt.Printf("  yes or no %s(default: no)%s: ", cyan, reset)
-		if parseYes(readLine(reader), false) {
+		fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
+		if parseYes(readLine(reader), true) {
 			cfg.Cores[Testnet].Enabled = true
 			fmt.Println()
 
@@ -287,11 +287,30 @@ func cmdSetup(_ []string) error {
 					cfg.Cores[Testnet].APIAddr = answer
 				}
 			}
+			fmt.Println()
+
+			fmt.Println("  Enable the testnet block explorer?")
+			fmt.Printf("  %sServes a web-based block explorer you can open in your browser.%s\n", dim, reset)
+			fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
+			if parseYes(readLine(reader), true) {
+				fmt.Println()
+				fmt.Println("  Testnet explorer address:")
+				fmt.Printf("  %s(default: 127.0.0.1:18080)%s: ", cyan, reset)
+				answer := readLine(reader)
+				if answer == "" {
+					cfg.Cores[Testnet].ExplorerAddr = "127.0.0.1:18080"
+				} else if err := validateAddr(answer); err != nil {
+					fmt.Printf("  %s%v — using default%s\n", dim, err, reset)
+					cfg.Cores[Testnet].ExplorerAddr = "127.0.0.1:18080"
+				} else {
+					cfg.Cores[Testnet].ExplorerAddr = answer
+				}
+			}
 		}
 		fmt.Println()
 
-		// --- Mainnet API ---
-		fmt.Printf("\n%s\n\n", SectionHead("Mainnet API", NoColor))
+		// --- Mainnet ---
+		fmt.Printf("\n%s\n\n", SectionHead("Mainnet", NoColor))
 
 		fmt.Println("  Mainnet API address — how tools like 'blocknet attach' connect to your node.")
 		fmt.Printf("  %s(default: 127.0.0.1:8332)%s: ", cyan, reset)
@@ -300,6 +319,25 @@ func cmdSetup(_ []string) error {
 				fmt.Printf("  %s%v — using default%s\n", dim, err, reset)
 			} else {
 				cfg.Cores[Mainnet].APIAddr = answer
+			}
+		}
+		fmt.Println()
+
+		fmt.Println("  Enable the mainnet block explorer?")
+		fmt.Printf("  %sServes a web-based block explorer you can open in your browser.%s\n", dim, reset)
+		fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
+		if parseYes(readLine(reader), true) {
+			fmt.Println()
+			fmt.Println("  Mainnet explorer address:")
+			fmt.Printf("  %s(default: 127.0.0.1:8080)%s: ", cyan, reset)
+			answer := readLine(reader)
+			if answer == "" {
+				cfg.Cores[Mainnet].ExplorerAddr = "127.0.0.1:8080"
+			} else if err := validateAddr(answer); err != nil {
+				fmt.Printf("  %s%v — using default%s\n", dim, err, reset)
+				cfg.Cores[Mainnet].ExplorerAddr = "127.0.0.1:8080"
+			} else {
+				cfg.Cores[Mainnet].ExplorerAddr = answer
 			}
 		}
 		fmt.Println()
