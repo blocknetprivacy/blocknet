@@ -94,7 +94,11 @@ func cmdStart(args []string) error {
 		}
 
 		writeCorePidFile(net, pid)
-		fmt.Printf("  %s✓%s %s%s%s running %s(pid %d, api %s)%s\n", green, reset, netColor(net), net, reset, dim, pid, cc.APIAddr, reset)
+		if cc.ExplorerAddr != "" {
+			fmt.Printf("  %s✓%s %s%s%s running %s(pid %d, api %s, explorer %s)%s\n", green, reset, netColor(net), net, reset, dim, pid, cc.APIAddr, cc.ExplorerAddr, reset)
+		} else {
+			fmt.Printf("  %s✓%s %s%s%s running %s(pid %d, api %s)%s\n", green, reset, netColor(net), net, reset, dim, pid, cc.APIAddr, reset)
+		}
 	}
 	return nil
 }
@@ -220,6 +224,9 @@ func cmdStatus(_ []string) error {
 		fmt.Printf("  Peers:    %d\n", status.Peers)
 		fmt.Printf("  Syncing:  %v\n", status.Syncing)
 		fmt.Printf("  API:      %s\n", cc.APIAddr)
+		if cc.ExplorerAddr != "" {
+			fmt.Printf("  Explorer: %s\n", cc.ExplorerAddr)
+		}
 	}
 	fmt.Println()
 	return nil
