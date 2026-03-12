@@ -58,6 +58,8 @@ func main() {
 		err = cmdCompletions(args[1:])
 	case "config":
 		err = cmdConfig(args[1:])
+	case "watchdog":
+		err = cmdWatchdog(args[1:])
 	case "version", "--version", "-v":
 		green, reset := "\033[38;2;170;255;0m", "\033[0m"
 		if NoColor {
@@ -108,6 +110,7 @@ func printUsage() {
 	fmt.Printf("  cleanup                     %s\n", d("Remove core versions not in use"))
 	fmt.Print(h("Maintenance"))
 	fmt.Printf("  setup                       %s\n", d("First-run setup wizard"))
+	fmt.Printf("  watchdog [mainnet|testnet]   %s\n", d("Monitor daemon health, restart on crash"))
 	fmt.Printf("  doctor                      %s\n", d("Check system health and diagnose issues"))
 	fmt.Printf("  config                      %s\n", d("Print current configuration"))
 	fmt.Printf("  completions <shell>         %s\n", d("Generate shell completions (bash/zsh/fish)"))
