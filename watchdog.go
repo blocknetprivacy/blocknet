@@ -95,11 +95,6 @@ func cmdWatchdog(args []string) error {
 				continue
 			}
 
-			if _, err := readCorePidFile(net); err != nil {
-				failures[net] = 0
-				continue
-			}
-
 			if checkHealth(cc.APIAddr) {
 				failures[net] = 0
 				continue
@@ -114,8 +109,8 @@ func cmdWatchdog(args []string) error {
 			fmt.Printf("  %s%s%s %sunresponsive (%d checks), restarting...%s\n",
 				nc, net, reset, amber, failures[net], reset)
 			netArg := string(net)
-			exec.Command(self, "stop", netArg).Run()
-			exec.Command(self, "start", netArg).Run()
+			run(self, "stop", netArg)
+			run(self, "start", netArg)
 			fmt.Printf("  %s%s%s %srestarted%s\n", nc, net, reset, dim, reset)
 			failures[net] = 0
 		}
@@ -172,7 +167,18 @@ func readWatchdogState() (int, []Network, error) {
 	return pid, nets, nil
 }
 
+func run(bin string, args ...string) {
+	cmd := exec.Command(bin, args...)
+	cmd.Env = append(os.Environ(), "BNT_WATCHDOG=1")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Run()
+}
+
 func stopWatchdog() {
+	if os.Getenv("BNT_WATCHDOG") == "1" {
+		return
+	}
 	pid, err := readWatchdogPid()
 	if err != nil || !processAlive(pid) {
 		os.Remove(WatchdogPidFile())
