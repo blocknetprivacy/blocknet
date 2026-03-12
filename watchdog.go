@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -12,18 +13,10 @@ import (
 )
 
 const (
-	watchdogInterval        = 5 * time.Second
-	watchdogHealthTimeout   = 3 * time.Second
-	watchdogFailThreshold   = 3 // consecutive failures before restart
-	watchdogMaxRestarts     = 3 // consecutive restart failures before cooldown
-	watchdogRestartCooldown = 60 * time.Second
+	watchdogInterval      = 5 * time.Second
+	watchdogHealthTimeout = 3 * time.Second
+	watchdogFailThreshold = 3
 )
-
-type netState struct {
-	failures    int
-	restarts    int
-	lastRestart time.Time
-}
 
 func cmdWatchdog(args []string) error {
 	cfg, err := LoadConfig(ConfigFile())
@@ -59,95 +52,55 @@ func cmdWatchdog(args []string) error {
 	}
 	defer os.Remove(WatchdogPidFile())
 
-	dim, reset := "\033[38;2;160;160;160m", "\033[0m"
-	green := "\033[38;2;170;255;0m"
-	pink := "\033[38;2;255;0;170m"
-	if NoColor {
-		dim, reset, green, pink = "", "", "", ""
-	}
-	netColor := func(net Network) string {
-		if net == Testnet {
-			return pink
-		}
-		return green
-	}
+	self, _ := os.Executable()
 
-	fmt.Printf("  %sWatchdog monitoring:%s", dim, reset)
+	fmt.Printf("  watchdog: monitoring")
 	for _, net := range networks {
-		fmt.Printf(" %s%s%s", netColor(net), net, reset)
+		fmt.Printf(" %s", net)
 	}
-	fmt.Printf(" %s(every %s)%s\n", dim, watchdogInterval, reset)
+	fmt.Printf(" (every %s)\n", watchdogInterval)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	state := make(map[Network]*netState)
-	for _, net := range networks {
-		state[net] = &netState{}
-	}
-
+	failures := make(map[Network]int)
 	ticker := time.NewTicker(watchdogInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Printf("\n  %sWatchdog stopped%s\n", dim, reset)
+			fmt.Println("  watchdog: stopped")
 			return nil
 		case <-ticker.C:
 		}
 
 		for _, net := range networks {
-			s := state[net]
 			cc := cfg.Cores[net]
 			if cc == nil || cc.APIAddr == "" {
 				continue
 			}
 
-			_, pidErr := readCorePidFile(net)
-			if pidErr != nil {
-				s.failures = 0
+			if _, err := readCorePidFile(net); err != nil {
+				failures[net] = 0
 				continue
 			}
 
 			if checkHealth(cc.APIAddr) {
-				if s.failures > 0 {
-					s.failures = 0
-					s.restarts = 0
-				}
+				failures[net] = 0
 				continue
 			}
 
-			s.failures++
-			if s.failures < watchdogFailThreshold {
+			failures[net]++
+			if failures[net] < watchdogFailThreshold {
 				continue
 			}
 
-			if s.restarts >= watchdogMaxRestarts {
-				if time.Since(s.lastRestart) < watchdogRestartCooldown {
-					continue
-				}
-				s.restarts = 0
-			}
-
-			nc := netColor(net)
-			fmt.Printf("  %s%s%s %sunresponsive (%d checks), restarting...%s\n",
-				nc, net, reset, dim, s.failures, reset)
-
-			if err := restartForWatchdog(net, cc); err != nil {
-				fmt.Fprintf(os.Stderr, "  %s%s%s restart failed: %v\n", nc, net, reset, err)
-				s.restarts++
-				s.lastRestart = time.Now()
-				if s.restarts >= watchdogMaxRestarts {
-					fmt.Fprintf(os.Stderr, "  %s%s%s %stoo many failures, backing off %s%s\n",
-						nc, net, reset, dim, watchdogRestartCooldown, reset)
-				}
-			} else {
-				fmt.Printf("  %s%s%s %srestarted successfully%s\n", nc, net, reset, dim, reset)
-				s.failures = 0
-				s.restarts = 0
-				s.lastRestart = time.Now()
-			}
+			fmt.Printf("  watchdog: %s unresponsive, restarting\n", net)
+			netArg := string(net)
+			exec.Command(self, "stop", netArg).Run()
+			exec.Command(self, "start", netArg).Run()
+			failures[net] = 0
 		}
 	}
 }
@@ -202,6 +155,29 @@ func readWatchdogState() (int, []Network, error) {
 	return pid, nets, nil
 }
 
+func stopWatchdog() {
+	pid, err := readWatchdogPid()
+	if err != nil || !processAlive(pid) {
+		os.Remove(WatchdogPidFile())
+		return
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return
+	}
+	proc.Signal(os.Interrupt)
+	for i := 0; i < 10; i++ {
+		if !processAlive(pid) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if processAlive(pid) {
+		proc.Kill()
+	}
+	os.Remove(WatchdogPidFile())
+}
+
 func writeWatchdogPid(networks []Network) error {
 	var buf strings.Builder
 	buf.WriteString(strconv.Itoa(os.Getpid()))
@@ -211,20 +187,4 @@ func writeWatchdogPid(networks []Network) error {
 		buf.WriteByte('\n')
 	}
 	return os.WriteFile(WatchdogPidFile(), []byte(buf.String()), 0644)
-}
-
-func restartForWatchdog(net Network, cc *CoreConfig) error {
-	stopCore(net)
-
-	resolved, err := ResolveInstalledVersion(cc.Version)
-	if err != nil {
-		return fmt.Errorf("resolve version: %w", err)
-	}
-
-	pid, err := startCore(net, cc, CoreBinaryPath(resolved))
-	if err != nil {
-		return err
-	}
-
-	return writeCorePidFile(net, pid)
 }

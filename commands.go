@@ -115,6 +115,8 @@ func cmdStop(args []string) error {
 		networks = []Network{Mainnet, Testnet}
 	}
 
+	stopWatchdog()
+
 	green, pink, dim, reset := "\033[38;2;170;255;0m", "\033[38;2;255;0;170m", "\033[38;2;160;160;160m", "\033[0m"
 	if NoColor {
 		green, pink, dim, reset = "", "", "", ""
@@ -188,10 +190,18 @@ func cmdStatus(_ []string) error {
 
 		pid, pidErr := readCorePidFile(net)
 		alive := pidErr == nil && processAlive(pid)
+		healthy := alive && cc.APIAddr != "" && checkHealth(cc.APIAddr)
+
+		amber := "\033[38;2;255;170;0m"
+		if NoColor {
+			amber = ""
+		}
 
 		runTag := fmt.Sprintf("%sstopped%s", dim, reset)
-		if alive {
+		if alive && healthy {
 			runTag = fmt.Sprintf("%srunning%s", netColor, reset)
+		} else if alive {
+			runTag = fmt.Sprintf("%sunresponsive%s", amber, reset)
 		}
 
 		monitorTag := ""
@@ -209,7 +219,7 @@ func cmdStatus(_ []string) error {
 		fmt.Printf("\n%s#%s %s [%s] [%s]%s\n", netColor, reset, net, runTag, enabledTag, monitorTag)
 		fmt.Printf("  Version: %s\n", versionLabel)
 
-		if !alive || cc.APIAddr == "" {
+		if !healthy || cc.APIAddr == "" {
 			continue
 		}
 
@@ -325,6 +335,9 @@ func setEnabled(args []string, enabled bool) error {
 	}
 
 	cc.Enabled = enabled
+	if !enabled {
+		stopWatchdog()
+	}
 	if err := EnsureConfigDir(); err != nil {
 		return err
 	}

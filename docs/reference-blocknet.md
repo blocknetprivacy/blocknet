@@ -278,6 +278,26 @@ After the basics, setup asks "Want to configure advanced settings?" (default: no
 
 Safe to run at any time, but if you choose the "Start now?" step it may start cores (and auto-upgrade checks may restart unpinned running cores). You can also configure everything manually via [`blocknet config`](#blocknet-config) or by editing `config.json` directly (see [Configuration Reference](reference-config.md)).
 
+#### `blocknet watchdog [mainnet|testnet]`
+
+Monitors running cores by polling the `/api/health` endpoint every 5 seconds. If a core fails 3 consecutive health checks (15 seconds unresponsive), the watchdog automatically runs `blocknet stop` and `blocknet start` to restart it.
+
+If no network is specified, watches all enabled cores. Only one watchdog can run at a time.
+
+The watchdog is stopped automatically when you run `blocknet stop` or `blocknet disable`, so it won't fight with intentional shutdowns.
+
+When the watchdog is active, `blocknet status` shows a `[monitored]` tag on each watched core.
+
+```
+blocknet watchdog                 # watch all enabled cores
+blocknet watchdog mainnet         # watch mainnet only
+
+# status output with watchdog running:
+# mainnet [running] [enabled] [monitored]
+```
+
+Run it in the background with `blocknet watchdog &`, in a tmux/screen session, or via your system's service manager.
+
 #### `blocknet doctor`
 
 Runs a series of diagnostic checks and reports issues. Checks include:
@@ -378,6 +398,7 @@ All data lives under the config directory. The path depends on your platform:
 ├── wallets/                 Wallet backups (see reference-wallet.md)
 ├── core.mainnet.pid         Running core PID (mainnet)
 ├── core.testnet.pid         Running core PID (testnet)
+├── watchdog.pid             Running watchdog PID + monitored networks
 ├── mainnet.log              Core stdout/stderr (mainnet)
 └── testnet.log              Core stdout/stderr (testnet)
 ```
