@@ -162,10 +162,12 @@ func cmdStatus(_ []string) error {
 		green, pink, dim, reset = "", "", "", ""
 	}
 
-	if wdPid, err := readWatchdogPid(); err == nil && processAlive(wdPid) {
-		fmt.Printf("\n  Watchdog: %srunning%s %s(pid %d)%s", green, reset, dim, wdPid, reset)
-	} else {
-		fmt.Printf("\n  Watchdog: %sstopped%s", dim, reset)
+	watchedNets := make(map[Network]bool)
+	if wdPid, _, err := readWatchdogState(); err == nil && processAlive(wdPid) {
+		_, nets, _ := readWatchdogState()
+		for _, n := range nets {
+			watchedNets[n] = true
+		}
 	}
 
 	for _, net := range []Network{Mainnet, Testnet} {
@@ -192,6 +194,11 @@ func cmdStatus(_ []string) error {
 			runTag = fmt.Sprintf("%srunning%s", netColor, reset)
 		}
 
+		monitorTag := ""
+		if watchedNets[net] {
+			monitorTag = fmt.Sprintf(" [%smonitored%s]", netColor, reset)
+		}
+
 		versionLabel := cc.Version
 		if IsPinned(cc.Version) {
 			versionLabel = fmt.Sprintf("%s %s(pinned)%s", cc.Version, dim, reset)
@@ -199,7 +206,7 @@ func cmdStatus(_ []string) error {
 			versionLabel = fmt.Sprintf("%s (%s)", resolved, cc.Version)
 		}
 
-		fmt.Printf("\n%s#%s %s [%s] [%s]\n", netColor, reset, net, runTag, enabledTag)
+		fmt.Printf("\n%s#%s %s [%s] [%s]%s\n", netColor, reset, net, runTag, enabledTag, monitorTag)
 		fmt.Printf("  Version: %s\n", versionLabel)
 
 		if !alive || cc.APIAddr == "" {

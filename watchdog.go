@@ -54,7 +54,7 @@ func cmdWatchdog(args []string) error {
 	if pid, err := readWatchdogPid(); err == nil && processAlive(pid) {
 		return fmt.Errorf("watchdog already running (pid %d)", pid)
 	}
-	if err := writeWatchdogPid(); err != nil {
+	if err := writeWatchdogPid(networks); err != nil {
 		return fmt.Errorf("write watchdog pidfile: %w", err)
 	}
 	defer os.Remove(WatchdogPidFile())
@@ -176,15 +176,41 @@ func checkHealth(apiAddr string) bool {
 }
 
 func readWatchdogPid() (int, error) {
-	data, err := os.ReadFile(WatchdogPidFile())
-	if err != nil {
-		return 0, err
-	}
-	return strconv.Atoi(strings.TrimSpace(string(data)))
+	pid, _, err := readWatchdogState()
+	return pid, err
 }
 
-func writeWatchdogPid() error {
-	return os.WriteFile(WatchdogPidFile(), []byte(strconv.Itoa(os.Getpid())+"\n"), 0644)
+func readWatchdogState() (int, []Network, error) {
+	data, err := os.ReadFile(WatchdogPidFile())
+	if err != nil {
+		return 0, nil, err
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) == 0 {
+		return 0, nil, fmt.Errorf("empty watchdog pidfile")
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err != nil {
+		return 0, nil, err
+	}
+	var nets []Network
+	for _, line := range lines[1:] {
+		if n := strings.TrimSpace(line); n != "" {
+			nets = append(nets, Network(n))
+		}
+	}
+	return pid, nets, nil
+}
+
+func writeWatchdogPid(networks []Network) error {
+	var buf strings.Builder
+	buf.WriteString(strconv.Itoa(os.Getpid()))
+	buf.WriteByte('\n')
+	for _, net := range networks {
+		buf.WriteString(string(net))
+		buf.WriteByte('\n')
+	}
+	return os.WriteFile(WatchdogPidFile(), []byte(buf.String()), 0644)
 }
 
 func restartForWatchdog(net Network, cc *CoreConfig) error {
