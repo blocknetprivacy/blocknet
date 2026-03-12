@@ -35,6 +35,10 @@ func CorePidFile(net Network) string {
 	return filepath.Join(ConfigDir(), fmt.Sprintf("core.%s.pid", net))
 }
 
+func WatchdogPidFile() string {
+	return filepath.Join(ConfigDir(), "watchdog.pid")
+}
+
 func DataDir(net Network) string {
 	return filepath.Join(ConfigDir(), "data", string(net))
 }

@@ -162,6 +162,12 @@ func cmdStatus(_ []string) error {
 		green, pink, dim, reset = "", "", "", ""
 	}
 
+	if wdPid, err := readWatchdogPid(); err == nil && processAlive(wdPid) {
+		fmt.Printf("\n  Watchdog: %srunning%s %s(pid %d)%s", green, reset, dim, wdPid, reset)
+	} else {
+		fmt.Printf("\n  Watchdog: %sstopped%s", dim, reset)
+	}
+
 	for _, net := range []Network{Mainnet, Testnet} {
 		cc := cfg.Cores[net]
 		if cc == nil {

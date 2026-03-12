@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -49,6 +50,14 @@ func cmdWatchdog(args []string) error {
 	if len(networks) == 0 {
 		return fmt.Errorf("no enabled cores to watch")
 	}
+
+	if pid, err := readWatchdogPid(); err == nil && processAlive(pid) {
+		return fmt.Errorf("watchdog already running (pid %d)", pid)
+	}
+	if err := writeWatchdogPid(); err != nil {
+		return fmt.Errorf("write watchdog pidfile: %w", err)
+	}
+	defer os.Remove(WatchdogPidFile())
 
 	dim, reset := "\033[38;2;160;160;160m", "\033[0m"
 	green := "\033[38;2;170;255;0m"
@@ -164,6 +173,18 @@ func checkHealth(apiAddr string) bool {
 	}
 	resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+func readWatchdogPid() (int, error) {
+	data, err := os.ReadFile(WatchdogPidFile())
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(data)))
+}
+
+func writeWatchdogPid() error {
+	return os.WriteFile(WatchdogPidFile(), []byte(strconv.Itoa(os.Getpid())+"\n"), 0644)
 }
 
 func restartForWatchdog(net Network, cc *CoreConfig) error {
