@@ -54,11 +54,25 @@ func cmdWatchdog(args []string) error {
 
 	self, _ := os.Executable()
 
-	fmt.Printf("  watchdog: monitoring")
-	for _, net := range networks {
-		fmt.Printf(" %s", net)
+	dim, reset := "\033[38;2;160;160;160m", "\033[0m"
+	green := "\033[38;2;170;255;0m"
+	pink := "\033[38;2;255;0;170m"
+	amber := "\033[38;2;255;170;0m"
+	if NoColor {
+		dim, reset, green, pink, amber = "", "", "", "", ""
 	}
-	fmt.Printf(" (every %s)\n", watchdogInterval)
+	netColor := func(net Network) string {
+		if net == Testnet {
+			return pink
+		}
+		return green
+	}
+
+	fmt.Printf("  %sWatchdog monitoring:%s", dim, reset)
+	for _, net := range networks {
+		fmt.Printf(" %s%s%s", netColor(net), net, reset)
+	}
+	fmt.Printf(" %s(every %s)%s\n", dim, watchdogInterval, reset)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -70,7 +84,7 @@ func cmdWatchdog(args []string) error {
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Println("  watchdog: stopped")
+			fmt.Printf("\n  %sWatchdog stopped%s\n", dim, reset)
 			return nil
 		case <-ticker.C:
 		}
@@ -96,10 +110,13 @@ func cmdWatchdog(args []string) error {
 				continue
 			}
 
-			fmt.Printf("  watchdog: %s unresponsive, restarting\n", net)
+			nc := netColor(net)
+			fmt.Printf("  %s%s%s %sunresponsive (%d checks), restarting...%s\n",
+				nc, net, reset, amber, failures[net], reset)
 			netArg := string(net)
 			exec.Command(self, "stop", netArg).Run()
 			exec.Command(self, "start", netArg).Run()
+			fmt.Printf("  %s%s%s %srestarted%s\n", nc, net, reset, dim, reset)
 			failures[net] = 0
 		}
 	}
