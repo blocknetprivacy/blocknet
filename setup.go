@@ -91,25 +91,28 @@ func cmdSetup(_ []string) error {
 	fmt.Println("  You can always re-run this or edit the config file directly.")
 	fmt.Println()
 
-	// --- Existing config check ---
 	cfgPath := ConfigFile()
+	cfg := DefaultConfig()
+	hasExisting := false
+
 	if _, err := os.Stat(cfgPath); err == nil {
-		existing, loadErr := LoadConfig(cfgPath)
-		if loadErr == nil {
+		if loaded, loadErr := LoadConfig(cfgPath); loadErr == nil {
+			cfg = loaded
+			hasExisting = true
 			warn := "\033[38;2;255;170;0m"
 			if NoColor {
 				warn = ""
 			}
-			fmt.Printf("  %sA config already exists at \033[4m%s\033[24m:%s\n\n", warn, cfgPath, reset)
+			fmt.Printf("  %sCurrent config (\033[4m%s\033[24m):%s\n\n", warn, cfgPath, reset)
 
-			if mc := existing.Cores[Mainnet]; mc != nil {
+			if mc := cfg.Cores[Mainnet]; mc != nil {
 				tag := "disabled"
 				if mc.Enabled {
 					tag = fmt.Sprintf("enabled, API %s", mc.APIAddr)
 				}
 				fmt.Printf("    mainnet:      %s\n", tag)
 			}
-			if tc := existing.Cores[Testnet]; tc != nil {
+			if tc := cfg.Cores[Testnet]; tc != nil {
 				tag := "disabled"
 				if tc.Enabled {
 					tag = fmt.Sprintf("enabled, API %s", tc.APIAddr)
@@ -117,23 +120,44 @@ func cmdSetup(_ []string) error {
 				fmt.Printf("    testnet:      %s\n", tag)
 			}
 			upTag := "off"
-			if existing.AutoUpgrade {
+			if cfg.AutoUpgrade {
 				upTag = "on"
 			}
 			fmt.Printf("    auto-upgrade: %s\n\n", upTag)
-
-			fmt.Println("  Start fresh? This will replace your current config.")
-			fmt.Printf("  yes or no %s(default: no)%s: ", cyan, reset)
-			if !parseYes(readLine(reader), false) {
-				fmt.Println()
-				fmt.Println("  Setup cancelled. Your existing config is unchanged.")
-				return nil
-			}
-			fmt.Println()
 		}
 	}
 
-	cfg := DefaultConfig()
+	ynHint := func(current, def bool) string {
+		if hasExisting {
+			cur, d := "no", "no"
+			if current {
+				cur = "yes"
+			}
+			if def {
+				d = "yes"
+			}
+			return fmt.Sprintf("(current: %s%s%s, default: %s)", green, cur, cyan, d)
+		}
+		d := "no"
+		if def {
+			d = "yes"
+		}
+		return fmt.Sprintf("(default: %s)", d)
+	}
+
+	ynVal := func(current, def bool) bool {
+		if hasExisting {
+			return current
+		}
+		return def
+	}
+
+	addrHint := func(current, def string) string {
+		if hasExisting && current != "" {
+			return fmt.Sprintf("(current: %s%s%s, default: %s)", green, current, cyan, def)
+		}
+		return fmt.Sprintf("(default: %s)", def)
+	}
 
 	// --- Auto-upgrade ---
 	fmt.Printf("\n%s\n\n", SectionHead("Updates", NoColor))
@@ -141,9 +165,136 @@ func cmdSetup(_ []string) error {
 	fmt.Println("  Keep your node updated automatically?")
 	fmt.Printf("  %sWhen a new version comes out, blocknet will download%s\n", dim, reset)
 	fmt.Printf("  %sand apply it for you.%s\n", dim, reset)
-	fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
-	cfg.AutoUpgrade = parseYes(readLine(reader), true)
+	fmt.Printf("  yes or no %s%s%s: ", cyan, ynHint(cfg.AutoUpgrade, true), reset)
+	cfg.AutoUpgrade = parseYes(readLine(reader), ynVal(cfg.AutoUpgrade, true))
 	fmt.Println()
+
+	// --- Advanced settings gate ---
+	fmt.Printf("\n%s\n\n", SectionHead("Advanced", NoColor))
+
+	fmt.Println("  That covers the basics! Want to configure advanced settings?")
+	fmt.Printf("  %s(testnet, API ports, explorer, checkpoints)%s\n", dim, reset)
+	fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
+	if parseYes(readLine(reader), true) {
+		fmt.Println()
+
+		// --- Testnet ---
+		fmt.Printf("\n%s\n\n", ErrorHead("Testnet", NoColor))
+
+		testnetEnabled := cfg.Cores[Testnet] != nil && cfg.Cores[Testnet].Enabled
+		fmt.Println("  Enable testnet? A separate network for testing — coins have no value.")
+		fmt.Printf("  yes or no %s%s%s: ", cyan, ynHint(testnetEnabled, true), reset)
+		if parseYes(readLine(reader), ynVal(testnetEnabled, true)) {
+			if cfg.Cores[Testnet] == nil {
+				cfg.Cores[Testnet] = &CoreConfig{Version: "latest", APIAddr: "127.0.0.1:18332"}
+			}
+			cfg.Cores[Testnet].Enabled = true
+			fmt.Println()
+
+			fmt.Println("  Testnet API address — where tools connect to your testnet node.")
+			fmt.Printf("  %s%s%s: ", cyan, addrHint(cfg.Cores[Testnet].APIAddr, "127.0.0.1:18332"), reset)
+			if answer := readLine(reader); answer != "" {
+				if err := validateAddr(answer); err != nil {
+					fmt.Printf("  %s%v — keeping current%s\n", dim, err, reset)
+				} else {
+					cfg.Cores[Testnet].APIAddr = answer
+				}
+			}
+			fmt.Println()
+
+			explorerEnabled := cfg.Cores[Testnet].ExplorerAddr != ""
+			fmt.Println("  Enable the testnet block explorer?")
+			fmt.Printf("  %sServes a web-based block explorer you can open in your browser.%s\n", dim, reset)
+			fmt.Printf("  yes or no %s%s%s: ", cyan, ynHint(explorerEnabled, true), reset)
+			if parseYes(readLine(reader), ynVal(explorerEnabled, true)) {
+				fmt.Println()
+				fmt.Println("  Testnet explorer address:")
+				explorerAddr := cfg.Cores[Testnet].ExplorerAddr
+				if explorerAddr == "" {
+					explorerAddr = "127.0.0.1:18080"
+				}
+				fmt.Printf("  %s%s%s: ", cyan, addrHint(explorerAddr, "127.0.0.1:18080"), reset)
+				answer := readLine(reader)
+				if answer == "" {
+					cfg.Cores[Testnet].ExplorerAddr = explorerAddr
+				} else if err := validateAddr(answer); err != nil {
+					fmt.Printf("  %s%v — keeping current%s\n", dim, err, reset)
+					cfg.Cores[Testnet].ExplorerAddr = explorerAddr
+				} else {
+					cfg.Cores[Testnet].ExplorerAddr = answer
+				}
+			} else {
+				cfg.Cores[Testnet].ExplorerAddr = ""
+			}
+		} else if cfg.Cores[Testnet] != nil {
+			cfg.Cores[Testnet].Enabled = false
+		}
+		fmt.Println()
+
+		// --- Mainnet ---
+		fmt.Printf("\n%s\n\n", SectionHead("Mainnet", NoColor))
+
+		fmt.Println("  Mainnet API address — how tools like 'blocknet attach' connect to your node.")
+		fmt.Printf("  %s%s%s: ", cyan, addrHint(cfg.Cores[Mainnet].APIAddr, "127.0.0.1:8332"), reset)
+		if answer := readLine(reader); answer != "" {
+			if err := validateAddr(answer); err != nil {
+				fmt.Printf("  %s%v — keeping current%s\n", dim, err, reset)
+			} else {
+				cfg.Cores[Mainnet].APIAddr = answer
+			}
+		}
+		fmt.Println()
+
+		mainExplorerEnabled := cfg.Cores[Mainnet].ExplorerAddr != ""
+		fmt.Println("  Enable the mainnet block explorer?")
+		fmt.Printf("  %sServes a web-based block explorer you can open in your browser.%s\n", dim, reset)
+		fmt.Printf("  yes or no %s%s%s: ", cyan, ynHint(mainExplorerEnabled, true), reset)
+		if parseYes(readLine(reader), ynVal(mainExplorerEnabled, true)) {
+			fmt.Println()
+			fmt.Println("  Mainnet explorer address:")
+			explorerAddr := cfg.Cores[Mainnet].ExplorerAddr
+			if explorerAddr == "" {
+				explorerAddr = "127.0.0.1:8080"
+			}
+			fmt.Printf("  %s%s%s: ", cyan, addrHint(explorerAddr, "127.0.0.1:8080"), reset)
+			answer := readLine(reader)
+			if answer == "" {
+				cfg.Cores[Mainnet].ExplorerAddr = explorerAddr
+			} else if err := validateAddr(answer); err != nil {
+				fmt.Printf("  %s%v — keeping current%s\n", dim, err, reset)
+				cfg.Cores[Mainnet].ExplorerAddr = explorerAddr
+			} else {
+				cfg.Cores[Mainnet].ExplorerAddr = answer
+			}
+		} else {
+			cfg.Cores[Mainnet].ExplorerAddr = ""
+		}
+		fmt.Println()
+
+		// --- Checkpoints ---
+		fmt.Printf("\n%s\n\n", SectionHead("Sync", NoColor))
+
+		currentCheckpoints := false
+		for _, cc := range cfg.Cores {
+			if cc.SaveCheckpoints {
+				currentCheckpoints = true
+				break
+			}
+		}
+		fmt.Println("  Save checkpoints during sync?")
+		fmt.Printf("  %sWrites a checkpoint every 100 blocks so future syncs can skip verified ranges.%s\n", dim, reset)
+		fmt.Printf("  yes or no %s%s%s: ", cyan, ynHint(currentCheckpoints, false), reset)
+		if parseYes(readLine(reader), ynVal(currentCheckpoints, false)) {
+			for i := range cfg.Cores {
+				cfg.Cores[i].SaveCheckpoints = true
+			}
+		} else {
+			for i := range cfg.Cores {
+				cfg.Cores[i].SaveCheckpoints = false
+			}
+		}
+		fmt.Println()
+	}
 
 	// --- Save config ---
 	if err := EnsureConfigDir(); err != nil {
@@ -224,22 +375,6 @@ func cmdSetup(_ []string) error {
 		fmt.Println()
 	}
 
-	// --- Start now? ---
-	if hasCore {
-		fmt.Println("  Start your node now?")
-		fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
-		if parseYes(readLine(reader), true) {
-			fmt.Println()
-			if err := cmdStart(nil); err != nil {
-				fmt.Printf("  %sCouldn't start: %v%s\n\n", dim, err, reset)
-			}
-		} else {
-			fmt.Println()
-			fmt.Printf("  You can start later with: %sblocknet start%s\n", bold, reset)
-		}
-		fmt.Println()
-	}
-
 	// --- Shell integration ---
 	if shell := detectShell(); shell != "" {
 		rcFile := shellRCFile(shell)
@@ -260,107 +395,21 @@ func cmdSetup(_ []string) error {
 		fmt.Println()
 	}
 
-	// --- Advanced settings gate ---
-	fmt.Printf("\n%s\n\n", SectionHead("Advanced", NoColor))
-
-	fmt.Println("  That covers the basics! Want to configure advanced settings?")
-	fmt.Printf("  %s(testnet, API ports, explorer, checkpoints)%s\n", dim, reset)
-	fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
-	if parseYes(readLine(reader), true) {
-		fmt.Println()
-
-		// --- Testnet ---
-		fmt.Printf("\n%s\n\n", ErrorHead("Testnet", NoColor))
-
-		fmt.Println("  Enable testnet? A separate network for testing — coins have no value.")
-		fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
-		if parseYes(readLine(reader), true) {
-			cfg.Cores[Testnet].Enabled = true
-			fmt.Println()
-
-			fmt.Println("  Testnet API address — where tools connect to your testnet node.")
-			fmt.Printf("  %s(default: 127.0.0.1:18332)%s: ", cyan, reset)
-			if answer := readLine(reader); answer != "" {
-				if err := validateAddr(answer); err != nil {
-					fmt.Printf("  %s%v — using default%s\n", dim, err, reset)
-				} else {
-					cfg.Cores[Testnet].APIAddr = answer
-				}
-			}
-			fmt.Println()
-
-			fmt.Println("  Enable the testnet block explorer?")
-			fmt.Printf("  %sServes a web-based block explorer you can open in your browser.%s\n", dim, reset)
-			fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
-			if parseYes(readLine(reader), true) {
-				fmt.Println()
-				fmt.Println("  Testnet explorer address:")
-				fmt.Printf("  %s(default: 127.0.0.1:18080)%s: ", cyan, reset)
-				answer := readLine(reader)
-				if answer == "" {
-					cfg.Cores[Testnet].ExplorerAddr = "127.0.0.1:18080"
-				} else if err := validateAddr(answer); err != nil {
-					fmt.Printf("  %s%v — using default%s\n", dim, err, reset)
-					cfg.Cores[Testnet].ExplorerAddr = "127.0.0.1:18080"
-				} else {
-					cfg.Cores[Testnet].ExplorerAddr = answer
-				}
-			}
-		}
-		fmt.Println()
-
-		// --- Mainnet ---
-		fmt.Printf("\n%s\n\n", SectionHead("Mainnet", NoColor))
-
-		fmt.Println("  Mainnet API address — how tools like 'blocknet attach' connect to your node.")
-		fmt.Printf("  %s(default: 127.0.0.1:8332)%s: ", cyan, reset)
-		if answer := readLine(reader); answer != "" {
-			if err := validateAddr(answer); err != nil {
-				fmt.Printf("  %s%v — using default%s\n", dim, err, reset)
-			} else {
-				cfg.Cores[Mainnet].APIAddr = answer
-			}
-		}
-		fmt.Println()
-
-		fmt.Println("  Enable the mainnet block explorer?")
-		fmt.Printf("  %sServes a web-based block explorer you can open in your browser.%s\n", dim, reset)
+	// --- Start now? ---
+	if hasCore {
+		fmt.Println("  Start your node now?")
 		fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
 		if parseYes(readLine(reader), true) {
 			fmt.Println()
-			fmt.Println("  Mainnet explorer address:")
-			fmt.Printf("  %s(default: 127.0.0.1:8080)%s: ", cyan, reset)
-			answer := readLine(reader)
-			if answer == "" {
-				cfg.Cores[Mainnet].ExplorerAddr = "127.0.0.1:8080"
-			} else if err := validateAddr(answer); err != nil {
-				fmt.Printf("  %s%v — using default%s\n", dim, err, reset)
-				cfg.Cores[Mainnet].ExplorerAddr = "127.0.0.1:8080"
-			} else {
-				cfg.Cores[Mainnet].ExplorerAddr = answer
+			if err := cmdStart(nil); err != nil {
+				fmt.Printf("  %sCouldn't start: %v%s\n\n", dim, err, reset)
 			}
+		} else {
+			fmt.Println()
+			fmt.Printf("  You can start later with: %sblocknet start%s\n", bold, reset)
 		}
 		fmt.Println()
-
-		// --- Checkpoints ---
-		fmt.Printf("\n%s\n\n", SectionHead("Sync", NoColor))
-
-		fmt.Println("  Save checkpoints during sync?")
-		fmt.Printf("  %sWrites a checkpoint every 100 blocks so future syncs can skip verified ranges.%s\n", dim, reset)
-		fmt.Printf("  yes or no %s(default: no)%s: ", cyan, reset)
-		if parseYes(readLine(reader), false) {
-			for i := range cfg.Cores {
-				cfg.Cores[i].SaveCheckpoints = true
-			}
-		}
-		fmt.Println()
-
-		if err := SaveConfig(cfgPath, cfg); err != nil {
-			return fmt.Errorf("save config: %w", err)
-		}
-		fmt.Println("  Config updated.")
 	}
-	fmt.Println()
 
 	fmt.Printf("  %sSetup complete!%s Here's what you can do next:\n\n", green, reset)
 	fmt.Println("    blocknet status            See what's running")
