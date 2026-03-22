@@ -264,7 +264,7 @@ func cmdSetup(_ []string) error {
 	fmt.Printf("\n%s\n\n", SectionHead("Advanced", NoColor))
 
 	fmt.Println("  That covers the basics! Want to configure advanced settings?")
-	fmt.Printf("  %s(testnet, API ports, explorer, network tuning)%s\n", dim, reset)
+	fmt.Printf("  %s(testnet, API ports, explorer, checkpoints)%s\n", dim, reset)
 	fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
 	if parseYes(readLine(reader), true) {
 		fmt.Println()
@@ -338,6 +338,19 @@ func cmdSetup(_ []string) error {
 				cfg.Cores[Mainnet].ExplorerAddr = "127.0.0.1:8080"
 			} else {
 				cfg.Cores[Mainnet].ExplorerAddr = answer
+			}
+		}
+		fmt.Println()
+
+		// --- Checkpoints ---
+		fmt.Printf("\n%s\n\n", SectionHead("Sync", NoColor))
+
+		fmt.Println("  Save checkpoints during sync?")
+		fmt.Printf("  %sWrites a checkpoint every 100 blocks so future syncs can skip verified ranges.%s\n", dim, reset)
+		fmt.Printf("  yes or no %s(default: no)%s: ", cyan, reset)
+		if parseYes(readLine(reader), false) {
+			for i := range cfg.Cores {
+				cfg.Cores[i].SaveCheckpoints = true
 			}
 		}
 		fmt.Println()
