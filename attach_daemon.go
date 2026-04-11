@@ -11,7 +11,7 @@ import (
 )
 
 func (s *AttachSession) cmdStatus() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
 	raw, err := s.client.Status(ctx)
@@ -74,7 +74,7 @@ func (s *AttachSession) cmdStatus() error {
 }
 
 func (s *AttachSession) cmdPeers() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
 	raw, err := s.client.Get(ctx, "/api/peers")
@@ -119,7 +119,7 @@ func (s *AttachSession) cmdPeers() error {
 }
 
 func (s *AttachSession) cmdBanned() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
 	raw, err := s.client.Get(ctx, "/api/peers/banned")
@@ -166,7 +166,7 @@ func (s *AttachSession) cmdBanned() error {
 }
 
 func (s *AttachSession) cmdExportPeer() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
 	raw, err := s.client.Get(ctx, "/api/peers")

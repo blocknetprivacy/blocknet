@@ -229,7 +229,7 @@ func cmdStatus(_ []string) error {
 			continue
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := withPatience(defaultAPITimeout)
 		raw, err := client.Status(ctx)
 		cancel()
 		if err != nil {
@@ -296,7 +296,7 @@ func cmdAttach(args []string) error {
 		return fmt.Errorf("cannot connect to %s core: %w", targetNet, err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := withPatience(defaultAPITimeout)
 	_, err = client.Status(ctx)
 	cancel()
 	if err != nil {

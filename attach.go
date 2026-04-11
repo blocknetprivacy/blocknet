@@ -13,6 +13,23 @@ import (
 	"golang.org/x/term"
 )
 
+const (
+	defaultAPITimeout = 30 * time.Second
+	patienceThreshold = 5 * time.Second
+)
+
+func withPatience(timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	go func() {
+		select {
+		case <-time.After(patienceThreshold):
+			fmt.Println("  Core is busy, hang on...")
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
+}
+
 type AttachSession struct {
 	client  *CoreClient
 	reader  *bufio.Reader
@@ -147,7 +164,7 @@ func (s *AttachSession) executeCommand(line string) error {
 }
 
 func (s *AttachSession) checkLockState() {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 	_, err := s.client.Get(ctx, "/api/wallet/balance")
 	if err != nil {
@@ -181,7 +198,7 @@ func (s *AttachSession) handleAPIError(err error) error {
 }
 
 func (s *AttachSession) printWelcome() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
 	raw, err := s.client.Status(ctx)

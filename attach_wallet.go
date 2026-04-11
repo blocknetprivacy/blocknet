@@ -12,7 +12,7 @@ import (
 )
 
 func (s *AttachSession) cmdLoad() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
 	_, err := s.client.Get(ctx, "/api/wallet/balance")
@@ -141,7 +141,7 @@ func (s *AttachSession) cmdLoad() error {
 		return fmt.Errorf("password must be at least 3 characters")
 	}
 
-	recheckCtx, recheckCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	recheckCtx, recheckCancel := withPatience(defaultAPITimeout)
 	defer recheckCancel()
 	_, recheckErr := s.client.Get(recheckCtx, "/api/wallet/balance")
 	if recheckErr == nil {
@@ -158,7 +158,7 @@ func (s *AttachSession) cmdLoad() error {
 	}
 
 	if createFilename != "" {
-		createCtx, createCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		createCtx, createCancel := withPatience(60 * time.Second)
 		defer createCancel()
 
 		raw, err := s.client.Post(createCtx, "/api/wallet/create", map[string]string{
@@ -199,7 +199,7 @@ func (s *AttachSession) cmdLoad() error {
 		}
 	}
 
-	loadCtx, loadCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	loadCtx, loadCancel := withPatience(60 * time.Second)
 	defer loadCancel()
 
 	raw, err := s.client.Post(loadCtx, "/api/wallet/load", map[string]string{
@@ -261,7 +261,7 @@ func (s *AttachSession) cmdLoad() error {
 }
 
 func (s *AttachSession) cmdUnload() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
 	_, err := s.client.Post(ctx, "/api/wallet/unload", nil)
@@ -276,7 +276,7 @@ func (s *AttachSession) cmdUnload() error {
 }
 
 func (s *AttachSession) cmdBalance() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
 	raw, err := s.client.Get(ctx, "/api/wallet/balance")
@@ -314,7 +314,7 @@ func (s *AttachSession) cmdBalance() error {
 }
 
 func (s *AttachSession) cmdAddress() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
 	raw, err := s.client.Get(ctx, "/api/wallet/address")
@@ -1044,7 +1044,7 @@ func (s *AttachSession) cmdProve(args []string) error {
 }
 
 func (s *AttachSession) cmdLock() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
 	_, err := s.client.Post(ctx, "/api/wallet/lock", nil)
@@ -1069,7 +1069,7 @@ func (s *AttachSession) cmdUnlock() error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
 	_, err = s.client.Post(ctx, "/api/wallet/unlock", map[string]string{"password": password})
