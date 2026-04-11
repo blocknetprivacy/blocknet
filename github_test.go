@@ -37,7 +37,7 @@ func TestParseSHA256ForAsset_NoMatch(t *testing.T) {
 	sum := strings.Repeat("c", 64)
 	content := sum + "  other-file.zip\n"
 
-	if _, ok := parseSHA256ForAsset(content, "blocknet-core-amd64-linux-v1.0.0.zip"); ok {
+	if _, ok := parseSHA256ForAsset(content, "blocknet-core-amd64-linux-v.zip"); ok {
 		t.Fatal("expected no match")
 	}
 }

@@ -75,7 +75,7 @@ _blocknet() {
             _describe 'network' networks
             ;;
         install|uninstall)
-            _message 'version (e.g. latest, nightly, v1.0.0)'
+            _message 'version (e.g. latest, nightly, v1.0.1)'
             ;;
         use)
             _message 'version [network]'

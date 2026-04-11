@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.0-aaff00?style=flat-square&labelColor=000">
+  <img src="https://img.shields.io/badge/version--aaff00?style=flat-square&labelColor=000">
   <img src="https://img.shields.io/badge/license-BSD--3--Clause-aaff00?style=flat-square&labelColor=000">
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-aaff00?style=flat-square&labelColor=000">
 </p>
@@ -361,7 +361,7 @@ Prints the version string.
 ```
 blocknet version
 
-# blocknet 1.0.0
+# blocknet 
 ```
 
 #### `blocknet help`

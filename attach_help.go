@@ -102,9 +102,9 @@ func helpCommandDetails(noColor bool) map[string]helpEntry {
 			notes:         []string{"saving to config makes future starts auto-load this wallet"},
 		},
 		"unload": {
-			usage:       []string{"unload"},
-			description: []string{"Unloads the currently loaded wallet from the core."},
-			useWhen:     []string{"you want to switch wallets without restarting the core"},
+			usage:         []string{"unload"},
+			description:   []string{"Unloads the currently loaded wallet from the core."},
+			useWhen:       []string{"you want to switch wallets without restarting the core"},
 			exampleInput:  []string{"> unload"},
 			exampleOutput: []string{"# Unloaded", "  Wallet unloaded. Use 'load' to open another."},
 			notes:         []string{"works even if the wallet is locked"},
@@ -346,7 +346,7 @@ func helpCommandDetails(noColor bool) map[string]helpEntry {
 			description:   []string{"Prints the Blocknet version."},
 			useWhen:       []string{"you are reporting bugs or checking for updates"},
 			exampleInput:  []string{"> version"},
-			exampleOutput: []string{"# Version 1.0.0"},
+			exampleOutput: []string{"# Version 1.0.1"},
 		},
 		"about": {
 			usage:         []string{"about"},
