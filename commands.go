@@ -296,11 +296,24 @@ func cmdAttach(args []string) error {
 		return fmt.Errorf("cannot connect to %s core: %w", targetNet, err)
 	}
 
-	ctx, cancel := withPatience(defaultAPITimeout)
-	_, err = client.Status(ctx)
-	cancel()
-	if err != nil {
-		return fmt.Errorf("%s core is not reachable at %s", targetNet, cc.APIAddr)
+	var lastErr error
+	deadline := time.Now().Add(defaultAPITimeout)
+	warned := false
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_, lastErr = client.Status(ctx)
+		cancel()
+		if lastErr == nil {
+			break
+		}
+		if !warned && time.Now().Add(3*time.Second).Before(deadline) {
+			fmt.Printf("  Waiting for %s core at %s...\n", targetNet, cc.APIAddr)
+			warned = true
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return fmt.Errorf("%s core is not reachable at %s: %v", targetNet, cc.APIAddr, lastErr)
 	}
 
 	session := NewAttachSession(client, targetNet, NoColor)
