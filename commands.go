@@ -403,7 +403,7 @@ func cmdUpgrade(_ []string) error {
 
 	asset := FindAsset(latest.Assets)
 	if asset == nil {
-		return fmt.Errorf("release %s does not include a binary for your platform (%s)\n  this is expected for early releases before multi-platform builds were added\n  try a newer version: blocknet install latest", latest.Tag, BinaryName())
+		return fmt.Errorf("release %s does not include a binary for your platform (%s)\n  this is expected for early releases before multi-platform builds were added\n  try a newer version: blocknet install latest", latest.Tag, CoreAssetPrefix())
 	}
 	expectedSHA, err := ResolveAssetSHA256(ctx, latest.Assets, asset.Name)
 	if err != nil {
@@ -599,7 +599,7 @@ func cmdInstall(args []string) error {
 		break
 	}
 	if asset == nil {
-		return fmt.Errorf("release %s does not include a binary for your platform (%s)\n  this is expected for early releases before multi-platform builds were added\n  try: blocknet list (to see available versions)", version, BinaryName())
+		return fmt.Errorf("release %s does not include a binary for your platform (%s)\n  this is expected for early releases before multi-platform builds were added\n  try: blocknet list (to see available versions)", version, CoreAssetPrefix())
 	}
 
 	fmt.Printf("  %sDownloading %s%s\n", cyan, asset.Name, reset)

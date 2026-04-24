@@ -51,9 +51,10 @@ func CookiePath(dataDir string) string {
 	return filepath.Join(dataDir, "api.cookie")
 }
 
-// BinaryName returns the core binary filename for the current platform.
-// Core binaries are named blocknet-core-<arch>-<os>.
-func BinaryName() string {
+// CoreAssetPrefix returns the platform-specific stem used to match release
+// asset filenames (e.g. "blocknet-core-amd64-windows"). It intentionally
+// omits any file extension so it can prefix-match against .zip asset names.
+func CoreAssetPrefix() string {
 	arch := runtime.GOARCH
 	osName := runtime.GOOS
 
@@ -75,7 +76,12 @@ func BinaryName() string {
 		osName = "linux"
 	}
 
-	name := fmt.Sprintf("blocknet-core-%s-%s", arch, osName)
+	return fmt.Sprintf("blocknet-core-%s-%s", arch, osName)
+}
+
+// BinaryName returns the core binary filename for the current platform.
+func BinaryName() string {
+	name := CoreAssetPrefix()
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}

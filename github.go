@@ -105,7 +105,7 @@ func LatestRelease(ctx context.Context) (*Release, error) {
 // FindAsset picks the asset matching the current platform from a release.
 // Assets follow the naming convention: blocknet-core-<arch>-<os>-<ver>.zip
 func FindAsset(assets []Asset) *Asset {
-	prefix := BinaryName()
+	prefix := CoreAssetPrefix()
 	for i, a := range assets {
 		if strings.HasPrefix(a.Name, prefix) {
 			return &assets[i]
