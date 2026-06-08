@@ -16,6 +16,14 @@ import (
 const (
 	defaultAPITimeout = 30 * time.Second
 	patienceThreshold = 5 * time.Second
+
+	// syncLagWarnBlocks is how far behind the network tip the wallet must be
+	// before we caution that the displayed balance may be incomplete. A node
+	// routinely sits ~1 block behind for a moment right after a new block is
+	// mined, so this small floor suppresses that normal case and avoids
+	// pestering the user, while a genuine backlog (a node that was offline, or
+	// is still doing its initial sync) still trips the warning.
+	syncLagWarnBlocks = 2
 )
 
 func withPatience(timeout time.Duration) (context.Context, context.CancelFunc) {

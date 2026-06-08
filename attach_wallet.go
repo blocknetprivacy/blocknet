@@ -310,7 +310,63 @@ func (s *AttachSession) cmdBalance() error {
 		fmt.Printf(", %d spent", bal.OutputsTotal-bal.OutputsUnspent)
 	}
 	fmt.Println()
+	if warn := s.syncLagWarning(); warn != "" {
+		fmt.Println(warn)
+	}
 	return nil
+}
+
+// syncLagWarning returns a one-line caution if the wallet is meaningfully
+// behind the network tip, in which case recently received funds may not be
+// reflected in the balance yet. It returns "" when the wallet is caught up (or
+// only routinely behind, see syncLagWarnBlocks) and on any error fetching
+// status — the warning is best-effort and must never block showing the balance.
+func (s *AttachSession) syncLagWarning() string {
+	ctx, cancel := withPatience(defaultAPITimeout)
+	defer cancel()
+
+	raw, err := s.client.Get(ctx, "/api/status")
+	if err != nil {
+		return ""
+	}
+
+	var st struct {
+		ChainHeight uint64 `json:"chain_height"`
+		Syncing     bool   `json:"syncing"`
+		SyncTarget  uint64 `json:"sync_target"`
+		Wallet      *struct {
+			SyncedHeight uint64 `json:"synced_height"`
+		} `json:"wallet"`
+	}
+	if err := json.Unmarshal(raw, &st); err != nil {
+		return ""
+	}
+
+	// The network tip is the chain height, or the sync target while we are
+	// still downloading blocks toward it.
+	tip := st.ChainHeight
+	if st.Syncing && st.SyncTarget > tip {
+		tip = st.SyncTarget
+	}
+
+	// Compare against what the wallet has actually scanned: spendable balance
+	// reflects the wallet's synced height, not the raw chain height, so a wallet
+	// that is still catching up its scan can hide funds even on a synced chain.
+	scanned := st.ChainHeight
+	if st.Wallet != nil {
+		scanned = st.Wallet.SyncedHeight
+	}
+
+	if tip <= scanned || tip-scanned <= syncLagWarnBlocks {
+		return ""
+	}
+
+	amber := "\033[38;2;255;170;0m"
+	rst := "\033[0m"
+	if s.noColor {
+		amber, rst = "", ""
+	}
+	return fmt.Sprintf("  %s⚠ still syncing — %d blocks behind; this may not be your full balance yet%s", amber, tip-scanned, rst)
 }
 
 func (s *AttachSession) cmdAddress() error {
