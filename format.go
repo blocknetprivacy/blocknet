@@ -1,11 +1,49 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
+
+// MemoDisplay decodes a hex-encoded memo and returns a printable form: the
+// quoted UTF-8 text when it is safe to show on one line, otherwise the uppercase
+// hex. Returns "" for an empty/invalid memo. Mirrors the core's memo rendering.
+func MemoDisplay(memoHex string) string {
+	if memoHex == "" {
+		return ""
+	}
+	b, err := hex.DecodeString(memoHex)
+	if err != nil || len(b) == 0 {
+		return ""
+	}
+	// Trim trailing NUL padding (memo fields are fixed-size).
+	end := len(b)
+	for end > 0 && b[end-1] == 0 {
+		end--
+	}
+	b = b[:end]
+	if len(b) == 0 {
+		return ""
+	}
+	if utf8.Valid(b) {
+		printable := true
+		for _, r := range string(b) {
+			if r == '\n' || r == '\r' || !unicode.IsPrint(r) {
+				printable = false
+				break
+			}
+		}
+		if printable {
+			return strconv.QuoteToASCII(string(b))
+		}
+	}
+	return strings.ToUpper(memoHex)
+}
 
 func ColorizeJSON(s string, noColor bool) string {
 	if noColor {

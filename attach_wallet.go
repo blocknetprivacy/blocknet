@@ -732,6 +732,7 @@ func (s *AttachSession) cmdOutputs(args []string) error {
 			SpentHeight   uint64 `json:"spent_height,omitempty"`
 			OneTimePub    string `json:"one_time_pub"`
 			Commitment    string `json:"commitment"`
+			MemoHex       string `json:"memo_hex,omitempty"`
 		} `json:"outputs"`
 	}
 	json.Unmarshal(raw, &resp)
@@ -802,9 +803,9 @@ func (s *AttachSession) cmdOutputs(args []string) error {
 	fmt.Printf("\n%s\n", SectionHead("Outputs", s.noColor))
 
 	type entry struct {
-		TxID, Status, Type, OneTimePub, Commitment      string
-		OutputIndex                                     int
-		Amount, Confirmations, BlockHeight, SpentHeight uint64
+		TxID, Status, Type, OneTimePub, Commitment, MemoHex string
+		OutputIndex                                         int
+		Amount, Confirmations, BlockHeight, SpentHeight     uint64
 	}
 
 	var filtered []entry
@@ -821,7 +822,7 @@ func (s *AttachSession) cmdOutputs(args []string) error {
 			}
 		}
 		filtered = append(filtered, entry{
-			o.TxID, o.Status, o.Type, o.OneTimePub, o.Commitment,
+			o.TxID, o.Status, o.Type, o.OneTimePub, o.Commitment, o.MemoHex,
 			o.OutputIndex, o.Amount, o.Confirmations, o.BlockHeight, o.SpentHeight,
 		})
 	}
@@ -852,6 +853,9 @@ func (s *AttachSession) cmdOutputs(args []string) error {
 		fmt.Printf("    commitment:   %s\n", o.Commitment)
 		if o.Status == "spent" && o.SpentHeight > 0 {
 			fmt.Printf("    spent block:  %d\n", o.SpentHeight)
+		}
+		if m := MemoDisplay(o.MemoHex); m != "" {
+			fmt.Printf("    memo:         %s\n", m)
 		}
 	}
 

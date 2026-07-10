@@ -98,8 +98,8 @@ func helpCommandDetails(noColor bool) map[string]helpEntry {
 			description:   []string{"Loads a wallet file into the running core."},
 			useWhen:       []string{"you just started the core and need to open your wallet"},
 			exampleInput:  []string{"> load", "  1) /home/username/.config/blocknet/mainnet/main.wallet.dat", "  2) Enter a custom path", "  3) Create a new wallet", "  Choose: 1", "  Password: ********"},
-			exampleOutput: []string{"  Wallet loaded", "  Address: 9PNo...", "  Save wallet path to config for auto-load? [y/N]: y"},
-			notes:         []string{"saving to config makes future starts auto-load this wallet"},
+			exampleOutput: []string{"  Wallet loaded", "  Address: 9PNo..."},
+			notes:         []string{"the chosen wallet path is saved to config so future starts auto-load it"},
 		},
 		"unload": {
 			usage:         []string{"unload"},
@@ -202,10 +202,11 @@ func helpCommandDetails(noColor bool) map[string]helpEntry {
 		},
 		"import": {
 			usage:         []string{"import"},
-			description:   []string{"Creates a new wallet file from a seed phrase."},
+			description:   []string{"Creates a new wallet file from a 12-word recovery seed."},
 			useWhen:       []string{"you need to load an existing wallet into this node"},
 			exampleInput:  []string{"> import", "  Choose [1/2]: 1"},
 			exampleOutput: []string{"# Import", "  1) 12-word recovery seed", "  2) spend-key/view-key"},
+			notes:         []string{"spend-key/view-key import (option 2) is not yet available over attach — use the core CLI directly"},
 		},
 		"viewkeys": {
 			usage:         []string{"viewkeys"},
@@ -445,7 +446,7 @@ func (s *AttachSession) cmdHelp(args []string) {
   history           Show transaction history
   outputs           Show wallet outputs (spent and unspent)
   seed              Show wallet recovery seed (careful!)
-  import            Create wallet file from seed or spend/view keys
+  import            Create a wallet file from a recovery seed
   viewkeys          Export view-only keys
   lock              Lock wallet
   unlock            Unlock wallet

@@ -205,7 +205,44 @@ func (s *AttachSession) handleAPIError(err error) error {
 	return err
 }
 
+// printLogo renders the BLOCKNET banner, matching the core's interactive menu so
+// the attach session feels like the same product. Testnet gets the pink accent.
+func (s *AttachSession) printLogo() {
+	green := "\033[38;5;118m"
+	if s.network == Testnet {
+		green = "\033[38;2;255;0;170m"
+	}
+	reset := "\033[0m"
+	if s.noColor {
+		green = ""
+		reset = ""
+	}
+
+	logo := []string{
+		`        ▄███████▄`,
+		`        ▀█████████▄`,
+		`          ▀█████████▄`,
+		`            ▀█████████▄`,
+		`              ▀█████████▄`,
+		`                ▀█████████▄`,
+		`                  ▀███████▀`,
+		``,
+		`  ▄████████████████████████████▄`,
+		fmt.Sprintf(`  ████    BLOCKNET v%s   ████`, Version),
+		`  ▀████████████████████████████▀`,
+	}
+
+	fmt.Println()
+	for _, line := range logo {
+		fmt.Printf("%s%s%s\n", green, line, reset)
+		time.Sleep(40 * time.Millisecond)
+	}
+	fmt.Println()
+}
+
 func (s *AttachSession) printWelcome() {
+	s.printLogo()
+
 	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 

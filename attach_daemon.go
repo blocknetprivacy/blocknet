@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,9 @@ import (
 	"strings"
 	"time"
 )
+
+//go:embed LICENSE
+var licenseText string
 
 func (s *AttachSession) cmdStatus() error {
 	ctx, cancel := withPatience(defaultAPITimeout)
@@ -197,8 +201,12 @@ func (s *AttachSession) cmdExportPeer() error {
 	}
 
 	fmt.Printf("\n%s\n", SectionHead("Export", s.noColor))
-	fmt.Printf("  %d peer addresses written to peer.txt\n", len(lines))
-	fmt.Println("  Share this file or its contents with other nodes.")
+	fmt.Printf("  %d peer address(es) written to peer.txt\n", len(lines))
+	fmt.Println("  Share this file or its contents with other node operators.")
+	fmt.Println("\n  Reachable peer addresses:")
+	for _, line := range lines {
+		fmt.Printf("    %s\n", line)
+	}
 	return nil
 }
 
@@ -253,6 +261,14 @@ func (s *AttachSession) cmdMining(args []string) error {
 			return s.handleAPIError(err)
 		}
 		fmt.Println("  Started")
+		if raw, err := s.client.Get(ctx, "/api/mining"); err == nil {
+			var st struct {
+				Threads int `json:"threads"`
+			}
+			if json.Unmarshal(raw, &st) == nil && st.Threads > 0 {
+				fmt.Printf("  Threads: %d (~%dGB RAM)\n", st.Threads, st.Threads*2)
+			}
+		}
 
 	case "stop":
 		fmt.Printf("\n%s\n", SectionHead("Mining", s.noColor))
@@ -391,39 +407,33 @@ func (s *AttachSession) cmdAbout() {
 	fmt.Println("  https://blocknetcrypto.com")
 	fmt.Println("  https://explorer.blocknetcrypto.com")
 	fmt.Println("  https://github.com/blocknetprivacy")
+	fmt.Printf("\n%s\n", SectionHead("Third-Party Libraries", s.noColor))
+	fmt.Println("  libp2p/go-libp2p             MIT          P2P networking")
+	fmt.Println("  pion/webrtc                  MIT          WebRTC transport")
+	fmt.Println("  quic-go/quic-go              MIT          QUIC transport")
+	fmt.Println("  multiformats/go-multiaddr    MIT          Network addressing")
+	fmt.Println("  etcd-io/bbolt                MIT          Key-value storage")
+	fmt.Println("  lukechampine/blake3          MIT          Hashing")
+	fmt.Println("  uber-go/fx                   MIT          Dependency injection")
+	fmt.Println("  uber-go/zap                  MIT          Logging")
+	fmt.Println("  btcsuite/btcutil             ISC          Base58 encoding")
+	fmt.Println("  flynn/noise                  ISC          Noise protocol")
+	fmt.Println("  gorilla/websocket            ISC          WebSocket")
+	fmt.Println("  golang.org/x/crypto          BSD-3-Clause Argon2, SHA-3")
+	fmt.Println("  golang.org/x/term            BSD-3-Clause Terminal I/O")
+	fmt.Println("  golang.org/x/time            BSD-3-Clause Rate limiting")
+	fmt.Println("  google.golang.org/protobuf   BSD-3-Clause Serialization")
+	fmt.Println("  gogo/protobuf                BSD-3-Clause Serialization")
+	fmt.Println("  prometheus/client_golang     Apache-2.0   Metrics")
+	fmt.Println("  hashicorp/golang-lru         MPL-2.0      LRU cache")
+	fmt.Println("  libp2p/go-yamux              MPL-2.0      Stream multiplexing")
 }
 
 func (s *AttachSession) cmdLicense() {
 	fmt.Printf("\n%s\n", SectionHead("License", s.noColor))
-	fmt.Println("  BSD 3-Clause License")
-	fmt.Println()
-	fmt.Println("  Copyright (c) 2026, Blocknet")
-	fmt.Println("  All rights reserved.")
-	fmt.Println()
-	fmt.Println("  Redistribution and use in source and binary forms, with or without")
-	fmt.Println("  modification, are permitted provided that the following conditions are met:")
-	fmt.Println()
-	fmt.Println("  1. Redistributions of source code must retain the above copyright notice,")
-	fmt.Println("     this list of conditions and the following disclaimer.")
-	fmt.Println()
-	fmt.Println("  2. Redistributions in binary form must reproduce the above copyright notice,")
-	fmt.Println("     this list of conditions and the following disclaimer in the documentation")
-	fmt.Println("     and/or other materials provided with the distribution.")
-	fmt.Println()
-	fmt.Println("  3. Neither the name of the copyright holder nor the names of its contributors")
-	fmt.Println("     may be used to endorse or promote products derived from this software")
-	fmt.Println("     without specific prior written permission.")
-	fmt.Println()
-	fmt.Println("  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\"")
-	fmt.Println("  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE")
-	fmt.Println("  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE")
-	fmt.Println("  DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE")
-	fmt.Println("  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL")
-	fmt.Println("  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR")
-	fmt.Println("  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER")
-	fmt.Println("  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,")
-	fmt.Println("  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE")
-	fmt.Println("  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.")
+	for _, line := range strings.Split(strings.TrimSpace(licenseText), "\n") {
+		fmt.Printf("  %s\n", line)
+	}
 }
 
 func (s *AttachSession) cmdExplore(args []string) error {
