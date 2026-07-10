@@ -29,6 +29,19 @@ func (s *AttachSession) cmdStatus() error {
 		ChainHeight uint64 `json:"chain_height"`
 		BestHash    string `json:"best_hash"`
 		Syncing     bool   `json:"syncing"`
+		Wallet      *struct {
+			ViewOnly      bool   `json:"view_only"`
+			SyncedHeight  uint64 `json:"synced_height"`
+			DataVersion   uint32 `json:"data_version"`
+			EncFormat     string `json:"enc_format"`
+			KDFVersion    uint8  `json:"kdf_version"`
+			KDFMemoryMiB  uint32 `json:"kdf_memory_mib"`
+			KDFIterations uint32 `json:"kdf_iterations"`
+			KDFThreads    uint8  `json:"kdf_threads"`
+			AddressFormat string `json:"address_format"`
+			CreatedAt     int64  `json:"created_at"`
+			FileSizeBytes int64  `json:"file_size_bytes"`
+		} `json:"wallet"`
 	}
 	json.Unmarshal(raw, &status)
 
@@ -40,39 +53,54 @@ func (s *AttachSession) cmdStatus() error {
 	fmt.Printf("  Syncing:     %v\n", status.Syncing)
 
 	raw, err = s.client.Get(ctx, "/api/wallet/balance")
-	if err == nil {
-		var bal struct {
-			Spendable      uint64 `json:"spendable"`
-			Pending        uint64 `json:"pending"`
-			OutputsTotal   int    `json:"outputs_total"`
-			OutputsUnspent int    `json:"outputs_unspent"`
-		}
-		json.Unmarshal(raw, &bal)
+	if err != nil {
+		// No wallet loaded (or locked) — the node section stands alone.
+		return nil
+	}
+	var bal struct {
+		Spendable      uint64 `json:"spendable"`
+		Pending        uint64 `json:"pending"`
+		OutputsTotal   int    `json:"outputs_total"`
+		OutputsUnspent int    `json:"outputs_unspent"`
+	}
+	json.Unmarshal(raw, &bal)
 
-		raw2, _ := s.client.Get(ctx, "/api/wallet/address")
-		var addr struct {
-			Address  string `json:"address"`
-			ViewOnly bool   `json:"view_only"`
-		}
-		if raw2 != nil {
-			json.Unmarshal(raw2, &addr)
-		}
+	raw2, _ := s.client.Get(ctx, "/api/wallet/address")
+	var addr struct {
+		Address  string `json:"address"`
+		ViewOnly bool   `json:"view_only"`
+	}
+	if raw2 != nil {
+		json.Unmarshal(raw2, &addr)
+	}
 
-		walletType := "Full"
-		if addr.ViewOnly {
-			walletType = "View-Only (cannot spend)"
-		}
+	walletType := "Full"
+	if addr.ViewOnly {
+		walletType = "View-Only (cannot spend)"
+	}
 
-		balStr := FormatAmount(bal.Spendable)
-		if bal.Pending > 0 {
-			balStr += fmt.Sprintf(" + %s pending", FormatAmount(bal.Pending))
-		}
+	balStr := FormatAmount(bal.Spendable)
+	if bal.Pending > 0 {
+		balStr += fmt.Sprintf(" + %s pending", FormatAmount(bal.Pending))
+	}
 
-		fmt.Printf("\n%s\n", SectionHead("Wallet", s.noColor))
-		fmt.Printf("  Type:        %s\n", walletType)
-		fmt.Printf("  Balance:     %s\n", balStr)
-		fmt.Printf("  Outputs:     %d unspent / %d total\n", bal.OutputsUnspent, bal.OutputsTotal)
-		fmt.Printf("  Address:     %s\n", addr.Address)
+	fmt.Printf("\n%s\n", SectionHead("Wallet", s.noColor))
+	fmt.Printf("  Type:        %s\n", walletType)
+	fmt.Printf("  Balance:     %s\n", balStr)
+	fmt.Printf("  Outputs:     %d unspent / %d total\n", bal.OutputsUnspent, bal.OutputsTotal)
+	fmt.Printf("  Address:     %s\n", addr.Address)
+	if w := status.Wallet; w != nil {
+		fmt.Printf("  Synced To:   %d\n", w.SyncedHeight)
+		fmt.Printf("  Data Ver:    %d\n", w.DataVersion)
+		fmt.Printf("  Enc Format:  %s (KDF v%d, %d MiB, %d iter, %d threads)\n",
+			w.EncFormat, w.KDFVersion, w.KDFMemoryMiB, w.KDFIterations, w.KDFThreads)
+		fmt.Printf("  Addr Format: %s\n", w.AddressFormat)
+		created := "unknown"
+		if w.CreatedAt > 0 {
+			created = time.Unix(w.CreatedAt, 0).UTC().Format("2006-01-02 15:04 UTC")
+		}
+		fmt.Printf("  Created:     %s\n", created)
+		fmt.Printf("  File Size:   %d bytes\n", w.FileSizeBytes)
 	}
 	return nil
 }
@@ -355,6 +383,80 @@ func (s *AttachSession) cmdCertify() error {
 	fmt.Printf("\n  %s%d violation(s) found:%s\n", amber, len(resp.Violations), rst)
 	for _, v := range resp.Violations {
 		fmt.Printf("    block %-8d %s\n", v.Height, v.Message)
+	}
+	return nil
+}
+
+func (s *AttachSession) cmdSaveCheckpoints() error {
+	fmt.Printf("\n%s\n", SectionHead("Save Checkpoints", s.noColor))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	raw, err := s.client.Post(ctx, "/api/checkpoints/save", nil)
+	if err != nil {
+		return s.handleAPIError(err)
+	}
+
+	var resp struct {
+		Written        int    `json:"written"`
+		ChainHeight    uint64 `json:"chain_height"`
+		LastCheckpoint uint64 `json:"last_checkpoint"`
+		Path           string `json:"path"`
+		Message        string `json:"message"`
+	}
+	json.Unmarshal(raw, &resp)
+
+	if resp.Written == 0 {
+		msg := resp.Message
+		if msg == "" {
+			msg = "already up to date"
+		}
+		fmt.Printf("  %s (last checkpoint: %d, chain height: %d)\n", msg, resp.LastCheckpoint, resp.ChainHeight)
+		return nil
+	}
+
+	fmt.Printf("  Wrote %d checkpoint(s) up to height %d\n", resp.Written, resp.LastCheckpoint)
+	if resp.Path != "" {
+		fmt.Printf("  File: %s\n", resp.Path)
+	}
+	return nil
+}
+
+func (s *AttachSession) cmdLoadCheckpoints() error {
+	fmt.Printf("\n%s\n", SectionHead("Load Checkpoints", s.noColor))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	raw, err := s.client.Post(ctx, "/api/checkpoints/load", nil)
+	if err != nil {
+		return s.handleAPIError(err)
+	}
+
+	var resp struct {
+		Downloaded  bool   `json:"downloaded"`
+		Loaded      int    `json:"loaded"`
+		MaxHeight   uint64 `json:"max_height"`
+		ChainHeight uint64 `json:"chain_height"`
+		FastSync    bool   `json:"fast_sync"`
+		Message     string `json:"message"`
+	}
+	json.Unmarshal(raw, &resp)
+
+	if resp.Downloaded {
+		fmt.Println("  Downloaded checkpoints file from remote.")
+	}
+	if resp.Loaded == 0 {
+		fmt.Println("  No checkpoints found.")
+		return nil
+	}
+
+	fmt.Printf("  Loaded %d checkpoint(s) (max height: %d)\n", resp.Loaded, resp.MaxHeight)
+	if resp.FastSync {
+		fmt.Printf("  Fast-sync enabled up to height %d (chain is at %d)\n", resp.MaxHeight, resp.ChainHeight)
+	} else {
+		fmt.Println("  Chain is already past checkpoint height; PoW skipping not applicable.")
 	}
 	return nil
 }

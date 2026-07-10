@@ -2,14 +2,82 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// maxMemoBytes is the largest memo payload a transaction can carry: the core's
+// wallet.MemoSize (128) minus its 4-byte length prefix. Enforced client-side for
+// a clean error before the round-trip; the core re-validates authoritatively.
+const maxMemoBytes = 124
+
+// parseMemoArg converts the trailing memo argument(s) into the API's memo
+// fields. A "hex:<hex>" prefix is decoded to raw bytes and sent as memo_hex;
+// anything else is UTF-8 text sent as memo_text (surrounding quotes stripped).
+// display is the human-readable form shown in the send confirmation.
+func parseMemoArg(parts []string) (memoText, memoHex, display string, err error) {
+	if len(parts) == 0 {
+		return "", "", "", nil
+	}
+	raw := strings.TrimSpace(strings.Join(parts, " "))
+	if raw == "" {
+		return "", "", "", nil
+	}
+	if strings.HasPrefix(raw, "hex:") {
+		h := strings.ToLower(strings.TrimPrefix(raw, "hex:"))
+		decoded, decErr := hex.DecodeString(h)
+		if decErr != nil {
+			return "", "", "", fmt.Errorf("invalid memo hex")
+		}
+		if len(decoded) > maxMemoBytes {
+			return "", "", "", fmt.Errorf("memo too long: max %d bytes", maxMemoBytes)
+		}
+		return "", h, MemoDisplay(h), nil
+	}
+	if len(raw) >= 2 && ((raw[0] == '"' && raw[len(raw)-1] == '"') || (raw[0] == '\'' && raw[len(raw)-1] == '\'')) {
+		raw = raw[1 : len(raw)-1]
+	}
+	if len(raw) > maxMemoBytes {
+		return "", "", "", fmt.Errorf("memo too long: max %d bytes", maxMemoBytes)
+	}
+	return raw, "", raw, nil
+}
+
+// resolvedRecipient is the name-resolution info the send API returns per
+// recipient when the address was a blocknet.id @name/$name handle.
+type resolvedRecipient struct {
+	ResolvedHandle   string `json:"resolved_handle"`
+	ResolvedAddress  string `json:"resolved_address"`
+	ResolverVerified bool   `json:"resolver_verified"`
+}
+
+// printResolution prints the "Resolved <input> -> <addr>" line (with a verified
+// badge) when the address resolved from a handle, mirroring the core menu.
+func (s *AttachSession) printResolution(input string, r resolvedRecipient) {
+	if r.ResolvedHandle == "" || r.ResolvedAddress == "" {
+		return
+	}
+	if s.noColor {
+		verified := ""
+		if r.ResolverVerified {
+			verified = " [verified]"
+		}
+		fmt.Printf("  Resolved %s -> %s%s\n", input, r.ResolvedAddress, verified)
+		return
+	}
+	if r.ResolverVerified {
+		fmt.Printf("  Resolved %s -> %s \033[38;2;170;255;0m✓ verified\033[0m\n", input, r.ResolvedAddress)
+	} else {
+		fmt.Printf("  Resolved %s -> %s\n", input, r.ResolvedAddress)
+	}
+}
 
 func (s *AttachSession) cmdLoad() error {
 	ctx, cancel := withPatience(defaultAPITimeout)
@@ -416,23 +484,22 @@ func (s *AttachSession) cmdSend(args []string) error {
 		}
 	}
 
-	var memo string
-	if len(args) >= 3 {
-		memo = strings.TrimSpace(strings.Join(args[2:], " "))
-		if len(memo) >= 2 && ((memo[0] == '"' && memo[len(memo)-1] == '"') || (memo[0] == '\'' && memo[len(memo)-1] == '\'')) {
-			memo = memo[1 : len(memo)-1]
-		}
+	memoText, memoHex, memoDisplay, err := parseMemoArg(args[2:])
+	if err != nil {
+		return err
 	}
 
 	ctx := context.Background()
 
 	if sendAll {
-		return s.sendAll(ctx, address, memo)
+		return s.sendAll(ctx, address, memoText, memoHex, memoDisplay)
 	}
 
 	recipient := map[string]any{"address": address, "amount": amount}
-	if memo != "" {
-		recipient["memo"] = memo
+	if memoHex != "" {
+		recipient["memo_hex"] = memoHex
+	} else if memoText != "" {
+		recipient["memo_text"] = memoText
 	}
 	sendReq := map[string]any{
 		"recipients": []map[string]any{recipient},
@@ -445,19 +512,29 @@ func (s *AttachSession) cmdSend(args []string) error {
 	}
 
 	var preview struct {
-		Fee    uint64 `json:"fee"`
-		Change uint64 `json:"change"`
+		Fee        uint64              `json:"fee"`
+		Change     uint64              `json:"change"`
+		Recipients []resolvedRecipient `json:"recipients"`
 	}
 	json.Unmarshal(raw, &preview)
 
+	var resolved resolvedRecipient
+	if len(preview.Recipients) > 0 {
+		resolved = preview.Recipients[0]
+	}
+
 	fmt.Printf("\n%s\n", SectionHead("Send", s.noColor))
+	s.printResolution(address, resolved)
 	fmt.Printf("\n  Send %s to %s?\n", FormatAmount(amount), address)
 	fmt.Printf("  Fee:     %s\n", FormatAmount(preview.Fee))
+	if resolved.ResolvedHandle != "" {
+		fmt.Printf("  Address: %s\n", resolved.ResolvedAddress)
+	}
 	if preview.Change > 0 {
 		fmt.Printf("  Change:  %s\n", FormatAmount(preview.Change))
 	}
-	if memo != "" {
-		fmt.Printf("  Memo:    %s\n", memo)
+	if memoDisplay != "" {
+		fmt.Printf("  Memo:    %s\n", memoDisplay)
 	}
 	fmt.Print("  Confirm [y/N]: ")
 
@@ -484,7 +561,7 @@ func (s *AttachSession) cmdSend(args []string) error {
 	return nil
 }
 
-func (s *AttachSession) sendAll(ctx context.Context, address, memo string) error {
+func (s *AttachSession) sendAll(ctx context.Context, address, memoText, memoHex, memoDisplay string) error {
 	raw, err := s.client.Get(ctx, "/api/wallet/outputs")
 	if err != nil {
 		return s.handleAPIError(err)
@@ -516,8 +593,10 @@ func (s *AttachSession) sendAll(ctx context.Context, address, memo string) error
 	}
 
 	recipient := map[string]any{"address": address, "amount": uint64(1)}
-	if memo != "" {
-		recipient["memo"] = memo
+	if memoHex != "" {
+		recipient["memo_hex"] = memoHex
+	} else if memoText != "" {
+		recipient["memo_text"] = memoText
 	}
 	sendReq := map[string]any{
 		"recipients": []map[string]any{recipient},
@@ -531,17 +610,27 @@ func (s *AttachSession) sendAll(ctx context.Context, address, memo string) error
 	}
 
 	var preview struct {
-		Fee uint64 `json:"fee"`
+		Fee        uint64              `json:"fee"`
+		Recipients []resolvedRecipient `json:"recipients"`
 	}
 	json.Unmarshal(raw, &preview)
+
+	var resolved resolvedRecipient
+	if len(preview.Recipients) > 0 {
+		resolved = preview.Recipients[0]
+	}
 
 	amount := total - preview.Fee
 
 	fmt.Printf("\n%s\n", SectionHead("Send", s.noColor))
+	s.printResolution(address, resolved)
 	fmt.Printf("\n  Send %s to %s? (all)\n", FormatAmount(amount), address)
 	fmt.Printf("  Fee:    %s\n", FormatAmount(preview.Fee))
-	if memo != "" {
-		fmt.Printf("  Memo:   %s\n", memo)
+	if resolved.ResolvedHandle != "" {
+		fmt.Printf("  Address: %s\n", resolved.ResolvedAddress)
+	}
+	if memoDisplay != "" {
+		fmt.Printf("  Memo:   %s\n", memoDisplay)
 	}
 	fmt.Print("  Confirm [y/N]: ")
 
@@ -660,51 +749,123 @@ func (s *AttachSession) cmdVerifyMsg() error {
 }
 
 func (s *AttachSession) cmdHistory() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	raw, err := s.client.Get(ctx, "/api/wallet/history")
+	// Incoming: owned outputs.
+	rawIn, err := s.client.Get(ctx, "/api/wallet/history")
 	if err != nil {
 		return s.handleAPIError(err)
 	}
-
-	var resp struct {
-		Count   int `json:"count"`
+	var inResp struct {
 		Outputs []struct {
 			TxID        string `json:"txid"`
-			OutputIndex int    `json:"output_index"`
 			Amount      uint64 `json:"amount"`
 			BlockHeight uint64 `json:"block_height"`
 			IsCoinbase  bool   `json:"is_coinbase"`
 			Spent       bool   `json:"spent"`
+			MemoHex     string `json:"memo_hex"`
 		} `json:"outputs"`
 	}
-	json.Unmarshal(raw, &resp)
+	json.Unmarshal(rawIn, &inResp)
+
+	// Outgoing sends are recorded separately from owned outputs; merge them so
+	// history shows OUT events too. Best-effort: a sends failure must not hide
+	// the incoming history.
+	var outResp struct {
+		Sends []struct {
+			TxID           string `json:"txid"`
+			RecordedHeight uint64 `json:"recorded_height"`
+			InMempool      bool   `json:"in_mempool"`
+			TotalAmount    uint64 `json:"total_amount"`
+			Recipients     []struct {
+				MemoHex string `json:"memo_hex"`
+			} `json:"recipients"`
+		} `json:"sends"`
+	}
+	if rawOut, err := s.client.Get(ctx, "/api/wallet/sends?order=asc&limit=500"); err == nil {
+		json.Unmarshal(rawOut, &outResp)
+	}
+
+	type event struct {
+		height    uint64
+		pending   bool
+		direction string
+		amount    uint64
+		coinbase  bool
+		txid      string
+		memoHex   string
+		spent     bool
+	}
+
+	var events []event
+	for _, o := range inResp.Outputs {
+		events = append(events, event{
+			height: o.BlockHeight, direction: "IN", amount: o.Amount,
+			coinbase: o.IsCoinbase, txid: o.TxID, memoHex: o.MemoHex, spent: o.Spent,
+		})
+	}
+	for _, o := range outResp.Sends {
+		memo := ""
+		if len(o.Recipients) > 0 {
+			memo = o.Recipients[0].MemoHex
+		}
+		events = append(events, event{
+			height: o.RecordedHeight, pending: o.InMempool, direction: "OUT",
+			amount: o.TotalAmount, txid: o.TxID, memoHex: memo,
+		})
+	}
 
 	fmt.Printf("\n%s\n", SectionHead("History", s.noColor))
-
-	if resp.Count == 0 {
+	if len(events) == 0 {
 		fmt.Println("  No transactions yet")
 		return nil
 	}
 
+	// Oldest first (block height is monotonic with time); pending (mempool)
+	// sends sort to the end.
+	sort.SliceStable(events, func(i, j int) bool {
+		if events[i].pending != events[j].pending {
+			return !events[i].pending
+		}
+		return events[i].height < events[j].height
+	})
+
 	green := "\033[38;2;170;255;0m"
+	red := "\033[38;2;255;68;68m"
+	amber := "\033[38;2;255;170;0m"
 	reset := "\033[0m"
 	if s.noColor {
-		green, reset = "", ""
+		green, red, amber, reset = "", "", "", ""
 	}
 
-	for _, out := range resp.Outputs {
-		outType := "regular"
-		if out.IsCoinbase {
-			outType = "coinbase"
+	for _, e := range events {
+		color := green
+		if e.direction == "OUT" {
+			color = red
+			if e.pending {
+				color = amber
+			}
 		}
-		spentTag := ""
-		if out.Spent {
-			spentTag = " (spent)"
+		heightStr := strconv.FormatUint(e.height, 10)
+		if e.pending {
+			heightStr = "mempool"
 		}
-		fmt.Printf("  block %-6d %sIN%s  %-16s %s  %s%s\n",
-			out.BlockHeight, green, reset, FormatAmount(out.Amount), outType, out.TxID, spentTag)
+		extras := ""
+		if e.direction == "IN" {
+			if e.coinbase {
+				extras = " coinbase"
+			}
+			if e.spent {
+				extras += " (spent)"
+			}
+		}
+		memoStr := ""
+		if m := MemoDisplay(e.memoHex); m != "" {
+			memoStr = "\n    memo: " + m
+		}
+		fmt.Printf("  block %-8s %s%-3s%s %-16s %s%s%s\n",
+			heightStr, color, e.direction, reset, FormatAmount(e.amount), e.txid, extras, memoStr)
 	}
 	return nil
 }
@@ -1035,22 +1196,44 @@ func (s *AttachSession) cmdViewKeys() error {
 	}
 	fmt.Printf("  %sWARNING: Your view private key lets anyone see all incoming funds.%s\n", amber, rst)
 	fmt.Printf("  %sNever share it unless you understand the implications.%s\n", amber, rst)
-	fmt.Print("\n  Export view-only keys? [y/N]: ")
+	fmt.Println()
+	fmt.Println("  This shows your view-only keys AND saves a view-only wallet file")
+	fmt.Println("  that can monitor incoming funds but cannot spend.")
+	fmt.Print("\n  Continue? [y/N]: ")
 
 	confirm, _ := s.reader.ReadString('\n')
 	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
 		return nil
 	}
 
-	password, err := s.readPassword("  Password: ")
+	password, err := s.readPassword("  Wallet password: ")
 	if err != nil {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	filePassword, err := s.readPassword("  New password for the view-only wallet file: ")
+	if err != nil {
+		return err
+	}
+	if len(filePassword) < 3 {
+		return fmt.Errorf("file password must be at least 3 characters")
+	}
+	confirmPw, err := s.readPassword("  Confirm password: ")
+	if err != nil {
+		return err
+	}
+	if confirmPw != filePassword {
+		return fmt.Errorf("passwords do not match")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	raw, err := s.client.Post(ctx, "/api/wallet/viewkeys", map[string]string{"password": password})
+	raw, err := s.client.Post(ctx, "/api/wallet/viewkeys", map[string]any{
+		"password":      password,
+		"create_file":   true,
+		"file_password": filePassword,
+	})
 	if err != nil {
 		return s.handleAPIError(err)
 	}
@@ -1059,15 +1242,25 @@ func (s *AttachSession) cmdViewKeys() error {
 		SpendPub string `json:"spend_pub"`
 		ViewPriv string `json:"view_priv"`
 		ViewPub  string `json:"view_pub"`
+		Created  bool   `json:"created"`
+		Path     string `json:"path"`
+		Address  string `json:"address"`
 	}
 	json.Unmarshal(raw, &resp)
 
 	fmt.Printf("\n  spend public key:  %s\n", resp.SpendPub)
 	fmt.Printf("  view private key:  %s\n", resp.ViewPriv)
 	fmt.Printf("  view public key:   %s\n", resp.ViewPub)
-	fmt.Println()
-	fmt.Println("  To create a view-only wallet on another machine, use these keys")
-	fmt.Println("  with the import command (option 2: spend-key/view-key).")
+
+	if resp.Created {
+		fmt.Println()
+		fmt.Printf("  View-only wallet saved to %s\n", resp.Path)
+		if resp.Address != "" {
+			fmt.Printf("  Address: %s\n", resp.Address)
+		}
+		fmt.Println("  Copy that file to another machine and 'load' it with the file")
+		fmt.Println("  password you just set to watch incoming funds there.")
+	}
 	return nil
 }
 
@@ -1212,12 +1405,6 @@ func (s *AttachSession) cmdAudit() error {
 				out.BlockHeight, FormatAmount(out.Amount), out.TxID, out.OutputIndex, spentTag)
 		}
 	}
-	return nil
-}
-
-func (s *AttachSession) cmdSave() error {
-	fmt.Printf("\n%s\n", SectionHead("Saved", s.noColor))
-	fmt.Println("  Wallet is saved automatically by the core daemon.")
 	return nil
 }
 

@@ -148,8 +148,6 @@ func (s *AttachSession) executeCommand(line string) error {
 		return s.cmdUnlock()
 	case "audit":
 		return s.cmdAudit()
-	case "save":
-		return s.cmdSave()
 	case "explore", "exp":
 		return s.cmdExplore(args)
 	case "mempool":
@@ -158,6 +156,10 @@ func (s *AttachSession) executeCommand(line string) error {
 		return s.cmdPurge()
 	case "certify":
 		return s.cmdCertify()
+	case "save-checkpoints":
+		return s.cmdSaveCheckpoints()
+	case "load-checkpoints":
+		return s.cmdLoadCheckpoints()
 	case "license":
 		s.cmdLicense()
 	case "about":

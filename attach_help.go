@@ -47,8 +47,6 @@ func normalizeHelpTopic(topic string) string {
 		return "lock"
 	case "unlock":
 		return "unlock"
-	case "save":
-		return "save"
 	case "sync", "scan":
 		return "sync"
 	case "status":
@@ -63,6 +61,10 @@ func normalizeHelpTopic(topic string) string {
 		return "mining"
 	case "certify":
 		return "certify"
+	case "save-checkpoints":
+		return "save-checkpoints"
+	case "load-checkpoints":
+		return "load-checkpoints"
 	case "purge":
 		return "purge"
 	case "prove":
@@ -210,11 +212,11 @@ func helpCommandDetails(noColor bool) map[string]helpEntry {
 		},
 		"viewkeys": {
 			usage:         []string{"viewkeys"},
-			description:   []string{"Exports your view-only keys (spend public, view private, view public)."},
+			description:   []string{"Shows your view-only keys and saves a loadable view-only wallet file."},
 			useWhen:       []string{"you want watch-only access on another machine"},
-			exampleInput:  []string{"> viewkeys", "  Export view-only keys? [y/N]: y", "  Password: "},
-			exampleOutput: []string{"# View Keys", "  spend public key:  abc123...", "  view private key:  def456...", "  view public key:   789abc..."},
-			notes:         []string{"requires password confirmation", "view private key lets anyone see all incoming funds"},
+			exampleInput:  []string{"> viewkeys", "  Continue? [y/N]: y", "  Wallet password: ", "  New password for the view-only wallet file: "},
+			exampleOutput: []string{"# View Keys", "  spend public key:  abc123...", "  view private key:  def456...", "  view public key:   789abc...", "  View-only wallet saved to main.view.wallet.dat"},
+			notes:         []string{"the view-only wallet file uses its own password, not your main wallet password", "the view private key lets anyone see all incoming funds"},
 		},
 		"prove": {
 			usage:         []string{"prove <txid>"},
@@ -245,13 +247,6 @@ func helpCommandDetails(noColor bool) map[string]helpEntry {
 			useWhen:       []string{"you get a 'wallet is locked' error"},
 			exampleInput:  []string{"> unlock"},
 			exampleOutput: []string{"Password: ", "# Unlocked"},
-		},
-		"save": {
-			usage:         []string{"save"},
-			description:   []string{"The core daemon saves the wallet automatically."},
-			useWhen:       []string{"you want to confirm wallet state is persisted"},
-			exampleInput:  []string{"> save"},
-			exampleOutput: []string{"# Saved", "  Wallet is saved automatically by the core daemon."},
 		},
 		"sync": {
 			usage:         []string{"sync"},
@@ -333,6 +328,22 @@ func helpCommandDetails(noColor bool) map[string]helpEntry {
 			exampleInput:  []string{"> certify"},
 			exampleOutput: []string{"# Certify", "  Chain height: 125000", "  Chain is clean. No violations found."},
 			notes:         []string{"arithmetic-only check, no PoW re-hashing", "may take a moment on long chains"},
+		},
+		"save-checkpoints": {
+			usage:         []string{"save-checkpoints"},
+			description:   []string{"Write checkpoints for known blocks to disk (every 100 blocks)."},
+			useWhen:       []string{"you want to publish checkpoints so nodes can fast-sync"},
+			exampleInput:  []string{"> save-checkpoints"},
+			exampleOutput: []string{"# Save Checkpoints", "  Wrote 3 checkpoint(s) up to height 14200"},
+			notes:         []string{"checkpoints let nodes skip proof-of-work re-verification below the checkpoint height"},
+		},
+		"load-checkpoints": {
+			usage:         []string{"load-checkpoints"},
+			description:   []string{"Download/reload checkpoints to enable faster sync."},
+			useWhen:       []string{"you are syncing a fresh node and want to skip PoW re-verification"},
+			exampleInput:  []string{"> load-checkpoints"},
+			exampleOutput: []string{"# Load Checkpoints", "  Loaded 142 checkpoint(s) (max height: 14200)"},
+			notes:         []string{"only speeds up sync below the max checkpoint height"},
 		},
 		"purge": {
 			usage:         []string{"purge"},
@@ -452,7 +463,6 @@ func (s *AttachSession) cmdHelp(args []string) {
   unlock            Unlock wallet
   prove <txid>      Generate payment proof
   audit             Check wallet for burned outputs
-  save              Save wallet to disk
   sync              Rescan blocks for outputs
 
 %s
@@ -464,6 +474,8 @@ func (s *AttachSession) cmdHelp(args []string) {
   export-peer       Export peer addresses to peer.txt
   mining            Manage mining
   certify           Check chain integrity (difficulty + timestamps)
+  save-checkpoints  Write checkpoints for known blocks to disk
+  load-checkpoints  Download/reload checkpoints for faster sync
   purge             Delete all blockchain data (cannot be undone)
   version           Print version
   about             About this software
