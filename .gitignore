@@ -29,3 +29,6 @@ config.json
 blocknet-data-mainnet
 blocknet-data-testnet
 notes
+
+# Internal notes / punchlists — never commit or push
+txt/
