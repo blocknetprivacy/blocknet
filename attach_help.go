@@ -358,7 +358,7 @@ func helpCommandDetails(noColor bool) map[string]helpEntry {
 			description:   []string{"Prints the Blocknet version."},
 			useWhen:       []string{"you are reporting bugs or checking for updates"},
 			exampleInput:  []string{"> version"},
-			exampleOutput: []string{"# Version 1.0.1"},
+			exampleOutput: []string{"# Version 1.0.x"},
 		},
 		"about": {
 			usage:         []string{"about"},
