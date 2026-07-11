@@ -15,7 +15,12 @@ import (
 const (
 	watchdogInterval      = 5 * time.Second
 	watchdogHealthTimeout = 3 * time.Second
-	watchdogFailThreshold = 3
+	// watchdogWedgeTimeout is how long a core may be alive, unresponsive on its
+	// API, AND making no progress before we treat it as genuinely wedged and
+	// restart it. A cold start (loading the chain db, dialing peers) keeps the
+	// process busy the whole time, so a normal — if slow — startup never trips
+	// this; only a real hang does.
+	watchdogWedgeTimeout = 2 * time.Minute
 )
 
 func cmdWatchdog(args []string) error {
@@ -77,7 +82,26 @@ func cmdWatchdog(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	failures := make(map[Network]int)
+	restart := func(net Network, why string) {
+		nc := netColor(net)
+		fmt.Printf("  %s%s%s %s%s — restarting...%s\n", nc, net, reset, amber, why, reset)
+		netArg := string(net)
+		run(self, "stop", netArg)
+		run(self, "start", netArg)
+		fmt.Printf("  %s%s%s %srestarted%s\n", nc, net, reset, dim, reset)
+	}
+
+	// Per-network state for wedge detection: when a core first went quiet, and
+	// its last-seen activity counter.
+	wedgeSince := make(map[Network]time.Time)
+	lastActivity := make(map[Network]uint64)
+	haveActivity := make(map[Network]bool)
+	clear := func(net Network) {
+		delete(wedgeSince, net)
+		delete(lastActivity, net)
+		delete(haveActivity, net)
+	}
+
 	ticker := time.NewTicker(watchdogInterval)
 	defer ticker.Stop()
 
@@ -95,24 +119,50 @@ func cmdWatchdog(args []string) error {
 				continue
 			}
 
+			// Healthy API — the core is fully up, nothing to do.
 			if checkHealth(cc.APIAddr) {
-				failures[net] = 0
+				clear(net)
 				continue
 			}
 
-			failures[net]++
-			if failures[net] < watchdogFailThreshold {
+			// API is not answering. Decide by evidence, not a stopwatch: is the
+			// core actually dead, or just still coming up / busy?
+			pid, perr := readCorePidFile(net)
+			if perr != nil || !processAlive(pid) {
+				// The core process is gone — it crashed. Restart it.
+				restart(net, "crashed")
+				clear(net)
 				continue
 			}
 
-			nc := netColor(net)
-			fmt.Printf("  %s%s%s %sunresponsive (%d checks), restarting...%s\n",
-				nc, net, reset, amber, failures[net], reset)
-			netArg := string(net)
-			run(self, "stop", netArg)
-			run(self, "start", netArg)
-			fmt.Printf("  %s%s%s %srestarted%s\n", nc, net, reset, dim, reset)
-			failures[net] = 0
+			// Process is alive but the API is down. That's normal during a cold
+			// start (the core loads the chain db before binding the API). As long
+			// as it keeps using CPU or doing disk I/O it is up-but-busy — leave it.
+			busy := false
+			if act, ok := processActivity(pid); ok {
+				if !haveActivity[net] || act != lastActivity[net] {
+					busy = true
+				}
+				lastActivity[net] = act
+				haveActivity[net] = true
+			} else {
+				busy = true // progress can't be measured — assume it's working
+			}
+			if busy {
+				delete(wedgeSince, net)
+				continue
+			}
+
+			// Alive, API down, and making no progress. Start/continue the wedge
+			// timer; only restart once it's been stuck long enough to rule out a
+			// slow-but-healthy boot.
+			if wedgeSince[net].IsZero() {
+				wedgeSince[net] = time.Now()
+			}
+			if time.Since(wedgeSince[net]) >= watchdogWedgeTimeout {
+				restart(net, "wedged")
+				clear(net)
+			}
 		}
 	}
 }

@@ -14,6 +14,12 @@ func detachProcess(cmd *exec.Cmd) {
 	}
 }
 
+// processActivity is unavailable on Windows; callers treat the false return as
+// "assume the process is making progress" so a healthy core is never killed.
+func processActivity(pid int) (uint64, bool) {
+	return 0, false
+}
+
 func processAlive(pid int) bool {
 	proc, err := os.FindProcess(pid)
 	if err != nil {

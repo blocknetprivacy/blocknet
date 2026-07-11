@@ -38,13 +38,17 @@ func startCore(net Network, cc *CoreConfig, binPath string) (int, error) {
 
 	pid := cmd.Process.Pid
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if err := waitCoreHealthy(ctx, cc.APIAddr, cookiePath); err != nil {
-		cmd.Process.Kill()
+	// Wait for the core to open its API. A cold start loads the chain db and
+	// dials peers before it binds the API, which can take a couple of minutes.
+	// We never kill a core just for being slow: awaitCoreReady only fails if the
+	// process actually exits or is genuinely wedged (alive but making zero
+	// progress). A live, busy core is left to finish coming up.
+	if err := awaitCoreReady(pid, cc.APIAddr, cookiePath, logPath); err != nil {
+		if processAlive(pid) {
+			cmd.Process.Kill() // wedged, not busy — reclaim it
+		}
 		logFile.Close()
-		return 0, fmt.Errorf("%s core started but API not reachable: %w", net, err)
+		return 0, fmt.Errorf("%s: %w", net, err)
 	}
 
 	cmd.Process.Release()
@@ -53,37 +57,63 @@ func startCore(net Network, cc *CoreConfig, binPath string) (int, error) {
 	return pid, nil
 }
 
-func waitCoreHealthy(ctx context.Context, apiAddr, cookiePath string) error {
-	var token string
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		data, err := os.ReadFile(cookiePath)
-		if err == nil && len(strings.TrimSpace(string(data))) > 0 {
-			token = strings.TrimSpace(string(data))
-			break
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
+// awaitCoreReady blocks until the core's API responds, judging the core by
+// evidence rather than a fixed deadline:
+//   - API responds                       -> ready (nil)
+//   - process has exited                 -> crashed (error)
+//   - alive but no progress for a while  -> wedged (error) after coreStallTimeout
+//
+// While the process keeps using CPU or doing disk I/O it is "up but busy", and
+// we wait for as long as it needs — a slow cold start is not a failure.
+func awaitCoreReady(pid int, apiAddr, cookiePath, logPath string) error {
+	const (
+		pollInterval     = 500 * time.Millisecond
+		coreStallTimeout = 2 * time.Minute
+	)
+	var lastActivity uint64
+	haveActivity := false
+	lastAdvance := time.Now()
 
-	client := NewCoreClientDirect(apiAddr, token)
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		reqCtx, reqCancel := context.WithTimeout(ctx, 3*time.Second)
-		_, err := client.Status(reqCtx)
-		reqCancel()
-		if err == nil {
+		if coreResponds(apiAddr, cookiePath) {
 			return nil
 		}
-		time.Sleep(250 * time.Millisecond)
+		if !processAlive(pid) {
+			return fmt.Errorf("core exited during startup (see %s)", logPath)
+		}
+		if act, ok := processActivity(pid); ok {
+			if !haveActivity || act != lastActivity {
+				lastActivity, haveActivity = act, true
+				lastAdvance = time.Now()
+			}
+		} else {
+			// Progress can't be measured here (non-Linux) — assume it's working.
+			lastAdvance = time.Now()
+		}
+		if time.Since(lastAdvance) > coreStallTimeout {
+			return fmt.Errorf("core is alive but made no progress for %s and its API never came up (see %s)", coreStallTimeout, logPath)
+		}
+		time.Sleep(pollInterval)
 	}
+}
+
+// coreResponds reports whether the core's API is answering right now.
+func coreResponds(apiAddr, cookiePath string) bool {
+	data, err := os.ReadFile(cookiePath)
+	if err != nil {
+		return false
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	client := NewCoreClientDirect(apiAddr, token)
+	if _, err := client.Status(ctx); err != nil {
+		return false
+	}
+	return true
 }
 
 func stopCore(net Network) error {
