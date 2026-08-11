@@ -93,7 +93,6 @@ func maybeAutoUpgrade(cfg *Config) {
 			fmt.Fprintf(os.Stderr, "  warning: %s restart failed: %v\n", net, err)
 			continue
 		}
-		writeCorePidFile(net, newPid)
 		fmt.Printf("  %s core restarted (pid %d)\n", net, newPid)
 	}
 }

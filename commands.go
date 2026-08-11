@@ -93,7 +93,6 @@ func cmdStart(args []string) error {
 			return err
 		}
 
-		writeCorePidFile(net, pid)
 		if cc.ExplorerAddr != "" {
 			fmt.Printf("  %s✓%s %s%s%s running %s(pid %d, api %s, explorer %s)%s\n", green, reset, netColor(net), net, reset, dim, pid, cc.APIAddr, cc.ExplorerAddr, reset)
 		} else {
@@ -443,7 +442,6 @@ func cmdUpgrade(_ []string) error {
 			fmt.Fprintf(os.Stderr, "  %s✗ %s restart failed: %v%s\n", "\033[38;2;255;0;170m", net, err, reset)
 			continue
 		}
-		writeCorePidFile(net, newPid)
 		fmt.Printf("  %s✓%s %s core running %s(pid %d)%s\n", green, reset, net, dim, newPid, reset)
 		restarted++
 	}

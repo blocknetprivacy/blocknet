@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,12 @@ import (
 // startCore spawns a core daemon as a detached background process, waits for
 // it to become healthy (cookie + API status), and returns its PID.
 func startCore(net Network, cc *CoreConfig, binPath string) (int, error) {
+	// Never put a second core on one data dir: they fight over the chain db and
+	// the API port, and the loser is a process nobody tracks.
+	if pid, err := readCorePidFile(net); err == nil && processAlive(pid) {
+		return 0, fmt.Errorf("%s core is already running (pid %d); stop it first", net, pid)
+	}
+
 	dataDir := cc.ResolveDataDir(net)
 	cookiePath := CookiePath(dataDir)
 	os.Remove(cookiePath)
@@ -38,6 +45,15 @@ func startCore(net Network, cc *CoreConfig, binPath string) (int, error) {
 
 	pid := cmd.Process.Pid
 
+	// Claim the pidfile now, not after the wait below. A cold start can take
+	// minutes, and until the pid is on disk every other command sees no core:
+	// stop finds nothing to stop, start spawns a second one on the same data dir.
+	if err := writeCorePidFile(net, pid); err != nil {
+		cmd.Process.Kill()
+		logFile.Close()
+		return 0, fmt.Errorf("write %s pidfile: %w", net, err)
+	}
+
 	// Wait for the core to open its API. A cold start loads the chain db and
 	// dials peers before it binds the API, which can take a couple of minutes.
 	// We never kill a core just for being slow: awaitCoreReady only fails if the
@@ -47,6 +63,7 @@ func startCore(net Network, cc *CoreConfig, binPath string) (int, error) {
 		if processAlive(pid) {
 			cmd.Process.Kill() // wedged, not busy — reclaim it
 		}
+		os.Remove(CorePidFile(net))
 		logFile.Close()
 		return 0, fmt.Errorf("%s: %w", net, err)
 	}
@@ -75,7 +92,13 @@ func awaitCoreReady(pid int, apiAddr, cookiePath, logPath string) error {
 	lastAdvance := time.Now()
 
 	for {
-		if coreResponds(apiAddr, cookiePath) {
+		// An answer on the API address is only ours if the core reports our pid.
+		// Another core already holding that address would otherwise pass this
+		// core as ready while the one we started is still stuck or dying.
+		if ok, apiPid := coreResponds(apiAddr, cookiePath); ok {
+			if apiPid != 0 && apiPid != pid {
+				return fmt.Errorf("api %s is served by another core (pid %d), not the one just started (pid %d)", apiAddr, apiPid, pid)
+			}
 			return nil
 		}
 		if !processAlive(pid) {
@@ -97,23 +120,30 @@ func awaitCoreReady(pid int, apiAddr, cookiePath, logPath string) error {
 	}
 }
 
-// coreResponds reports whether the core's API is answering right now.
-func coreResponds(apiAddr, cookiePath string) bool {
+// coreResponds reports whether the core's API is answering right now, and the
+// pid of the process that answered. A pid of 0 means the core is too old to
+// report one; callers then have to take the answer at face value.
+func coreResponds(apiAddr, cookiePath string) (bool, int) {
 	data, err := os.ReadFile(cookiePath)
 	if err != nil {
-		return false
+		return false, 0
 	}
 	token := strings.TrimSpace(string(data))
 	if token == "" {
-		return false
+		return false, 0
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	client := NewCoreClientDirect(apiAddr, token)
-	if _, err := client.Status(ctx); err != nil {
-		return false
+	raw, err := client.Status(ctx)
+	if err != nil {
+		return false, 0
 	}
-	return true
+	var status struct {
+		PID int `json:"pid"`
+	}
+	json.Unmarshal(raw, &status)
+	return true, status.PID
 }
 
 func stopCore(net Network) error {
