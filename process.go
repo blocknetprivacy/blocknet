@@ -84,7 +84,7 @@ func startCore(net Network, cc *CoreConfig, binPath string) (int, error) {
 // we wait for as long as it needs — a slow cold start is not a failure.
 func awaitCoreReady(pid int, apiAddr, cookiePath, logPath string) error {
 	const (
-		pollInterval     = 500 * time.Millisecond
+		pollInterval     = 25 * time.Millisecond
 		coreStallTimeout = 2 * time.Minute
 	)
 	var lastActivity uint64
@@ -165,11 +165,8 @@ func stopCore(net Network) error {
 		proc.Kill()
 	}
 
-	for i := 0; i < 30; i++ {
-		if !processAlive(pid) {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
+	for deadline := time.Now().Add(15 * time.Second); processAlive(pid) && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	if processAlive(pid) {

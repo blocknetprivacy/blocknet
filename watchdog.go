@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -167,6 +168,8 @@ func cmdWatchdog(args []string) error {
 	}
 }
 
+var healthClient = &http.Client{Timeout: watchdogHealthTimeout}
+
 func checkHealth(apiAddr string) bool {
 	base := apiAddr
 	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
@@ -182,10 +185,11 @@ func checkHealth(apiAddr string) bool {
 		return false
 	}
 
-	resp, err := (&http.Client{Timeout: watchdogHealthTimeout}).Do(req)
+	resp, err := healthClient.Do(req)
 	if err != nil {
 		return false
 	}
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
 }
@@ -239,11 +243,8 @@ func stopWatchdog() {
 		return
 	}
 	proc.Signal(os.Interrupt)
-	for i := 0; i < 10; i++ {
-		if !processAlive(pid) {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
+	for deadline := time.Now().Add(2 * time.Second); processAlive(pid) && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
 	}
 	if processAlive(pid) {
 		proc.Kill()

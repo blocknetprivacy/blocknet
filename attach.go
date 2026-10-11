@@ -248,8 +248,24 @@ func (s *AttachSession) printWelcome() {
 	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
-	raw, err := s.client.Status(ctx)
-	if err != nil {
+	type result struct {
+		raw json.RawMessage
+		err error
+	}
+	fetch := func(path string) <-chan result {
+		ch := make(chan result, 1)
+		go func() {
+			raw, err := s.client.Get(ctx, path)
+			ch <- result{raw, err}
+		}()
+		return ch
+	}
+	statusCh := fetch("/api/status")
+	balCh := fetch("/api/wallet/balance")
+	addrCh := fetch("/api/wallet/address")
+
+	st := <-statusCh
+	if st.err != nil {
 		fmt.Printf("\n  Connected to %s (status unavailable)\n", s.network)
 		fmt.Println("  Type 'help' for available commands")
 		return
@@ -258,17 +274,16 @@ func (s *AttachSession) printWelcome() {
 	var status struct {
 		Height uint64 `json:"chain_height"`
 	}
-	json.Unmarshal(raw, &status)
+	json.Unmarshal(st.raw, &status)
 
-	raw, err = s.client.Get(ctx, "/api/wallet/balance")
-	if err == nil {
+	if b := <-balCh; b.err == nil {
 		var bal struct {
 			Spendable uint64 `json:"spendable"`
 			Pending   uint64 `json:"pending"`
 		}
-		json.Unmarshal(raw, &bal)
+		json.Unmarshal(b.raw, &bal)
 
-		raw2, _ := s.client.Get(ctx, "/api/wallet/address")
+		raw2 := (<-addrCh).raw
 		var addr struct {
 			Address string `json:"address"`
 		}
@@ -291,8 +306,11 @@ func (s *AttachSession) printWelcome() {
 }
 
 func (s *AttachSession) listenEvents() {
+	const minBackoff, maxBackoff = 100 * time.Millisecond, 5 * time.Second
+	backoff := minBackoff
 	for {
 		ctx := context.Background()
+		start := time.Now()
 		_ = s.client.SSE(ctx, "/api/events", func(event, data string) {
 			if event == "mined_block" {
 				var block struct {
@@ -304,7 +322,11 @@ func (s *AttachSession) listenEvents() {
 				}
 			}
 		})
-		time.Sleep(5 * time.Second)
+		if time.Since(start) > maxBackoff {
+			backoff = minBackoff
+		}
+		time.Sleep(backoff)
+		backoff = min(backoff*2, maxBackoff)
 	}
 }
 

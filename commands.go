@@ -321,7 +321,7 @@ func cmdAttach(args []string) error {
 			fmt.Printf("  Waiting for %s core at %s...\n", targetNet, cc.APIAddr)
 			warned = true
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 	if lastErr != nil {
 		return fmt.Errorf("%s core is not reachable at %s: %v", targetNet, cc.APIAddr, lastErr)
@@ -744,7 +744,7 @@ func cmdLogs(args []string) error {
 			return err
 		}
 		if n == 0 {
-			time.Sleep(250 * time.Millisecond)
+			time.Sleep(25 * time.Millisecond)
 		}
 	}
 }
