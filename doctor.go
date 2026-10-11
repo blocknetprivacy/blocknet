@@ -387,14 +387,6 @@ func cmdDoctor(_ []string) error {
 		warn("Watchdog not running")
 	}
 
-	if cfg.AutoUpgrade {
-		pass("Auto-upgrade enabled")
-	} else {
-		fail("Auto-upgrade disabled")
-		hint("Set \"auto_upgrade\": true in config.json")
-		issues++
-	}
-
 	fmt.Println()
 	if issues == 0 {
 		fmt.Printf("  %sAll checks passed%s\n\n", green, reset)

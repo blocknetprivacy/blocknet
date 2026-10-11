@@ -119,11 +119,7 @@ func cmdSetup(_ []string) error {
 				}
 				fmt.Printf("    testnet:      %s\n", tag)
 			}
-			upTag := "off"
-			if cfg.AutoUpgrade {
-				upTag = "on"
-			}
-			fmt.Printf("    auto-upgrade: %s\n\n", upTag)
+			fmt.Println()
 		}
 	}
 
@@ -158,16 +154,6 @@ func cmdSetup(_ []string) error {
 		}
 		return fmt.Sprintf("(default: %s)", def)
 	}
-
-	// --- Auto-upgrade ---
-	fmt.Printf("\n%s\n\n", SectionHead("Updates", NoColor))
-
-	fmt.Println("  Keep your node updated automatically?")
-	fmt.Printf("  %sWhen a new version comes out, blocknet will download%s\n", dim, reset)
-	fmt.Printf("  %sand apply it for you.%s\n", dim, reset)
-	fmt.Printf("  yes or no %s%s%s: ", cyan, ynHint(cfg.AutoUpgrade, true), reset)
-	cfg.AutoUpgrade = parseYes(readLine(reader), ynVal(cfg.AutoUpgrade, true))
-	fmt.Println()
 
 	// --- Advanced settings gate ---
 	fmt.Printf("\n%s\n\n", SectionHead("Advanced", NoColor))
@@ -305,14 +291,11 @@ func cmdSetup(_ []string) error {
 	}
 	fmt.Printf("  Config saved to %s%s%s\n\n", dim, cfgPath, reset)
 
-	if cfg.AutoUpgrade {
-		binPath, _ := os.Executable()
-		if binPath != "" {
-			if err := installSchedule(binPath, cfg.CheckIntervalDuration()); err != nil {
-				fmt.Printf("  %sCouldn't set up auto-updates: %v%s\n", dim, err, reset)
-			}
-			fmt.Println()
+	if binPath, _ := os.Executable(); binPath != "" {
+		if err := installSchedule(binPath, cfg.CheckIntervalDuration()); err != nil {
+			fmt.Printf("  %sCouldn't set up auto-updates: %v%s\n", dim, err, reset)
 		}
+		fmt.Println()
 	}
 
 	// --- Install core ---

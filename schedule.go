@@ -10,12 +10,6 @@ func runCmd(name string, args ...string) error {
 }
 
 func ensureScheduleFromConfig(cfg *Config) {
-	if !cfg.AutoUpgrade {
-		if scheduleInstalled() {
-			uninstallSchedule()
-		}
-		return
-	}
 	binPath, err := os.Executable()
 	if err != nil {
 		return

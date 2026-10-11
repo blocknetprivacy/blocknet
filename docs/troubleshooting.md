@@ -341,17 +341,9 @@ The safest backup is your **12-word recovery seed** — with it, you can recreat
 
 ---
 
-### How do I disable automatic upgrades?
+### How do I stop automatic core upgrades?
 
-Set [`auto_upgrade`](reference-config.md#top-level-fields) to `false` in your config:
-
-```json
-{
-  "auto_upgrade": false
-}
-```
-
-You can still upgrade manually with [`blocknet upgrade`](reference-blocknet.md#blocknet-upgrade) whenever you're ready.
+Automatic upgrades are always on. To keep a core on one version, pin it with [`blocknet use <version>`](reference-blocknet.md#blocknet-use-version-mainnettestnet). Pinned cores are never upgraded or restarted. blocknet itself still upgrades.
 
 ---
 

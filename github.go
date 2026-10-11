@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -35,7 +36,11 @@ type Asset struct {
 
 // ListReleases fetches all releases from the core repository.
 func ListReleases(ctx context.Context) ([]Release, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releasesURL, nil)
+	return listReleasesFrom(ctx, releasesURL)
+}
+
+func listReleasesFrom(ctx context.Context, url string) ([]Release, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -206,6 +211,10 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 // broken file on disk. onProgress, if non-nil, is called periodically with
 // byte counts.
 func DownloadAsset(ctx context.Context, dlURL, destPath, expectedSHA256 string, onProgress func(downloaded, total int64)) error {
+	return downloadAssetAs(ctx, dlURL, destPath, expectedSHA256, "blocknet-core", onProgress)
+}
+
+func downloadAssetAs(ctx context.Context, dlURL, destPath, expectedSHA256, binPrefix string, onProgress func(downloaded, total int64)) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, dlURL, nil)
 	if err != nil {
 		return err
@@ -262,7 +271,7 @@ func DownloadAsset(ctx context.Context, dlURL, destPath, expectedSHA256 string, 
 	}
 
 	if strings.HasSuffix(dlURL, ".zip") {
-		err := extractBinaryFromZip(tmpPath, destPath)
+		err := extractBinaryFromZip(tmpPath, destPath, binPrefix)
 		os.Remove(tmpPath)
 		return err
 	}
@@ -271,7 +280,24 @@ func DownloadAsset(ctx context.Context, dlURL, destPath, expectedSHA256 string, 
 		os.Remove(tmpPath)
 		return err
 	}
-	return os.Rename(tmpPath, destPath)
+	return replaceFile(tmpPath, destPath)
+}
+
+func replaceFile(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil || runtime.GOOS != "windows" {
+		return err
+	}
+	old := dst + ".old"
+	os.Remove(old)
+	if err := os.Rename(dst, old); err != nil {
+		return err
+	}
+	if err := os.Rename(src, dst); err != nil {
+		os.Rename(old, dst)
+		return err
+	}
+	os.Remove(old)
+	return nil
 }
 
 func fileSHA256(path string) (string, error) {
@@ -288,14 +314,13 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func extractBinaryFromZip(zipPath, destPath string) error {
+func extractBinaryFromZip(zipPath, destPath, prefix string) error {
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return fmt.Errorf("open zip: %w", err)
 	}
 	defer r.Close()
 
-	prefix := "blocknet-core"
 	for _, f := range r.File {
 		name := filepath.Base(f.Name)
 		if f.FileInfo().IsDir() || !strings.HasPrefix(name, prefix) {
@@ -312,7 +337,7 @@ func extractBinaryFromZip(zipPath, destPath string) error {
 			return err
 		}
 
-		out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+		out, err := os.CreateTemp(filepath.Dir(destPath), ".extract-*")
 		if err != nil {
 			rc.Close()
 			return err
@@ -320,9 +345,18 @@ func extractBinaryFromZip(zipPath, destPath string) error {
 
 		_, copyErr := io.Copy(out, rc)
 		rc.Close()
-		out.Close()
+		closeErr := out.Close()
+		if copyErr == nil {
+			copyErr = closeErr
+		}
+		if copyErr == nil {
+			copyErr = os.Chmod(out.Name(), 0755)
+		}
+		if copyErr == nil {
+			copyErr = replaceFile(out.Name(), destPath)
+		}
 		if copyErr != nil {
-			os.Remove(destPath)
+			os.Remove(out.Name())
 			return fmt.Errorf("extract %s: %w", name, copyErr)
 		}
 		return nil
