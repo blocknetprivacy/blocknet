@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -279,7 +280,24 @@ func downloadAssetAs(ctx context.Context, dlURL, destPath, expectedSHA256, binPr
 		os.Remove(tmpPath)
 		return err
 	}
-	return os.Rename(tmpPath, destPath)
+	return replaceFile(tmpPath, destPath)
+}
+
+func replaceFile(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil || runtime.GOOS != "windows" {
+		return err
+	}
+	old := dst + ".old"
+	os.Remove(old)
+	if err := os.Rename(dst, old); err != nil {
+		return err
+	}
+	if err := os.Rename(src, dst); err != nil {
+		os.Rename(old, dst)
+		return err
+	}
+	os.Remove(old)
+	return nil
 }
 
 func fileSHA256(path string) (string, error) {
@@ -319,7 +337,7 @@ func extractBinaryFromZip(zipPath, destPath, prefix string) error {
 			return err
 		}
 
-		out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+		out, err := os.CreateTemp(filepath.Dir(destPath), ".extract-*")
 		if err != nil {
 			rc.Close()
 			return err
@@ -327,9 +345,18 @@ func extractBinaryFromZip(zipPath, destPath, prefix string) error {
 
 		_, copyErr := io.Copy(out, rc)
 		rc.Close()
-		out.Close()
+		closeErr := out.Close()
+		if copyErr == nil {
+			copyErr = closeErr
+		}
+		if copyErr == nil {
+			copyErr = os.Chmod(out.Name(), 0755)
+		}
+		if copyErr == nil {
+			copyErr = replaceFile(out.Name(), destPath)
+		}
 		if copyErr != nil {
-			os.Remove(destPath)
+			os.Remove(out.Name())
 			return fmt.Errorf("extract %s: %w", name, copyErr)
 		}
 		return nil

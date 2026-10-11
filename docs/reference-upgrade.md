@@ -125,8 +125,9 @@ This is the one-command path for keeping your cores current:
 
 1. Checks GitHub for the latest stable release.
 2. Downloads it if not already installed.
-3. Stops and restarts any running cores that are unpinned (`latest` or `nightly`).
-4. Pinned cores are left untouched.
+3. Stops and restarts any running cores set to `latest`.
+4. If a core uses `nightly`, checks the nightly build and downloads it if it changed. Running nightly cores restart onto the new build.
+5. Pinned cores are left untouched.
 
 ```
 blocknet upgrade
@@ -180,7 +181,7 @@ Automatic upgrades are always on. blocknet checks for new releases every time yo
 
 blocknet upgrades itself first. It downloads the new release from [blocknetprivacy/blocknet](https://github.com/blocknetprivacy/blocknet/releases), checks its SHA-256, and replaces its own binary. The new version runs from the next command. Builds made with plain `go build` have no version and never upgrade themselves.
 
-When a new core release is found, the binary is downloaded and installed. If a managed core is already running on an unpinned version (`latest` or `nightly`), blocknet may restart it immediately to apply the new version. If not running, the new version is used on the next start/restart. Pinned cores are never touched.
+When a new core release is found, the binary is downloaded and installed. If a managed core set to `latest` is already running, blocknet restarts it to apply the new version. Cores set to `nightly` follow the nightly build instead, and restart only when that build changes. If not running, the new version is used on the next start/restart. Pinned cores are never touched.
 
 The last check time is stored in `~/.config/bnt/.last_upgrade_check`. If less than `check_interval` has passed since the last check, the check is skipped silently.
 
@@ -221,7 +222,7 @@ blocknet use nightly testnet
 - Not guaranteed to work or be stable.
 - May contain breaking changes, consensus bugs, or incomplete features.
 - Has a non-zero risk of fund loss.
-- Reinstalling nightly always re-downloads — there is no version check since the binary changes constantly.
+- Reinstalling nightly always re-downloads. Automatic upgrades compare the published SHA-256 with the installed build and download only when it changed.
 
 If you're not specifically testing something, use a stable tagged release.
 

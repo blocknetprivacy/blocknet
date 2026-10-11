@@ -215,7 +215,7 @@ blocknet use nightly mainnet    # mainnet runs nightly
 
 #### `blocknet upgrade`
 
-Checks for the latest stable release and downloads it if not already installed. If a new version was downloaded, running cores on unpinned versions (`latest` or `nightly`) are restarted onto it.
+Checks for the latest stable release and downloads it if not already installed. If a new version was downloaded, running cores set to `latest` are restarted onto it. If a core uses `nightly`, it also checks the nightly build and restarts nightly cores when the build changed.
 
 Pinned cores are left untouched.
 
