@@ -54,7 +54,7 @@ Closing the shell (`quit` or Ctrl-C) does not stop the core. See [reference-bloc
 | `mempool` | Show mempool statistics |
 | `peers` | List connected peers |
 | `banned` | List banned peers |
-| `export-peer` | Export peer addresses to peer.txt |
+| `export-peer` | Write this node's own addresses to peer.txt |
 | `mining` | Manage mining |
 | `certify` | Check chain integrity (difficulty + timestamps) |
 | `purge` | Delete all blockchain data (cannot be undone) |
@@ -392,8 +392,9 @@ you need to load an existing wallet into this node.
 # Import
   1) 12-word recovery seed
   2) spend-key/view-key (hex private keys)
+  3) view-only (spend public key + view private key)
 
-  Choose [1/2]: 1
+  Choose [1/2/3]: 1
   Input the 12 words of your seed:
 > abandon ability able about above absent absorb abstract absurd abuse access accident
   Input the name of this wallet:
@@ -405,7 +406,9 @@ you need to load an existing wallet into this node.
 ```
 
 **Notes:**
-- Option 2 (spend-key/view-key) is not implemented in `blocknet attach`; use the core CLI directly with `--cli` for key-based import.
+- Option 2 imports a full wallet from its spend and view private keys (64 hex chars each).
+- Option 3 makes a view-only wallet from a spend public key and a view private key. It can watch incoming funds but cannot spend.
+- Private keys are read without echo.
 
 ---
 
@@ -432,7 +435,7 @@ you want watch-only access on another machine.
   view public key:   789abc...
 
   To create a view-only wallet on another machine, use these keys
-  with the import command (option 2: spend-key/view-key).
+  with the import command (option 3: view-only).
 ```
 
 **Notes:**
@@ -644,18 +647,22 @@ you suspect peer filtering or connectivity issues.
 
 #### `export-peer`
 
-Writes connected peer addresses to `peer.txt`.
+Writes this node's own addresses to `peer.txt` in the current folder. The list includes the public IP address, found through api.ipify.org, ifconfig.me or icanhazip.com.
 
 **Use this when:**
-you want another node to connect to known peers.
+you want other nodes to connect to this node.
 
 **Example:**
 ```
 > export-peer
 
 # Export
-  8 peer addresses written to peer.txt
+  Peer addresses written to peer.txt
   Share this file or its contents with other nodes.
+
+  Other nodes can connect with:
+    /ip4/203.0.113.7/tcp/28080/p2p/12D3KooW...
+    /ip4/192.168.1.20/tcp/28080/p2p/12D3KooW...
 ```
 
 ---

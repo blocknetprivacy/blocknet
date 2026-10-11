@@ -204,11 +204,11 @@ func helpCommandDetails(noColor bool) map[string]helpEntry {
 		},
 		"import": {
 			usage:         []string{"import"},
-			description:   []string{"Creates a new wallet file from a 12-word recovery seed."},
+			description:   []string{"Creates a new wallet file from a 12-word recovery seed, from spend/view private keys, or as view-only from a spend public key and view private key."},
 			useWhen:       []string{"you need to load an existing wallet into this node"},
-			exampleInput:  []string{"> import", "  Choose [1/2]: 1"},
-			exampleOutput: []string{"# Import", "  1) 12-word recovery seed", "  2) spend-key/view-key"},
-			notes:         []string{"spend-key/view-key import (option 2) is not yet available over attach — use the core CLI directly"},
+			exampleInput:  []string{"> import", "  Choose [1/2/3]: 1"},
+			exampleOutput: []string{"# Import", "  1) 12-word recovery seed", "  2) spend-key/view-key", "  3) view-only"},
+			notes:         []string{"private keys are read without echo", "a view-only wallet can watch incoming funds but cannot spend"},
 		},
 		"viewkeys": {
 			usage:         []string{"viewkeys"},
@@ -279,8 +279,8 @@ func helpCommandDetails(noColor bool) map[string]helpEntry {
 		},
 		"export-peer": {
 			usage:         []string{"export-peer"},
-			description:   []string{"Writes connected peer addresses to peer.txt."},
-			useWhen:       []string{"you want another node to connect to known peers"},
+			description:   []string{"Writes this node's own addresses to peer.txt, including its public IP address."},
+			useWhen:       []string{"you want other nodes to connect to this node"},
 			exampleInput:  []string{"> export-peer"},
 			exampleOutput: []string{"# Export", "  Peer addresses written to peer.txt"},
 		},
@@ -457,7 +457,7 @@ func (s *AttachSession) cmdHelp(args []string) {
   history           Show transaction history
   outputs           Show wallet outputs (spent and unspent)
   seed              Show wallet recovery seed (careful!)
-  import            Create a wallet file from a recovery seed
+  import            Create a wallet from a seed, keys, or view-only keys
   viewkeys          Export view-only keys
   lock              Lock wallet
   unlock            Unlock wallet
@@ -471,7 +471,7 @@ func (s *AttachSession) cmdHelp(args []string) {
   mempool           Show mempool statistics
   peers             List connected peers
   banned            List banned peers
-  export-peer       Export peer addresses to peer.txt
+  export-peer       Write this node's own addresses to peer.txt
   mining            Manage mining
   certify           Check chain integrity (difficulty + timestamps)
   save-checkpoints  Write checkpoints for known blocks to disk

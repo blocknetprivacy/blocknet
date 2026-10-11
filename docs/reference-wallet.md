@@ -163,8 +163,9 @@ If you need to recover a wallet (lost file, new machine, corrupted data), use th
 # Import
   1) 12-word recovery seed
   2) spend-key/view-key (hex private keys)
+  3) view-only (spend public key + view private key)
 
-  Choose [1/2]: 1
+  Choose [1/2/3]: 1
   Input the 12 words of your seed:
 > abandon ability able about above absent absorb abstract absurd abuse access accident
   Input the name of this wallet:
@@ -175,7 +176,9 @@ If you need to recover a wallet (lost file, new machine, corrupted data), use th
   address: 9PNo...
 ```
 
-Key-based import (option 2) is not implemented in `blocknet attach`; use the core CLI directly with `--cli` if you need spend/view-key import.
+- Option 2 imports a full wallet from its spend and view private keys (64 hex chars each).
+- Option 3 makes a view-only wallet from a spend public key and a view private key. It can watch incoming funds but cannot spend. Get these keys with [`viewkeys`](reference-core.md#viewkeys).
+- Private keys are read without echo.
 
 After importing, the core will scan the blockchain for your outputs. This can take a while depending on chain height. Use [`sync`](reference-core.md#sync) to trigger a rescan if needed.
 
