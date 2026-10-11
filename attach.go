@@ -268,7 +268,7 @@ func (s *AttachSession) printWelcome() {
 	if st.err != nil {
 		fmt.Printf("\n  Connected to %s (status unavailable)\n", s.network)
 		fmt.Println("  Type 'help' for available commands")
-		s.printForkNotice()
+		printUpgradeNotice(builtinUpgradeNotice, s.noColor)
 		return
 	}
 
@@ -304,19 +304,7 @@ func (s *AttachSession) printWelcome() {
 	fmt.Printf("  Height:  %d\n", status.Height)
 	fmt.Println()
 	fmt.Println("  Type 'help' for available commands")
-	s.printForkNotice()
-}
-
-func (s *AttachSession) printForkNotice() {
-	amber, reset := "\033[38;2;255;170;0m", "\033[0m"
-	if s.noColor {
-		amber, reset = "", ""
-	}
-	fmt.Println()
-	fmt.Printf("  %sBlocknet plans a network upgrade around 2027-02-16.%s\n", amber, reset)
-	fmt.Println("  After it, you will have 1 year to move your coins to the new format,")
-	fmt.Println("  until about 2028-02-16. Coins not moved by then cannot be spent.")
-	fmt.Println("  The wallet will guide you.")
+	printUpgradeNotice(upgradeNoticeFrom(st.raw), s.noColor)
 }
 
 func (s *AttachSession) listenEvents() {

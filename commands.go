@@ -109,6 +109,8 @@ func cmdStart(args []string) error {
 			fmt.Printf("  %s✓%s %s%s%s running %s(pid %d, api %s)%s\n", green, reset, netColor(net), net, reset, dim, pid, cc.APIAddr, reset)
 		}
 	}
+	printUpgradeNotice(runningCoreNotice(cfg), NoColor)
+	fmt.Println()
 	return nil
 }
 
@@ -170,6 +172,8 @@ func cmdStatus(_ []string) error {
 	if NoColor {
 		green, pink, dim, reset = "", "", "", ""
 	}
+
+	notice := builtinUpgradeNotice
 
 	watchedNets := make(map[Network]bool)
 	if wdPid, _, err := readWatchdogState(); err == nil && processAlive(wdPid) {
@@ -242,6 +246,7 @@ func cmdStatus(_ []string) error {
 		if err != nil {
 			continue
 		}
+		notice = upgradeNoticeFrom(raw)
 
 		var status struct {
 			Height  uint64 `json:"chain_height"`
@@ -258,6 +263,7 @@ func cmdStatus(_ []string) error {
 			fmt.Printf("  Explorer: %s\n", cc.ExplorerAddr)
 		}
 	}
+	printUpgradeNotice(notice, NoColor)
 	fmt.Println()
 	return nil
 }

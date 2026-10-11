@@ -387,6 +387,8 @@ func cmdDoctor(_ []string) error {
 		warn("Watchdog not running")
 	}
 
+	printUpgradeNotice(runningCoreNotice(cfg), NoColor)
+
 	fmt.Println()
 	if issues == 0 {
 		fmt.Printf("  %sAll checks passed%s\n\n", green, reset)
