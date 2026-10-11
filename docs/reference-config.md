@@ -231,9 +231,25 @@ This can also be set interactively — the [`load`](reference-core.md#load) comm
 
 ---
 
-## How config maps to core flags
+## How config reaches the core
 
-Each config field is translated to a core command-line flag when the core is started. The table below shows the mapping:
+Cores from **v0.21.0** keep their settings in `settings.json` in their data folder, behind the core API (`GET` and `PATCH /api/settings`). blocknet starts these cores with only `--testnet`, `--api` and `--data`. When the API is up, blocknet sends the settings below from your config. A field you leave unset is sent as `null`, which puts the core's default back. If a changed setting only takes effect at startup, blocknet restarts the core once.
+
+| Config field | Core setting |
+|---|---|
+| `wallet_file` | `wallet_file` |
+| `listen` | `listen` |
+| `seed` | `seed` |
+| `explorer_addr` | `explorer_addr` |
+| `full_sync` | `full_sync` |
+| `save_checkpoints` | `save_checkpoints` |
+| `p2p_max_inbound` | `p2p_max_inbound` |
+| `p2p_max_outbound` | `p2p_max_outbound` |
+| `p2p_whitelist_peers` + `p2p_whitelist_file` | `p2p_whitelist` (blocknet reads the file and merges the IDs) |
+
+`api_addr` is required for these cores, because settings go through the API. If the core rejects a value, `blocknet start` stops the core and prints the reason.
+
+Older cores get the same settings as command-line flags:
 
 | Config field | Core flag |
 |---|---|
@@ -251,6 +267,6 @@ Each config field is translated to a core command-line flag when the core is sta
 | `p2p_whitelist_peers` | `--p2p-whitelist-peer <id>` (repeated) |
 | `p2p_whitelist_file` | `--p2p-whitelist <path>` |
 
-The `--data` flag is always passed, even when `data_dir` is empty (it resolves to the default `~/.config/bnt/data/<network>/` or `C:\Users\<you>\.config\bnt\data\<network>\` on Windows). The `--no-version-check` flag is always appended — the core's built-in version check is disabled because blocknet handles upgrades.
+blocknet picks the method by running the core with `--version`. The `--data` flag is always passed, even when `data_dir` is empty (it resolves to the default `~/.config/bnt/data/<network>/` or `C:\Users\<you>\.config\bnt\data\<network>\` on Windows). For older cores, `--no-version-check` is also appended, because blocknet handles upgrades.
 
 > **Windows note:** Use forward slashes or backslashes in `data_dir` and `wallet_file` paths — both work. Example: `"data_dir": "D:\\blocknet\\mainnet"` or `"data_dir": "D:/blocknet/mainnet"`.
