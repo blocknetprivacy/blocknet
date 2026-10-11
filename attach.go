@@ -57,7 +57,6 @@ func NewAttachSession(client *CoreClient, net Network, noColor bool) *AttachSess
 }
 
 func (s *AttachSession) Run() error {
-	s.checkLockState()
 	go s.listenEvents()
 	s.printWelcome()
 
@@ -174,17 +173,6 @@ func (s *AttachSession) executeCommand(line string) error {
 	return nil
 }
 
-func (s *AttachSession) checkLockState() {
-	ctx, cancel := withPatience(defaultAPITimeout)
-	defer cancel()
-	_, err := s.client.Get(ctx, "/api/wallet/balance")
-	if err != nil {
-		if apiErr, ok := err.(*APIError); ok && apiErr.StatusCode == 403 {
-			s.locked = true
-		}
-	}
-}
-
 func (s *AttachSession) readPassword(prompt string) (string, error) {
 	fmt.Print(prompt)
 	fd := int(os.Stdin.Fd())
@@ -263,12 +251,18 @@ func (s *AttachSession) fetchAll(ctx context.Context, paths ...string) []apiResu
 }
 
 func (s *AttachSession) printWelcome() {
-	s.printLogo()
-
 	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
-	res := s.fetchAll(ctx, "/api/status", "/api/wallet/balance", "/api/wallet/address")
+	fetched := make(chan []apiResult, 1)
+	go func() {
+		fetched <- s.fetchAll(ctx, "/api/status", "/api/wallet/balance", "/api/wallet/address")
+	}()
+	s.printLogo()
+	res := <-fetched
+	if apiErr, ok := res[1].err.(*APIError); ok && apiErr.StatusCode == 403 {
+		s.locked = true
+	}
 
 	st := res[0]
 	if st.err != nil {
