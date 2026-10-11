@@ -7,7 +7,7 @@
 <p align="center">
   A client for running Blocknet cores.<br>
   <img src="https://img.shields.io/badge/blocknet-Mainnet-aaff00?style=flat-square&labelColor=000">
-  <img src="https://img.shields.io/badge/blocknet-Testnet-ff00aa?style=flat-square&labelColor=000">
+  <img src="https://img.shields.io/badge/blocknet-Testnet-00aaff?style=flat-square&labelColor=000">
 </p>
 
 <p align="center">
@@ -32,7 +32,7 @@ The config file supports `//` and `#` line comments. These are stripped before p
 }
 ```
 
-URLs inside strings (e.g. `"https://example.com"`) are preserved — the comment stripper respects JSON string boundaries.
+URLs inside strings (e.g. `"https://example.com"`) are preserved: the comment stripper respects JSON string boundaries.
 
 ### Viewing the current config
 
@@ -55,14 +55,14 @@ This prints the active configuration as JSON, including defaults for any fields 
 
 ### Core configuration (`cores.mainnet` / `cores.testnet`)
 
-Each network has its own configuration block. All fields are optional — omitted fields use their default value.
+Each network has its own configuration block. All fields are optional; omitted fields use their default value.
 
 #### General
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | mainnet: `true`, testnet: `false` | Auto-start this core when `blocknet start` is run without arguments. Disabled cores are skipped by `start` (including explicit `blocknet start testnet`) until re-enabled with `blocknet enable <network>`. |
-| `version` | string | `"latest"` | Core version to run. Accepts `"latest"` (track newest stable release), `"nightly"` ([rolling build from master](reference-upgrade.md#nightly-builds)), or a specific tag like `"v0.7.0"`. A specific tag [pins](reference-upgrade.md#pinning) the core — `blocknet upgrade` won't change it. |
+| `version` | string | `"latest"` | Core version to run. Accepts `"latest"` (track newest stable release), `"nightly"` ([rolling build from master](reference-upgrade.md#nightly-builds)), or a specific tag like `"v0.7.0"`. A specific tag [pins](reference-upgrade.md#pinning) the core, so `blocknet upgrade` won't change it. `blocknet use` only accepts a tag that is installed. |
 
 #### Paths
 
@@ -82,7 +82,7 @@ Each network has its own configuration block. All fields are optional — omitte
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `listen` | string | `""` | P2P listen address. When empty, uses the network default — mainnet `:28080`, testnet `:38080`. Set to a specific address/port to override (e.g. `"0.0.0.0:28080"`). |
+| `listen` | string | `""` | P2P listen address. When empty, uses the network default (mainnet `:28080`, testnet `:38080`). Set to a specific address/port to override (e.g. `"0.0.0.0:28080"`). |
 | `seed` | bool | `false` | Run as a seed node with persistent p2p identity. Seed nodes help new nodes discover peers. |
 | `p2p_max_inbound` | int | `0` | Maximum inbound peer connections. `0` means use the core's default. |
 | `p2p_max_outbound` | int | `0` | Maximum outbound peer connections. `0` means use the core's default. |
@@ -93,7 +93,7 @@ Each network has its own configuration block. All fields are optional — omitte
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `api_addr` | string | mainnet: `"127.0.0.1:8332"`, testnet: `"127.0.0.1:18332"` | HTTP API listen address. The API is how blocknet communicates with the core. Setting this to empty disables API-dependent features (`attach` and live core stats in `status`). Binding to `127.0.0.1` restricts access to localhost — **do not bind to `0.0.0.0` unless you understand the security implications**. |
+| `api_addr` | string | mainnet: `"127.0.0.1:8332"`, testnet: `"127.0.0.1:18332"` | HTTP API listen address. The API is how blocknet communicates with the core. Setting this to empty disables API-dependent features (`attach` and live core stats in `status`). Binding to `127.0.0.1` restricts access to localhost. **Do not bind to `0.0.0.0` unless you understand the security implications**. |
 | `explorer_addr` | string | `""` | Block explorer listen address. When set, the core serves a web-based block explorer at this address. Empty means disabled. |
 
 ---
@@ -182,7 +182,7 @@ This is the full default config with all fields shown:
 
 `blocknet upgrade` will upgrade mainnet but leave testnet on v0.7.0. See [Pinning](reference-upgrade.md#pinning) for more on how this works.
 
-### Auto-load a wallet on startup
+### Choose the wallet a core uses
 
 ```json
 {
@@ -195,7 +195,7 @@ This is the full default config with all fields shown:
 }
 ```
 
-This can also be set interactively — the [`load`](reference-core.md#load) command in attach mode asks if you want to save your choice to config. See [Wallet Management](reference-wallet.md) for the full wallet lifecycle.
+The core does not open this wallet at startup, because the wallet needs its password: run [`load`](reference-core.md#load) in attach mode after each start. The `load` command also saves the wallet you pick to config as `wallet_file`. The core only loads wallets from the folder of `wallet_file`. See [Wallet Management](reference-wallet.md) for the full wallet lifecycle.
 
 ### Store chain data on a different disk
 
@@ -266,4 +266,4 @@ Older cores get the same settings as command-line flags:
 
 blocknet picks the method by running the core with `--version`. The `--data` flag is always passed, even when `data_dir` is empty (it resolves to the default `~/.config/bnt/data/<network>/` or `C:\Users\<you>\.config\bnt\data\<network>\` on Windows). For older cores, `--no-version-check` is also appended, because blocknet handles upgrades.
 
-> **Windows note:** Use forward slashes or backslashes in `data_dir` and `wallet_file` paths — both work. Example: `"data_dir": "D:\\blocknet\\mainnet"` or `"data_dir": "D:/blocknet/mainnet"`.
+> **Windows note:** Use forward slashes or backslashes in `data_dir` and `wallet_file` paths; both work. Example: `"data_dir": "D:\\blocknet\\mainnet"` or `"data_dir": "D:/blocknet/mainnet"`.

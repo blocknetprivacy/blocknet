@@ -7,7 +7,7 @@
 <p align="center">
   A client for running Blocknet cores.<br>
   <img src="https://img.shields.io/badge/blocknet-Mainnet-aaff00?style=flat-square&labelColor=000">
-  <img src="https://img.shields.io/badge/blocknet-Testnet-ff00aa?style=flat-square&labelColor=000">
+  <img src="https://img.shields.io/badge/blocknet-Testnet-00aaff?style=flat-square&labelColor=000">
 </p>
 
 <p align="center">
@@ -24,9 +24,9 @@ This guide covers how wallets work with Blocknet: loading, passwords, backups, r
 
 ### How wallets work
 
-A Blocknet wallet is a single `.wallet.dat` file that contains your private keys, transaction history, and output scanner state. The core daemon manages the wallet — blocknet just tells the core which wallet file to open.
+A Blocknet wallet is a single `.wallet.dat` file that contains your private keys, transaction history, and output scanner state. The core daemon manages the wallet; blocknet just tells the core which wallet file to open.
 
-Wallets are password-protected by default. The password encrypts the spend key at rest. You set the password when creating or importing a wallet, and enter it when loading.
+Wallets are password-protected by default. The password encrypts the spend key at rest. You set the password when creating or importing a wallet (it is asked twice, to confirm), and enter it when loading.
 
 Each core instance can have one wallet loaded at a time. If you're running both mainnet and testnet, each core uses a separate wallet file.
 
@@ -43,16 +43,11 @@ blocknet attach mainnet
 
 The `load` command:
 
-1. Scans several directories for `.wallet.dat` files:
-   - `~/.config/bnt/wallets/` (Windows: `C:\Users\<you>\.config\bnt\wallets\`) — blocknet's managed wallet backups
-   - `~/.config/blocknet/mainnet/` (or `testnet/`) — legacy core wallet location
-   - Your home directory (`~/` or `C:\Users\<you>\` on Windows)
-   - The core's data directory
-   - Your current working directory
+1. Lists the `.wallet.dat` files in the core's wallet folder. That is the folder of [`wallet_file`](reference-config.md#paths), by default `~/.config/bnt/wallets/` (Windows: `C:\Users\<you>\.config\bnt\wallets\`). The core only loads wallet files from this folder.
 
-2. Presents a numbered list of found wallets, plus options to enter a custom path or create a new wallet.
+2. Presents a numbered list of those wallets, plus options to enter a custom path or create a new wallet. A custom path must point into the same folder; a file anywhere else is refused, so copy it into the wallet folder first.
 
-3. Prompts for your wallet password.
+3. Prompts for your wallet password (twice for a new wallet).
 
 4. Loads the wallet into the running core and saves the wallet path to config. See [Saved wallet path](#saved-wallet-path).
 
@@ -60,34 +55,37 @@ The `load` command:
 > load
 
 # Load Wallet
-  Found wallet files:
-  1) /Users/you/.config/bnt/wallets/main.wallet.dat
-  2) /Users/you/blocknet-mainnet.wallet.dat
-  3) Enter a custom path
-  4) Create a new wallet
+
+  Wallet files in /Users/you/.config/bnt/wallets:
+  1) main.wallet.dat
+  2) Enter a custom path
+  3) Create a new wallet
 
   Choose: 1
   Password: ********
 
-  Wallet loaded
+# Wallet Loaded
+
   Address: 9PNo...
-  Backup: /Users/you/.config/bnt/wallets/main.wallet.dat
 ```
 
 If you choose "Create a new wallet", the core generates a fresh wallet with a new BIP39 seed:
 
 ```
-  Choose: 4
+  Choose: 3
   Wallet name (without extension):
+
 > savings
   Password: ********
+  Confirm password: ********
 
-  Wallet created
+# Wallet Created
+
   Address:  9PNo...
   Filename: savings.wallet.dat
 ```
 
-Only one wallet can be loaded at a time. To switch wallets, use [`unload`](reference-core.md#unload) to release the current one and then `load` a different one — no restart needed.
+Only one wallet can be loaded at a time. To switch wallets, use [`unload`](reference-core.md#unload) to release the current one and then `load` a different one; no restart needed.
 
 ---
 
@@ -109,7 +107,7 @@ When you load or create a wallet, its path is saved to config as `wallet_file`. 
 
 ### Automatic backups
 
-When you load a wallet from any location, blocknet copies it to `~/.config/bnt/wallets/`. On macOS/Linux, backups are written with `0600` permissions (owner read/write only). On Windows, standard user-level file permissions apply. This is a safety net — if the original file is deleted or corrupted, a backup exists in a known location.
+When you load a wallet from a folder other than `~/.config/bnt/wallets/` (because [`wallet_file`](reference-config.md#paths) points somewhere else), blocknet copies it to `~/.config/bnt/wallets/` and prints a `Backup:` line. On macOS/Linux, backups are written with `0600` permissions (owner read/write only). On Windows, standard user-level file permissions apply. This is a safety net: if the original file is deleted or corrupted, a backup exists in a known location.
 
 Backups are not overwritten if a file with the same name already exists in the wallets directory.
 
@@ -122,9 +120,10 @@ Every wallet has a password that encrypts the spend key. You need the password t
 - Load a wallet (`load`)
 - Unlock the wallet (`unlock`)
 - View your recovery seed (`seed`)
-- Export view-only keys (`viewkeys`)
-- Import a wallet from seed (`import`)
+- Export view-only keys (`viewkeys`), which also asks for a new password for the view-only wallet file
 - Purge blockchain data (`purge`)
+
+Creating a wallet (`load`, option "Create a new wallet") or importing one (`import`) sets a new password, which you type twice.
 
 The password is never stored by blocknet. If you forget it, the only recovery path is your 12-word seed.
 
@@ -136,14 +135,16 @@ You can lock your wallet during an attach session to prevent any spending operat
 
 ```
 > lock
+
 # Locked
 ```
 
-While locked, most commands return "wallet is locked". Only `unlock`, `load`, `unload`, `help`, and `quit` work. To unlock:
+While locked, only the commands that need the wallet return "Wallet is locked, use 'unlock' first": `balance`, `address`, `send`, `sign`, `history`, `outputs`, `seed`, `viewkeys`, `prove`, `audit` and `sync`. Node commands such as `status`, `peers` and `explore` still work, and so do `load`, `unload`, `lock`, `unlock`, `import`, `verify`, `purge`, `help` and `quit`. To unlock:
 
 ```
 > unlock
-Password: ********
+  Password: ********
+
 # Unlocked
 ```
 
@@ -159,19 +160,25 @@ If you need to recover a wallet (lost file, new machine, corrupted data), use th
 > import
 
 # Import
+
   1) 12-word recovery seed
-  2) spend-key/view-key (hex private keys)
-  3) view-only (spend public key + view private key)
+  2) Spend key and view key (hex private keys)
+  3) View-only (spend public key and view private key)
 
   Choose [1/2/3]: 1
   Input the 12 words of your seed:
+
 > abandon ability able about above absent absorb abstract absurd abuse access accident
   Input the name of this wallet:
-> recovered.wallet.dat
-  Password: ********
 
-  name: recovered.wallet.dat
-  address: 9PNo...
+> recovered
+  Password: ********
+  Confirm password: ********
+
+# Wallet Imported
+
+  Name:    recovered.wallet.dat
+  Address: 9PNo...
 ```
 
 - Option 2 imports a full wallet from its spend and view private keys (64 hex chars each).
@@ -188,6 +195,7 @@ After importing, the core will scan the blockchain for your outputs. This can ta
 > seed
 
 # Seed
+
   WARNING: Your recovery seed controls all funds.
   Anyone with this seed can steal your coins.
   Never share it. Never enter it online.
@@ -195,11 +203,11 @@ After importing, the core will scan the blockchain for your outputs. This can ta
   Show recovery seed? [y/N]: y
   Password: ********
 
-   1.abandon    2.ability    3.able       4.about
-   5.above      6.absent     7.absorb     8.abstract
-   9.absurd    10.abuse     11.access    12.accident
+   1.abandon     2.ability     3.able        4.about
+   5.above       6.absent      7.absorb      8.abstract
+   9.absurd     10.abuse      11.access     12.accident
 
-  Write these words down and store them safely.
+  Write these words down and store them safely
   Recover with: import (option 1: recovery seed)
 ```
 
@@ -209,7 +217,7 @@ After importing, the core will scan the blockchain for your outputs. This can ta
 
 ### Different wallets per network
 
-Mainnet and testnet are fully isolated — each runs its own core process with its own wallet. You can (and should) use different wallet files for each:
+Mainnet and testnet are fully isolated: each runs its own core process with its own wallet. You can (and should) use different wallet files for each:
 
 ```json
 {
@@ -224,7 +232,7 @@ Mainnet and testnet are fully isolated — each runs its own core process with i
 }
 ```
 
-Or just use [`load`](reference-core.md#load) in each attach session — [`blocknet attach mainnet`](reference-blocknet.md#blocknet-attach-mainnettestnet) and `blocknet attach testnet` operate independently.
+Or just use [`load`](reference-core.md#load) in each attach session: [`blocknet attach mainnet`](reference-blocknet.md#blocknet-attach-mainnettestnet) and `blocknet attach testnet` operate independently.
 
 ---
 
@@ -232,18 +240,16 @@ Or just use [`load`](reference-core.md#load) in each attach session — [`blockn
 
 | Location | Windows equivalent | Purpose |
 |---|---|---|
-| `~/.config/bnt/wallets/` | `C:\Users\<you>\.config\bnt\wallets\` | Blocknet's managed backup directory. Wallets are copied here automatically when loaded. |
-| `~/.config/blocknet/mainnet/` | `C:\Users\<you>\.config\blocknet\mainnet\` | Legacy location from older core versions. Scanned by `load`. |
-| `~/.config/blocknet/testnet/` | `C:\Users\<you>\.config\blocknet\testnet\` | Legacy location (testnet). Scanned by `load`. |
-| `~/` | `C:\Users\<you>\` | Home directory. Scanned by `load` in case wallets were saved there. |
-| Core's `data_dir` | *(same)* | The chain data directory. Scanned by `load`. |
-| Current working directory | *(same)* | Wherever you ran `blocknet` from. Scanned by `load`. |
+| `~/.config/bnt/wallets/` | `C:\Users\<you>\.config\bnt\wallets\` | The default wallet folder. New wallets from `load` and `import`, and view-only files from `viewkeys`, are written here. `load` lists the wallets in it. Wallets loaded from another folder are backed up here. |
+| Folder of `wallet_file` | *(same)* | When [`wallet_file`](reference-config.md#paths) points to another folder, that folder is the core's wallet folder instead: `load` lists it, and the core only loads wallets from it. |
+
+To use a wallet file from anywhere else (an old location, a USB drive, your home folder), copy it into the wallet folder and run `load`.
 
 ---
 
 ### Security
 
 - Wallet files are encrypted with your password. Without the password or seed, the file is unusable.
-- On macOS/Linux, backups in `~/.config/bnt/wallets/` and the API cookie (`api.cookie`) are written with `0600` permissions (owner-only). On Windows, standard user-level file permissions apply — only your user account can access these files.
+- On macOS/Linux, backups in `~/.config/bnt/wallets/` and the API cookie (`api.cookie`) are written with `0600` permissions (owner-only). On Windows, standard user-level file permissions apply, so only your user account can access these files.
 - Never expose the API port ([`api_addr`](reference-config.md#services)) to the public internet. Keep it bound to `127.0.0.1`.
 - The [`sign`](reference-core.md#sign) command can prove wallet ownership without revealing keys. Use [`verify`](reference-core.md#verify) to check signatures from others.

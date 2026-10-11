@@ -7,7 +7,7 @@
 <p align="center">
   A client for running Blocknet cores.<br>
   <img src="https://img.shields.io/badge/blocknet-Mainnet-aaff00?style=flat-square&labelColor=000">
-  <img src="https://img.shields.io/badge/blocknet-Testnet-ff00aa?style=flat-square&labelColor=000">
+  <img src="https://img.shields.io/badge/blocknet-Testnet-00aaff?style=flat-square&labelColor=000">
 </p>
 
 <p align="center">
@@ -24,12 +24,12 @@
 
 ### `blocknet start` hangs
 
-**Symptom:** `blocknet start mainnet` prints "Starting mainnet core..." and never returns.
+**Symptom:** `blocknet start mainnet` prints "Starting mainnet core (v0.8.0)..." and does not return for a long time.
 
-**Cause:** Blocknet waits up to 30 seconds for the core's API to become reachable. If the core crashes on startup or the API address is wrong, the wait times out.
+**Cause:** Blocknet waits for the core's API to become reachable for as long as the core keeps working, since a cold start can be slow. It gives up when the core exits, or when the core makes no progress for 2 minutes. If the API address is wrong or another program holds it, the wait can end in an error.
 
 **Fix:**
-1. Check the log for errors — the easiest way is [`blocknet logs mainnet`](reference-blocknet.md#blocknet-logs-mainnettestnet) (or `testnet`). You can also read the file directly:
+1. Check the log for errors. The easiest way is [`blocknet logs mainnet`](reference-blocknet.md#blocknet-logs-mainnettestnet) (or `testnet`). You can also read the file directly:
    - macOS/Linux: `~/.config/bnt/mainnet.log` (or `testnet.log`)
    - Windows: `C:\Users\<you>\.config\bnt\mainnet.log`
 2. Verify the core binary exists:
@@ -63,9 +63,9 @@ Remove-Item $env:USERPROFILE\.config\bnt\data\mainnet\api.cookie
 
 ### Starting a disabled core
 
-**Symptom:** `blocknet start mainnet` prints `mainnet is disabled — run blocknet enable mainnet first` and exits without starting anything.
+**Symptom:** `blocknet start mainnet` prints `mainnet is disabled. Run blocknet enable mainnet first.` and exits without starting anything.
 
-**Cause:** The core you named explicitly has `enabled: false` in the [config](reference-config.md). Disabled means "do not auto-start" — but blocknet also won't let you start it explicitly without opting back in, to make the disabled state intentional and visible.
+**Cause:** The core you named explicitly has `enabled: false` in the [config](reference-config.md). Disabled means "do not auto-start", but blocknet also won't let you start it explicitly without opting back in, to make the disabled state intentional and visible.
 
 **Fix:** Enable the core, then start it:
 ```
@@ -79,7 +79,7 @@ Or if you want to run it temporarily without permanently enabling it, you can ma
 
 ### `blocknet start` says "no cores enabled"
 
-**Symptom:** `error: no cores enabled in config — enable one or specify a network`
+**Symptom:** `error: no cores enabled: run blocknet enable <mainnet|testnet> or name a network`
 
 **Cause:** No cores have `enabled: true` in the [config](reference-config.md). By default, mainnet is enabled and testnet is disabled.
 
@@ -112,7 +112,7 @@ blocknet start
 
 ### `blocknet attach` says "core is not reachable"
 
-**Symptom:** `error: mainnet core is not reachable at 127.0.0.1:8332`
+**Symptom:** `error: mainnet core is not reachable at 127.0.0.1:8332: ...` or, when the core has never run, `error: cannot connect to mainnet core: could not read cookie ...`
 
 **Cause:** The core process isn't running, or it's running on a different port than what's in the config.
 
@@ -134,14 +134,15 @@ blocknet start
 
 ### "wallet is locked"
 
-**Symptom:** Most commands in attach mode return "wallet is locked".
+**Symptom:** Wallet commands in attach mode (`balance`, `send`, `history` and so on) return "Wallet is locked, use 'unlock' first".
 
-**Cause:** The wallet was locked (either manually via `lock` or by the core on startup). While locked, only `unlock`, `load`, `unload`, `help`, and `quit` work.
+**Cause:** The wallet was locked (either manually via `lock` or by the core on startup). While locked, only commands that need the wallet are refused; node commands such as `status`, `peers` and `explore` still work. See [Locked wallet](reference-core.md#locked-wallet) for the list.
 
 **Fix:**
 ```
 > unlock
-Password: ********
+  Password: ********
+
 # Unlocked
 ```
 
@@ -149,30 +150,33 @@ See [Locking and unlocking](reference-wallet.md#locking-and-unlocking) for more 
 
 ---
 
-### `load` says "no wallet files found"
+### `load` says "No wallet files in ..."
 
 **Symptom:** The `load` command doesn't find any wallet files to choose from.
 
-**Cause:** There are no `.wallet.dat` files in any of the [scanned directories](reference-wallet.md#where-wallet-files-live).
+**Cause:** There are no `.wallet.dat` files in the core's [wallet folder](reference-wallet.md#where-wallet-files-live), which is the folder of `wallet_file` (by default `~/.config/bnt/wallets/`). The core only loads wallets from that folder.
 
 **Fix:**
-- If you have a wallet file somewhere else, choose "Enter a custom path" and type the full path.
+- If you have a wallet file somewhere else, copy it into the wallet folder and run `load` again. Choosing "Enter a custom path" with a file in another folder is refused with "The core only loads wallets from ...".
 - If you're starting fresh, choose "Create a new wallet".
-- If you previously had wallets, check `~/.config/bnt/wallets/` (Windows: `C:\Users\<you>\.config\bnt\wallets\`) — blocknet backs up loaded wallets there automatically.
+- If you previously had wallets, check `~/.config/bnt/wallets/` (Windows: `C:\Users\<you>\.config\bnt\wallets\`): blocknet backs up wallets loaded from other folders there.
 
 ---
 
 ### Can't switch wallets
 
-**Symptom:** You loaded a wallet and now want to load a different one, but `load` says "A wallet is already loaded."
+**Symptom:** You loaded a wallet and now want to load a different one, but `load` says "A wallet is already loaded".
 
 **Cause:** The core only supports one wallet loaded at a time.
 
-**Fix:** Use [`unload`](reference-core.md#unload) to release the current wallet, then `load` a different one — no restart needed:
+**Fix:** Use [`unload`](reference-core.md#unload) to release the current wallet, then `load` a different one; no restart needed:
 ```
 > unload
+
 # Unloaded
-  Wallet unloaded. Use 'load' to open another.
+
+  Wallet unloaded. Use 'load' to open another
+
 > load
 ```
 
@@ -183,7 +187,7 @@ blocknet attach mainnet
 > load
 ```
 
-If you want a specific wallet to load automatically on each start, set [`wallet_file`](reference-config.md#paths) in the config or say "yes" when `load` asks to save the path.
+The core does not load a wallet automatically at startup, because the wallet needs its password. `load` saves your choice to config as [`wallet_file`](reference-config.md#paths), so after each start run `blocknet attach` and `load` again.
 
 ---
 
@@ -220,15 +224,17 @@ Default ports:
 
 **Symptom:** The wallet balance doesn't update, or `outputs` shows the scanner is behind chain height.
 
-**Cause:** The wallet's output scanner hasn't caught up to the chain tip yet. This is normal after importing a wallet or starting fresh — the scanner has to process every block.
+**Cause:** The wallet's output scanner hasn't caught up to the chain tip yet. This is normal after importing a wallet or starting fresh: the scanner has to process every block.
 
 **Fix:**
 1. Check sync progress:
    ```
    > outputs
+
    # Outputs
-     No outputs found yet.
-     Wallet scan is still catching up (1200/14207).
+
+     No outputs found yet
+     Wallet scan is still catching up (1200/14207)
      Try: sync
    ```
 2. Trigger a rescan:
@@ -245,9 +251,9 @@ If you have 0 peers, the core can't find the network. Check your firewall and in
 
 ---
 
-### `blocknet install` fails with "no asset found"
+### `blocknet install` fails with "no binary for your platform"
 
-**Symptom:** `error: release v0.5.0 does not include a binary for your platform (blocknet-core-arm64-macos)`
+**Symptom:** `error: release v0.5.0 has no binary for your platform (blocknet-core-arm64-macos). Run blocknet list to pick a newer version`
 
 **Cause:** The release doesn't have a binary for your platform. This is expected for early releases before multi-platform builds were added, or if the CI build failed for that version.
 
@@ -256,6 +262,8 @@ If you have 0 peers, the core can't find the network. Check your firewall and in
 - See what's available: `blocknet list`
 - Check the [releases page](https://github.com/blocknetprivacy/core/releases) directly to see which platforms are available.
 - If you're on an unusual architecture, you may need to build from source.
+
+If the error is `error: version v0.5.0 not found (run blocknet list)` instead, the tag is not a release at all: check the spelling against `blocknet list`.
 
 ---
 
@@ -298,7 +306,7 @@ Remove-Item $env:USERPROFILE\.config\bnt\core.mainnet.pid
    ```
    > sync
    ```
-3. Wait for the scan to complete — it processes blocks sequentially.
+3. Wait for the scan to complete; it processes blocks sequentially.
 
 If the balance is still wrong after a full scan, your wallet file may be corrupted. [Recover from your seed](reference-wallet.md#recovery-from-seed) to create a fresh wallet.
 
@@ -337,7 +345,7 @@ blocknet.exe start mainnet
 
 Blocknet automatically copies loaded wallets to `~/.config/bnt/wallets/` (Windows: `C:\Users\<you>\.config\bnt\wallets\`) when you use the [`load`](reference-core.md#load) command. You can also manually copy your `.wallet.dat` file.
 
-The safest backup is your **12-word recovery seed** — with it, you can recreate the wallet on any machine. See [Viewing your recovery seed](reference-wallet.md#viewing-your-recovery-seed).
+The safest backup is your **12-word recovery seed**: with it, you can recreate the wallet on any machine. See [Viewing your recovery seed](reference-wallet.md#viewing-your-recovery-seed).
 
 ---
 
@@ -379,7 +387,7 @@ Core stdout/stderr is captured to log files in the config directory:
 
 The easiest way to view logs is [`blocknet logs mainnet`](reference-blocknet.md#blocknet-logs-mainnettestnet) (or `testnet`), which tails the file and follows new output in real time.
 
-These files are appended to on each start — they grow over time. You can safely delete or truncate them while the core is stopped.
+These files are appended to on each start, so they grow over time. You can safely delete or truncate them while the core is stopped.
 
 ---
 
@@ -406,7 +414,7 @@ ls ~/blocknet-backup/
 dir $env:USERPROFILE\blocknet-backup\
 ```
 
-You should see your `.wallet.dat` files listed. If the folder is empty, your wallets may be somewhere else — check the [wallet locations table](reference-wallet.md#where-wallet-files-live) before proceeding.
+You should see your `.wallet.dat` files listed. If the folder is empty, your wallets may be somewhere else, so check the [wallet locations table](reference-wallet.md#where-wallet-files-live) before proceeding.
 
 **Step 2: Stop all cores and delete the config directory.**
 
@@ -422,4 +430,4 @@ Remove-Item -Recurse -Force $env:USERPROFILE\.config\bnt
 
 This deletes your config, chain data, wallet backups, and installed core binaries. Your wallet backup in `~/blocknet-backup/` is safe.
 
-Even with a wallet backup, you should also have your [12-word recovery seed](reference-wallet.md#viewing-your-recovery-seed) written down — it's the only way to recover if both the original and backup are lost.
+Even with a wallet backup, you should also have your [12-word recovery seed](reference-wallet.md#viewing-your-recovery-seed) written down: it's the only way to recover if both the original and backup are lost.

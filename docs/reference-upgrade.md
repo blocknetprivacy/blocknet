@@ -7,7 +7,7 @@
 <p align="center">
   A client for running Blocknet cores.<br>
   <img src="https://img.shields.io/badge/blocknet-Mainnet-aaff00?style=flat-square&labelColor=000">
-  <img src="https://img.shields.io/badge/blocknet-Testnet-ff00aa?style=flat-square&labelColor=000">
+  <img src="https://img.shields.io/badge/blocknet-Testnet-00aaff?style=flat-square&labelColor=000">
 </p>
 
 <p align="center">
@@ -33,19 +33,22 @@ blocknet list
 This fetches all releases from GitHub and shows what's available, what's installed, and what's in use:
 
 ```
-  version      date               status
-  ──────────────────────────────────────────────────
-  nightly      latest             [testnet]
-  v0.8.0       Mar 08, 2026       [mainnet]
-  v0.7.0       Mar 03, 2026
-  v0.6.0       Feb 27, 2026       installed
-  v0.5.3       Feb 25, 2026
-  v0.5.2       Feb 21, 2026
+# Versions
+
+  Version  Date           Status
+  ────────────────────────────────────────────
+  nightly  Mar 14, 2026   [testnet]
+  v0.8.0   Mar 08, 2026   [mainnet]
+  v0.7.0   Mar 03, 2026
+  v0.6.0   Feb 27, 2026   installed
+  v0.5.3   Feb 25, 2026
+  v0.5.2   Feb 21, 2026
 ```
 
-- **[mainnet]** / **[testnet]** — this version is in use by an enabled network. If both mainnet and testnet are enabled on the same version, both tags show (e.g. `[mainnet] [testnet]`). Disabled networks are not shown.
-- **installed** — downloaded locally but not assigned to any enabled network.
-- Dimmed entries are available on GitHub but not installed.
+- **[mainnet]** / **[testnet]**: this version is in use by an enabled network. If both mainnet and testnet are enabled on the same version, both tags show (e.g. `[mainnet] [testnet]`). Disabled networks are not shown.
+- **installed**: downloaded locally but not assigned to any enabled network.
+- Dimmed dates are versions available on GitHub but not installed.
+- The nightly row shows the date of the current nightly build.
 
 ---
 
@@ -65,7 +68,9 @@ blocknet install nightly        # install the current nightly build
 
 - `latest` is resolved to the actual tag before downloading. If that tag is already installed, it's skipped.
 - `nightly` always re-downloads because it's a rolling build.
-- The binary is extracted from a `.zip` archive (e.g. `blocknet-core-arm64-macos-0.8.0.zip`) automatically. If install fails, see [install fails with "no asset found"](troubleshooting.md#blocknet-install-fails-with-no-asset-found).
+- A tag that is not a release is refused: `error: version v9.9.9 not found (run blocknet list)`.
+- Version names must be plain tags such as `v0.7.0`, `latest` or `nightly`. Names with path separators or `..`, or longer than 64 characters, are refused with `error: invalid version "../x": use a tag like v0.7.0, latest or nightly`.
+- The download's SHA-256 checksum is verified, and the binary is extracted from a `.zip` archive (e.g. `blocknet-core-arm64-macos-0.8.0.zip`) automatically. If install fails, see [install fails with "no binary for your platform"](troubleshooting.md#blocknet-install-fails-with-no-binary-for-your-platform).
 
 ---
 
@@ -75,7 +80,16 @@ blocknet install nightly        # install the current nightly build
 blocknet uninstall <version>
 ```
 
-Removes the version directory from `~/.config/bnt/cores/<version>/`. Does not affect running cores — stop them first if they're using this version.
+Removes the version directory from `~/.config/bnt/cores/<version>/`.
+
+A version that a configured core uses is refused, whether that core is enabled or not and whether it is pinned to the version or tracks it through `latest` or `nightly`:
+
+```
+blocknet uninstall v0.8.0
+error: v0.8.0 is in use by mainnet. Switch to another version first with blocknet use <version> mainnet
+```
+
+Switch the core to another version with [`blocknet use`](#choosing-which-version-to-run) first.
 
 ---
 
@@ -85,7 +99,7 @@ Removes the version directory from `~/.config/bnt/cores/<version>/`. Does not af
 blocknet use <version> [mainnet|testnet]
 ```
 
-Sets which core version a network should run.
+Sets which core version a network should run. The version must already be installed (this includes `nightly`); otherwise `use` stops with `error: v0.7.0 is not installed (run blocknet install v0.7.0)`. `latest` is always accepted.
 
 ```
 blocknet use v0.8.0             # all cores use v0.8.0
@@ -94,13 +108,22 @@ blocknet use latest             # all cores track latest
 blocknet use nightly mainnet    # mainnet runs nightly builds
 ```
 
+```
+blocknet use v0.7.0 testnet
+
+# Use
+
+  ✓ testnet set to v0.7.0
+  Restart running cores to use it
+```
+
 The version is saved to [`config.json`](reference-config.md). The change takes effect next time the core [starts](reference-blocknet.md#blocknet-start-mainnettestnet) (or [restarts](reference-blocknet.md#blocknet-restart-mainnettestnet)).
 
 ---
 
 ### Pinning
 
-When you set a core to a specific version like `v0.7.0`, that core is **pinned**. A pinned core is protected from automatic upgrades — `blocknet upgrade` will skip it.
+When you set a core to a specific version like `v0.7.0`, that core is **pinned**. A pinned core is protected from automatic upgrades: `blocknet upgrade` will skip it.
 
 This is useful when you need stability on a specific version, or you're testing something on an older release.
 
@@ -123,11 +146,12 @@ blocknet upgrade
 
 This is the one-command path for keeping your cores current:
 
-1. Checks GitHub for the latest stable release.
-2. Downloads it if not already installed.
-3. Stops and restarts any running cores set to `latest`.
-4. If a core uses `nightly`, checks the nightly build and downloads it if it changed. Running nightly cores restart onto the new build.
-5. Pinned cores are left untouched.
+1. Upgrades blocknet itself if a new release is out (see [Automatic upgrades](#automatic-upgrades)).
+2. Checks GitHub for the latest stable release.
+3. Downloads it if not already installed.
+4. Stops and restarts any running cores set to `latest`.
+5. If a core uses `nightly`, checks the nightly build and downloads it if it changed. Running nightly cores restart onto the new build.
+6. Pinned cores are left untouched.
 
 ```
 blocknet upgrade
@@ -136,14 +160,15 @@ blocknet upgrade
 
   Checking for new releases...
   Latest: v0.9.0 (Mar 15, 2026)
-  Downloading...
-  ████████████████████████████████ 100% (12.4 MB)
+  Downloading blocknet-core-arm64-macos-0.9.0.zip
+  [██████████████████████████████] 100% 12.4 MB
+  ✓ Checksum verified
   ✓ Installed v0.9.0
   Restarting mainnet core with v0.9.0...
   ✓ mainnet core running (pid 54321)
 ```
 
-If the latest version is already installed, the command reports that and exits. If no cores are running, it installs the binary and tells you to restart when ready.
+If the latest version is already installed, the command reports that (`v0.9.0 is already installed`) and exits. If no cores are running, it installs the binary and tells you to restart when ready.
 
 ---
 
@@ -153,16 +178,18 @@ If the latest version is already installed, the command reports that and exits. 
 blocknet cleanup
 ```
 
-Removes all installed core versions that aren't assigned to any network. After several upgrades, old versions accumulate in `~/.config/bnt/cores/` — cleanup reclaims that disk space.
+Removes all installed core versions that aren't assigned to any network. After several upgrades, old versions accumulate in `~/.config/bnt/cores/`, and cleanup reclaims that disk space.
 
 Versions currently assigned in config for mainnet or testnet (including resolved `latest` and `nightly`) are always kept.
 
 ```
 blocknet cleanup
 
-  Removed v0.5.0
-  Removed v0.6.0
-  Cleaned up 2 version(s)
+# Cleanup
+
+  ✓ Removed v0.5.0
+  ✓ Removed v0.6.0
+  Cleaned up 2 versions
 ```
 
 ---
@@ -187,7 +214,7 @@ The last check time is stored in `~/.config/bnt/.last_upgrade_check`. If less th
 
 #### OS scheduler integration
 
-On macOS and Linux, blocknet installs a background scheduler entry (a launchd plist on macOS, a systemd timer on Linux) to run `blocknet upgrade` automatically on a schedule derived from `check_interval` (with platform minimums/rounding). On Windows it uses Task Scheduler.
+On macOS and Linux, blocknet installs a background scheduler entry (a launchd plist on macOS, a systemd timer on Linux) to run `blocknet upgrade --nocolor` automatically on a schedule derived from `check_interval` (with platform minimums/rounding). On Windows it uses Task Scheduler.
 
 The scheduler is managed automatically:
 
@@ -196,11 +223,11 @@ The scheduler is managed automatically:
 You can remove the scheduler entry manually:
 
 ```
-# macOS — remove the launchd plist
+# macOS: remove the launchd plist
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.blocknet.upgrade.plist
 rm ~/Library/LaunchAgents/com.blocknet.upgrade.plist
 
-# Linux — remove the systemd timer
+# Linux: remove the systemd timer
 systemctl --user disable --now blocknet-upgrade.timer
 ```
 
