@@ -298,10 +298,10 @@ func (s *AttachSession) printForkNotice() {
 		amber, reset = "", ""
 	}
 	fmt.Println()
-	fmt.Printf("  %sFaraday hard fork: planned for about 2027-02-16.%s\n", amber, reset)
-	fmt.Println("  After the fork, coins must move to the new format within 1 year.")
-	fmt.Println("  Coins not moved by about 2028-02-16 are frozen for good.")
-	fmt.Println("  A future wallet update will move them for you.")
+	fmt.Printf("  %sBlocknet plans a network upgrade around 2027-02-16.%s\n", amber, reset)
+	fmt.Println("  After it, you will have 1 year to move your coins to the new format,")
+	fmt.Println("  until about 2028-02-16. Coins not moved by then cannot be spent.")
+	fmt.Println("  The wallet will guide you.")
 }
 
 func (s *AttachSession) listenEvents() {

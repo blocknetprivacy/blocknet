@@ -16,12 +16,9 @@
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-aaff00?style=flat-square&labelColor=000">
 </p>
 
-## Faraday hard fork
+## Network upgrade
 
-- The Faraday hard fork is planned for about **2027-02-16**.
-- After the fork, coins must move to the new format within 1 year.
-- Coins not moved by about **2028-02-16** are frozen for good.
-- A future wallet update will move them for you.
+Blocknet plans a network upgrade around **2027-02-16**. After it, you will have 1 year to move your coins to the new format, until about **2028-02-16**. Coins not moved by then cannot be spent. The wallet will guide you.
 
 ## What is this?
 
