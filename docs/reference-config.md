@@ -27,9 +27,8 @@ The config file supports `//` and `#` line comments. These are stripped before p
 ```json
 {
   // this is a comment
-  "auto_upgrade": true,
-  # this is also a comment
   "check_interval": "24h"
+  # this is also a comment
 }
 ```
 
@@ -51,8 +50,7 @@ This prints the active configuration as JSON, including defaults for any fields 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `auto_upgrade` | bool | `true` | Automatically check for new core releases. When enabled, `blocknet start` and `blocknet status` check for new releases (respecting `check_interval` below) and download the binary if one is available. If a managed core is already running on an unpinned version (`latest` or `nightly`), blocknet may restart it to apply the new version immediately; otherwise the new version is used on next start/restart. Pinned cores are never affected. Set to `false` to disable checks. See [Automatic upgrades](reference-upgrade.md#automatic-upgrades). |
-| `check_interval` | string | `"24h"` | How often to check for new core releases. Accepts Go duration strings: `"1h"`, `"30m"`, `"24h"`, `"168h"` (1 week), etc. |
+| `check_interval` | string | `"24h"` | How often to check for new releases of blocknet and the core. Upgrades are always on. See [Automatic upgrades](reference-upgrade.md#automatic-upgrades). Accepts Go duration strings: `"1h"`, `"30m"`, `"24h"`, `"168h"` (1 week), etc. |
 | `cores` | object | *(see below)* | Per-network core configuration. Keys are `"mainnet"` and `"testnet"`. |
 
 ### Core configuration (`cores.mainnet` / `cores.testnet`)
@@ -106,7 +104,6 @@ This is the full default config with all fields shown:
 
 ```json
 {
-  "auto_upgrade": true,
   "check_interval": "24h",
   "cores": {
     "mainnet": {

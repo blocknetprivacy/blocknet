@@ -9,7 +9,6 @@ import (
 )
 
 type Config struct {
-	AutoUpgrade   bool                   `json:"auto_upgrade"`
 	CheckInterval string                 `json:"check_interval"`
 	Cores         map[Network]*CoreConfig `json:"cores"`
 }
@@ -33,7 +32,6 @@ type CoreConfig struct {
 
 func DefaultConfig() *Config {
 	return &Config{
-		AutoUpgrade:   true,
 		CheckInterval: "24h",
 		Cores: map[Network]*CoreConfig{
 			Mainnet: {

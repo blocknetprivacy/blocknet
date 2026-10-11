@@ -40,6 +40,12 @@ func maybeAutoUpgrade(cfg *Config) {
 
 	writeLastCheck()
 
+	if tag, err := selfUpgrade(); err != nil {
+		fmt.Fprintf(os.Stderr, "  warning: blocknet self-upgrade failed: %v\n", err)
+	} else if tag != "" {
+		fmt.Printf("  blocknet upgraded to %s\n", tag)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 

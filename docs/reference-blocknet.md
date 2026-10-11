@@ -49,7 +49,7 @@ Running `blocknet` with no arguments shows the [status](#blocknet-status) of all
 
 Starts one or more core daemons as background processes. If no network is specified, starts all cores marked `enabled` in the [config](reference-config.md).
 
-Before starting, `blocknet` validates the config and prints warnings for issues like port conflicts between mainnet and testnet, missing API addresses, or pinned versions that aren't installed. If [`auto_upgrade`](reference-config.md#top-level-fields) is enabled, it also checks for new releases (respecting `check_interval`) and downloads any available updates.
+Before starting, `blocknet` validates the config and prints warnings for issues like port conflicts between mainnet and testnet, missing API addresses, or pinned versions that aren't installed. It also checks for new releases of blocknet and the core (respecting [`check_interval`](reference-config.md#top-level-fields)) and installs any available updates.
 
 Each core is spawned as a detached process that survives after `blocknet` exits. The core's PID is written to `~/.config/bnt/core.<network>.pid`. If a core is already running, it is skipped with a message.
 

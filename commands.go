@@ -45,10 +45,8 @@ func cmdStart(args []string) error {
 		}
 	}
 
-	if cfg.AutoUpgrade {
-		maybeAutoUpgrade(cfg)
-		ensureScheduleFromConfig(cfg)
-	}
+	maybeAutoUpgrade(cfg)
+	ensureScheduleFromConfig(cfg)
 
 	green, pink, dim, reset := "\033[38;2;170;255;0m", "\033[38;2;255;0;170m", "\033[38;2;160;160;160m", "\033[0m"
 	if NoColor {
@@ -166,9 +164,7 @@ func cmdStatus(_ []string) error {
 		return err
 	}
 
-	if cfg.AutoUpgrade {
-		maybeAutoUpgrade(cfg)
-	}
+	maybeAutoUpgrade(cfg)
 
 	green, pink, dim, reset := "\033[38;2;170;255;0m", "\033[38;2;255;0;170m", "\033[2m", "\033[0m"
 	if NoColor {
@@ -395,6 +391,12 @@ func cmdUpgrade(_ []string) error {
 
 	fmt.Printf("\n%s\n\n", SectionHead("Upgrade", NoColor))
 	fmt.Printf("  %sChecking for new releases...%s\n", dim, reset)
+
+	if tag, err := selfUpgrade(); err != nil {
+		fmt.Printf("  %sblocknet self-upgrade failed: %v%s\n", amber, err, reset)
+	} else if tag != "" {
+		fmt.Printf("  %s✓%s blocknet upgraded to %s%s%s\n", green, reset, green, tag, reset)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

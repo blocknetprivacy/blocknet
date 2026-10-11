@@ -168,19 +168,19 @@ blocknet cleanup
 
 ### Automatic upgrades
 
-Set [`auto_upgrade`](reference-config.md#top-level-fields) in your [config](reference-config.md) to have blocknet download new releases automatically:
+Automatic upgrades are always on. blocknet checks for new releases every time you run `blocknet start` or `blocknet status`, and from the OS scheduler, subject to `check_interval`:
 
 ```json
 {
-  "auto_upgrade": true,
   "check_interval": "24h"
 }
 ```
 
-- `auto_upgrade` — when `true`, blocknet checks for new releases every time you run `blocknet start` or `blocknet status`, subject to `check_interval`.
-- `check_interval` — minimum time between checks. Accepts Go duration strings: `"1h"`, `"12h"`, `"24h"`, `"168h"` (1 week).
+- `check_interval`: minimum time between checks. Accepts Go duration strings: `"1h"`, `"12h"`, `"24h"`, `"168h"` (1 week).
 
-When a new release is found, the binary is downloaded and installed. If a managed core is already running on an unpinned version (`latest` or `nightly`), blocknet may restart it immediately to apply the new version. If not running, the new version is used on the next start/restart. Pinned cores are never touched.
+blocknet upgrades itself first. It downloads the new release from [blocknetprivacy/blocknet](https://github.com/blocknetprivacy/blocknet/releases), checks its SHA-256, and replaces its own binary. The new version runs from the next command. Builds made with plain `go build` have no version and never upgrade themselves.
+
+When a new core release is found, the binary is downloaded and installed. If a managed core is already running on an unpinned version (`latest` or `nightly`), blocknet may restart it immediately to apply the new version. If not running, the new version is used on the next start/restart. Pinned cores are never touched.
 
 The last check time is stored in `~/.config/bnt/.last_upgrade_check`. If less than `check_interval` has passed since the last check, the check is skipped silently.
 
@@ -190,10 +190,9 @@ On macOS and Linux, blocknet installs a background scheduler entry (a launchd pl
 
 The scheduler is managed automatically:
 
-- **When you run `blocknet start` with `auto_upgrade: true`** — blocknet installs or updates the scheduler entry. If the interval has changed since the last run, the scheduler is reinstalled with the new interval.
-- **When you set `auto_upgrade: false`** — blocknet stops managing auto-upgrade checks. Remove any existing scheduler entry manually (commands below), or toggle `auto_upgrade` back to `true` and run `blocknet start` once so blocknet can reconcile scheduler state.
+- **When you run `blocknet start`**, blocknet installs or updates the scheduler entry. If the interval has changed since the last run, the scheduler is reinstalled with the new interval.
 
-You can disable the scheduler without changing the config by removing the entry manually:
+You can remove the scheduler entry manually:
 
 ```
 # macOS — remove the launchd plist
@@ -204,7 +203,7 @@ rm ~/Library/LaunchAgents/com.blocknet.upgrade.plist
 systemctl --user disable --now blocknet-upgrade.timer
 ```
 
-To disable permanently, set `auto_upgrade: false` in your config so `blocknet start` doesn't reinstall it.
+The next `blocknet start` puts it back.
 
 ---
 
