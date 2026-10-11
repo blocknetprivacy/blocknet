@@ -16,6 +16,10 @@
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-aaff00?style=flat-square&labelColor=000">
 </p>
 
+## Network upgrade
+
+Blocknet plans a network upgrade around **2027-02-16**. After it, you will have 1 year to move your coins to the new format, until about **2028-02-16**. Coins not moved by then cannot be spent. The wallet will guide you.
+
 ## What is this?
 
 This program helps you install, upgrade and manage [Blocknet cores](https://github.com/blocknetprivacy/core). 
