@@ -342,6 +342,25 @@ func cmdDoctor(_ []string) error {
 			}
 		}
 
+		if n == Mainnet && !cc.FullSync {
+			res, cpErr := RefreshCheckpoints(cc.ResolveDataDir(n))
+			switch {
+			case cpErr != nil:
+				fail(fmt.Sprintf("Checkpoints refresh failed: %v", cpErr))
+				issues++
+			case res.Replaced:
+				warn(fmt.Sprintf("Checkpoints were stale or missing; updated (%d entries, max %d)", res.Entries, res.MaxHeight))
+				if res.Backup != "" {
+					hint(fmt.Sprintf("Old file saved as %s", res.Backup))
+				}
+				if alive {
+					hint(fmt.Sprintf("Run 'blocknet restart %s' to use them", n))
+				}
+			default:
+				pass(fmt.Sprintf("Checkpoints match bntpool (%d entries, max %d)", res.Entries, res.MaxHeight))
+			}
+		}
+
 		// Log size
 		logPath := LogFile(n)
 		if fi, logErr := os.Stat(logPath); logErr == nil {

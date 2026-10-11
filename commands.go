@@ -87,6 +87,18 @@ func cmdStart(args []string) error {
 		}
 		binPath := CoreBinaryPath(resolved)
 
+		if net == Mainnet && !cc.FullSync {
+			res, err := RefreshCheckpoints(cc.ResolveDataDir(net))
+			switch {
+			case err != nil:
+				fmt.Fprintf(os.Stderr, "  warning: checkpoints refresh failed: %v\n", err)
+			case res.Replaced && res.Backup != "":
+				fmt.Printf("  %s✓%s Checkpoints updated %s(%d entries, max %d, old file saved as %s)%s\n", green, reset, dim, res.Entries, res.MaxHeight, res.Backup, reset)
+			case res.Replaced:
+				fmt.Printf("  %s✓%s Checkpoints downloaded %s(%d entries, max %d)%s\n", green, reset, dim, res.Entries, res.MaxHeight, reset)
+			}
+		}
+
 		fmt.Printf("  Starting %s%s%s core %s(%s)...%s\n", netColor(net), net, reset, dim, resolved, reset)
 		pid, err := startCore(net, cc, binPath)
 		if err != nil {
