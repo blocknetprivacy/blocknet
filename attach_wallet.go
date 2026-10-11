@@ -251,7 +251,7 @@ func (s *AttachSession) cmdLoad() error {
 		fmt.Printf("  Address:  %s\n", resp.Address)
 		fmt.Printf("  Filename: %s\n", resp.Filename)
 
-		cc.WalletFile = filepath.Join(filepath.Dir(cc.WalletFile), resp.Filename)
+		cc.WalletFile = filepath.Join(filepath.Dir(cc.EffectiveWalletFile(s.network)), resp.Filename)
 		EnsureConfigDir()
 		SaveConfig(ConfigFile(), cfg)
 

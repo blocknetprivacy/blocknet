@@ -72,7 +72,7 @@ Closing the shell (`quit` or Ctrl-C) does not stop the core. See [reference-bloc
 
 #### `load`
 
-Loads or creates a wallet in the running core. See the [Wallet Management](reference-wallet.md) guide for the full story on loading, backups, auto-load, and recovery.
+Loads or creates a wallet in the running core. See the [Wallet Management](reference-wallet.md) guide for the full story on loading, backups, the saved wallet path, and recovery.
 
 **Use this when:**
 you just started the core and need to open your wallet, or you want to create a new one.
@@ -111,7 +111,7 @@ you just started the core and need to open your wallet, or you want to create a 
 
 **Notes:**
 - Only one wallet can be loaded per core session. Use [`unload`](#unload) to switch wallets, then `load` again.
-- The selected wallet path is saved to config automatically so future starts [auto-load](reference-wallet.md#auto-loading-on-startup) it via the `--wallet` flag. See the [Configuration Reference](reference-config.md#paths) for the `wallet_file` field.
+- The selected wallet path is saved to config as `wallet_file`. See [Saved wallet path](reference-wallet.md#saved-wallet-path) and the [Configuration Reference](reference-config.md#paths).
 
 ---
 

@@ -69,7 +69,7 @@ Each network has its own configuration block. All fields are optional — omitte
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `data_dir` | string | `""` | Chain database and node state directory. When empty, defaults to `~/.config/bnt/data/mainnet/` (or `testnet/`). On Windows: `C:\Users\<you>\.config\bnt\data\mainnet\`. Set an absolute path to store chain data elsewhere (e.g. a larger disk). |
-| `wallet_file` | string | `""` | Path to the wallet file to auto-load on startup. When empty, no wallet is loaded automatically — use the [`load`](reference-core.md#load) command in [attach mode](reference-core.md). Can be set manually or via the `load` command's "save to config" prompt. See [Auto-loading on startup](reference-wallet.md#auto-loading-on-startup). |
+| `wallet_file` | string | `""` | The wallet this core uses. New wallets from `create` and `import` go in the same folder. When empty, it is `~/.config/bnt/wallets/blocknet-<network>.wallet.dat`. A relative path is read from `~/.config/bnt/wallets/`. The core does not open the wallet at startup, because the wallet needs its password. Use [`load`](reference-core.md#load) in [attach mode](reference-core.md). |
 
 #### Sync
 

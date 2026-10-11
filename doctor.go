@@ -159,7 +159,7 @@ func cmdDoctor(_ []string) error {
 
 		// Wallet file
 		if cc.WalletFile != "" {
-			fi, err := os.Stat(cc.WalletFile)
+			fi, err := os.Stat(cc.EffectiveWalletFile(n))
 			if err != nil {
 			fail(fmt.Sprintf("Wallet file not found (%s)", cc.WalletFile))
 			hint(fmt.Sprintf("Use 'blocknet attach %s' and run 'load' to pick a wallet", n))

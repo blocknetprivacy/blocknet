@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,10 @@ func startCore(net Network, cc *CoreConfig, binPath string) (int, error) {
 	// the API port, and the loser is a process nobody tracks.
 	if pid, err := readCorePidFile(net); err == nil && processAlive(pid) {
 		return 0, fmt.Errorf("%s core is already running (pid %d); stop it first", net, pid)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(cc.EffectiveWalletFile(net)), 0700); err != nil {
+		return 0, fmt.Errorf("%s: wallet folder: %w", net, err)
 	}
 
 	useSettings := coreUsesSettingsAPI(binPath)

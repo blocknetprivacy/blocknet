@@ -54,7 +54,7 @@ The `load` command:
 
 3. Prompts for your wallet password.
 
-4. Loads the wallet into the running core and saves the wallet path to config for [auto-loading](#auto-loading-on-startup) on future starts.
+4. Loads the wallet into the running core and saves the wallet path to config. See [Saved wallet path](#saved-wallet-path).
 
 ```
 > load
@@ -91,9 +91,9 @@ Only one wallet can be loaded at a time. To switch wallets, use [`unload`](refer
 
 ---
 
-### Auto-loading on startup
+### Saved wallet path
 
-When you load or create a wallet, the path is saved to config automatically. The core will load that wallet every time it starts. You can also set it manually by editing [`config.json`](reference-config.md). See the [`wallet_file`](reference-config.md#paths) field in the Configuration Reference.
+When you load or create a wallet, its path is saved to config as `wallet_file`. You can also set it by hand in [`config.json`](reference-config.md). See the [`wallet_file`](reference-config.md#paths) field in the Configuration Reference. The core does not open the wallet when it starts, because the wallet needs its password. After `blocknet start`, run `blocknet attach` and `load` it.
 
 ```json
 {
@@ -104,8 +104,6 @@ When you load or create a wallet, the path is saved to config automatically. The
   }
 }
 ```
-
-This means `blocknet start` followed by `blocknet attach` will drop you straight into a ready wallet — no `load` step needed.
 
 ---
 

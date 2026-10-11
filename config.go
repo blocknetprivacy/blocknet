@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 )
@@ -92,6 +93,17 @@ func (cc *CoreConfig) ResolveDataDir(net Network) string {
 	return DataDir(net)
 }
 
+func (cc *CoreConfig) EffectiveWalletFile(net Network) string {
+	p := cc.WalletFile
+	if p == "" {
+		p = fmt.Sprintf("blocknet-%s.wallet.dat", net)
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(WalletsDir(), p)
+	}
+	return p
+}
+
 // BuildFlags translates a CoreConfig into command-line flags for the core binary.
 func (cc *CoreConfig) BuildFlags(net Network) []string {
 	var flags []string
@@ -106,9 +118,7 @@ func (cc *CoreConfig) BuildFlags(net Network) []string {
 
 	flags = append(flags, "--data", cc.ResolveDataDir(net))
 
-	if cc.WalletFile != "" {
-		flags = append(flags, "--wallet", cc.WalletFile)
-	}
+	flags = append(flags, "--wallet", cc.EffectiveWalletFile(net))
 
 	if cc.Listen != "" {
 		flags = append(flags, "--listen", cc.Listen)

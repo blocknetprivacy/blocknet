@@ -56,7 +56,7 @@ func (cc *CoreConfig) DesiredSettings(net Network) (map[string]any, error) {
 		"full_sync":        orNull(cc.FullSync, true),
 		"save_checkpoints": orNull(cc.SaveCheckpoints, true),
 		"explorer_addr":    orNull(cc.ExplorerAddr != "", cc.ExplorerAddr),
-		"wallet_file":      orNull(cc.WalletFile != "", cc.WalletFile),
+		"wallet_file":      cc.EffectiveWalletFile(net),
 		"p2p_max_inbound":  orNull(cc.P2PMaxInbound > 0, cc.P2PMaxInbound),
 		"p2p_max_outbound": orNull(cc.P2PMaxOutbound > 0, cc.P2PMaxOutbound),
 		"p2p_whitelist":    orNull(len(whitelist) > 0, whitelist),

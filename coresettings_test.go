@@ -14,11 +14,14 @@ func TestDesiredSettingsResetsUnsetFieldsWithNull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"listen", "seed", "full_sync", "save_checkpoints", "explorer_addr", "wallet_file", "p2p_max_inbound", "p2p_max_outbound", "p2p_whitelist"} {
+	for _, k := range []string{"listen", "seed", "full_sync", "save_checkpoints", "explorer_addr", "p2p_max_inbound", "p2p_max_outbound", "p2p_whitelist"} {
 		v, ok := got[k]
 		if !ok || v != nil {
 			t.Errorf("%s = %v (present %v), want null", k, v, ok)
 		}
+	}
+	if want := filepath.Join(WalletsDir(), "blocknet-mainnet.wallet.dat"); got["wallet_file"] != want {
+		t.Errorf("wallet_file = %v, want %s", got["wallet_file"], want)
 	}
 	if len(got) != 9 {
 		t.Errorf("sent %d fields, want 9: %v", len(got), got)
