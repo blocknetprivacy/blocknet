@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,16 +51,16 @@ func (s *AttachSession) cmdStatus() error {
 	}
 	json.Unmarshal(raw, &status)
 
-	fmt.Printf("\n%s\n", SectionHead("Node", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("Node", s.noColor))
 	fmt.Printf("  Peer ID:     %s\n", status.PeerID)
 	fmt.Printf("  Peers:       %d\n", status.Peers)
 	fmt.Printf("  Height:      %d\n", status.ChainHeight)
 	fmt.Printf("  Best Hash:   %s\n", status.BestHash)
-	fmt.Printf("  Syncing:     %v\n", status.Syncing)
+	fmt.Printf("  Syncing:     %s\n", YesNo(status.Syncing))
 
 	raw, err = res[1].raw, res[1].err
 	if err != nil {
-		// No wallet loaded (or locked) — the node section stands alone.
+		// No wallet loaded (or locked): the node section stands alone.
 		return nil
 	}
 	var bal struct {
@@ -79,9 +80,9 @@ func (s *AttachSession) cmdStatus() error {
 		json.Unmarshal(raw2, &addr)
 	}
 
-	walletType := "Full"
+	walletType := "full"
 	if addr.ViewOnly {
-		walletType = "View-Only (cannot spend)"
+		walletType = viewOnlyPhrase
 	}
 
 	balStr := FormatAmount(bal.Spendable)
@@ -89,10 +90,14 @@ func (s *AttachSession) cmdStatus() error {
 		balStr += fmt.Sprintf(" + %s pending", FormatAmount(bal.Pending))
 	}
 
-	fmt.Printf("\n%s\n", SectionHead("Wallet", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("Wallet", s.noColor))
 	fmt.Printf("  Type:        %s\n", walletType)
 	fmt.Printf("  Balance:     %s\n", balStr)
-	fmt.Printf("  Outputs:     %d unspent / %d total\n", bal.OutputsUnspent, bal.OutputsTotal)
+	fmt.Printf("  Outputs:     %d unspent", bal.OutputsUnspent)
+	if bal.OutputsTotal > bal.OutputsUnspent {
+		fmt.Printf(", %d spent", bal.OutputsTotal-bal.OutputsUnspent)
+	}
+	fmt.Println()
 	fmt.Printf("  Address:     %s\n", addr.Address)
 	if w := status.Wallet; w != nil {
 		fmt.Printf("  Synced To:   %d\n", w.SyncedHeight)
@@ -105,7 +110,7 @@ func (s *AttachSession) cmdStatus() error {
 			created = time.Unix(w.CreatedAt, 0).UTC().Format("2006-01-02 15:04 UTC")
 		}
 		fmt.Printf("  Created:     %s\n", created)
-		fmt.Printf("  File Size:   %d bytes\n", w.FileSizeBytes)
+		fmt.Printf("  File Size:   %s\n", formatBytes(w.FileSizeBytes))
 	}
 	return nil
 }
@@ -128,12 +133,10 @@ func (s *AttachSession) cmdPeers() error {
 	}
 	json.Unmarshal(raw, &resp)
 
-	fmt.Printf("\n%s", SectionHead("Peers", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead(fmt.Sprintf("Peers (%d)", resp.Count), s.noColor))
 	if resp.Count == 0 {
-		fmt.Println(" (0)")
 		fmt.Println("  None connected")
 	} else {
-		fmt.Printf(" (%d)\n", resp.Count)
 		for _, p := range resp.Peers {
 			fmt.Printf("  %s\n", p.PeerID)
 			for _, addr := range p.Addrs {
@@ -177,27 +180,28 @@ func (s *AttachSession) cmdBanned() error {
 	}
 	json.Unmarshal(raw, &resp)
 
-	fmt.Printf("\n%s", SectionHead("Banned", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead(fmt.Sprintf("Banned (%d)", resp.Count), s.noColor))
 	if resp.Count == 0 {
-		fmt.Println(" (0)")
 		fmt.Println("  None")
 		return nil
 	}
 
-	fmt.Printf(" (%d)\n", resp.Count)
-	for _, ban := range resp.Banned {
+	for i, ban := range resp.Banned {
 		durStr := "permanent"
 		if !ban.Permanent && ban.ExpiresAt != "" {
 			if t, err := time.Parse(time.RFC3339, ban.ExpiresAt); err == nil {
-				remaining := time.Until(t).Round(time.Minute)
-				durStr = fmt.Sprintf("expires in %s", remaining)
+				durStr = "expires in " + FormatDuration(time.Until(t))
 			}
+		}
+		if i > 0 {
+			fmt.Println()
 		}
 		fmt.Printf("  %s\n", ban.PeerID)
 		for _, addr := range ban.Addrs {
-			fmt.Printf("    addr:   %s\n", addr)
+			fmt.Printf("    Addr:   %s\n", addr)
 		}
-		fmt.Printf("    reason: %s\n    count:  %dx, %s\n", ban.Reason, ban.BanCount, durStr)
+		fmt.Printf("    Reason: %s\n", ban.Reason)
+		fmt.Printf("    Count:  %dx, %s\n", ban.BanCount, durStr)
 	}
 	return nil
 }
@@ -227,13 +231,20 @@ func (s *AttachSession) cmdExportPeer() error {
 		return fmt.Errorf("no external addresses available")
 	}
 
-	if err := os.WriteFile("peer.txt", []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
-		return fmt.Errorf("write peer.txt: %w", err)
+	if err := EnsureConfigDir(); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	peerFile := filepath.Join(ConfigDir(), "peer.txt")
+	if abs, err := filepath.Abs(peerFile); err == nil {
+		peerFile = abs
+	}
+	if err := os.WriteFile(peerFile, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+		return fmt.Errorf("write %s: %w", peerFile, err)
 	}
 
-	fmt.Printf("\n%s\n", SectionHead("Export", s.noColor))
-	fmt.Println("  Peer addresses written to peer.txt")
-	fmt.Println("  Share this file or its contents with other nodes.")
+	fmt.Printf("\n%s\n\n", SectionHead("Export", s.noColor))
+	fmt.Printf("  Peer addresses written to %s\n", peerFile)
+	fmt.Println("  Share this file or its contents with other nodes")
 	fmt.Println("\n  Other nodes can connect with:")
 	for _, line := range lines {
 		fmt.Printf("    %s\n", line)
@@ -335,25 +346,31 @@ func (s *AttachSession) cmdMining(args []string) error {
 			elapsed := ""
 			if resp.StartedAt != "" {
 				if t, err := time.Parse(time.RFC3339, resp.StartedAt); err == nil {
-					elapsed = time.Since(t).Round(time.Second).String()
+					elapsed = FormatDuration(time.Since(t))
 				}
 			}
-			fmt.Printf("\n%s — active", SectionHead("Mining", s.noColor))
+			fmt.Printf("\n%s\n\n", SectionHead("Mining", s.noColor))
+			fmt.Println("  Status:       active")
 			if elapsed != "" {
-				fmt.Printf(" (%s)", elapsed)
+				fmt.Printf("  Running For:  %s\n", elapsed)
 			}
-			fmt.Println()
+			fmt.Printf("  Threads:      %d\n", resp.Threads)
 			fmt.Printf("  Hashrate:     %.2f H/s\n", resp.Hashrate)
-			fmt.Printf("  Total hashes: %d\n", resp.HashCount)
+			fmt.Printf("  Total Hashes: %d\n", resp.HashCount)
 		} else {
-			fmt.Printf("\n%s — stopped\n", SectionHead("Mining", s.noColor))
+			fmt.Printf("\n%s\n\n", SectionHead("Mining", s.noColor))
+			fmt.Println("  Status:       stopped")
 		}
 		return nil
 	}
 
-	switch args[0] {
+	sub := strings.ToLower(args[0])
+	switch sub {
 	case "start":
-		fmt.Printf("\n%s\n", SectionHead("Mining", s.noColor))
+		if err := ExtraArgs(args, 1, "mining start"); err != nil {
+			return err
+		}
+		fmt.Printf("\n%s\n\n", SectionHead("Mining", s.noColor))
 		_, err := s.client.Post(ctx, "/api/mining/start", nil)
 		if err != nil {
 			if apiErr, ok := err.(*APIError); ok && apiErr.StatusCode == 409 {
@@ -373,7 +390,10 @@ func (s *AttachSession) cmdMining(args []string) error {
 		}
 
 	case "stop":
-		fmt.Printf("\n%s\n", SectionHead("Mining", s.noColor))
+		if err := ExtraArgs(args, 1, "mining stop"); err != nil {
+			return err
+		}
+		fmt.Printf("\n%s\n\n", SectionHead("Mining", s.noColor))
 		_, err := s.client.Post(ctx, "/api/mining/stop", nil)
 		if err != nil {
 			if apiErr, ok := err.(*APIError); ok && apiErr.StatusCode == 409 {
@@ -385,7 +405,10 @@ func (s *AttachSession) cmdMining(args []string) error {
 		fmt.Println("  Stopped")
 
 	case "threads", "thread", "t", "thrads", "thrad":
-		fmt.Printf("\n%s\n", SectionHead("Mining", s.noColor))
+		if err := ExtraArgs(args, 2, "mining threads [N]"); err != nil {
+			return err
+		}
+		fmt.Printf("\n%s\n\n", SectionHead("Mining", s.noColor))
 		if len(args) < 2 {
 			raw, err := s.client.Get(ctx, "/api/mining")
 			if err != nil {
@@ -400,7 +423,7 @@ func (s *AttachSession) cmdMining(args []string) error {
 		}
 		n, err := strconv.Atoi(args[1])
 		if err != nil || n < 1 {
-			return fmt.Errorf("usage: mining threads <N> (N >= 1)")
+			return fmt.Errorf("usage: mining threads [N] (N >= 1)")
 		}
 		_, err = s.client.Post(ctx, "/api/mining/threads", map[string]int{"threads": n})
 		if err != nil {
@@ -409,13 +432,13 @@ func (s *AttachSession) cmdMining(args []string) error {
 		fmt.Printf("  Threads set to %d (~%dGB RAM)\n", n, n*2)
 
 	default:
-		return fmt.Errorf("usage: mining [start|stop|threads <N>]")
+		return fmt.Errorf("usage: %s", miningUsage)
 	}
 	return nil
 }
 
 func (s *AttachSession) cmdCertify() error {
-	fmt.Printf("\n%s\n", SectionHead("Certify", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("Certify", s.noColor))
 	fmt.Println("  Verifying chain integrity (difficulty, timestamps, linkage)...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -436,25 +459,15 @@ func (s *AttachSession) cmdCertify() error {
 	}
 	json.Unmarshal(raw, &resp)
 
-	fmt.Printf("  Chain height: %d\n", resp.Height)
+	fmt.Printf("  Chain Height: %d\n", resp.Height)
 
+	green, _, amber, _, _, rst := Palette(s.noColor)
 	if resp.Clean {
-		green := "\033[38;2;170;255;0m"
-		rst := "\033[0m"
-		if s.noColor {
-			green, rst = "", ""
-		}
-		fmt.Printf("  %sChain is clean. No violations found.%s\n", green, rst)
+		fmt.Printf("  %s✓%s Chain is clean. No violations found\n", green, rst)
 		return nil
 	}
 
-	amber := "\033[38;2;255;170;0m"
-	rst := "\033[0m"
-	if s.noColor {
-		amber, rst = "", ""
-	}
-
-	fmt.Printf("\n  %s%d violation(s) found:%s\n", amber, len(resp.Violations), rst)
+	fmt.Printf("\n  %s!%s %s found:\n", amber, rst, Plural(len(resp.Violations), "violation"))
 	for _, v := range resp.Violations {
 		fmt.Printf("    block %-8d %s\n", v.Height, v.Message)
 	}
@@ -462,7 +475,7 @@ func (s *AttachSession) cmdCertify() error {
 }
 
 func (s *AttachSession) cmdSaveCheckpoints() error {
-	fmt.Printf("\n%s\n", SectionHead("Save Checkpoints", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("Save Checkpoints", s.noColor))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -484,13 +497,13 @@ func (s *AttachSession) cmdSaveCheckpoints() error {
 	if resp.Written == 0 {
 		msg := resp.Message
 		if msg == "" {
-			msg = "already up to date"
+			msg = "Already up to date"
 		}
 		fmt.Printf("  %s (last checkpoint: %d, chain height: %d)\n", msg, resp.LastCheckpoint, resp.ChainHeight)
 		return nil
 	}
 
-	fmt.Printf("  Wrote %d checkpoint(s) up to height %d\n", resp.Written, resp.LastCheckpoint)
+	fmt.Printf("  Wrote %s up to height %d\n", Plural(resp.Written, "checkpoint"), resp.LastCheckpoint)
 	if resp.Path != "" {
 		fmt.Printf("  File: %s\n", resp.Path)
 	}
@@ -498,7 +511,7 @@ func (s *AttachSession) cmdSaveCheckpoints() error {
 }
 
 func (s *AttachSession) cmdLoadCheckpoints() error {
-	fmt.Printf("\n%s\n", SectionHead("Load Checkpoints", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("Load Checkpoints", s.noColor))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -519,27 +532,27 @@ func (s *AttachSession) cmdLoadCheckpoints() error {
 	json.Unmarshal(raw, &resp)
 
 	if resp.Downloaded {
-		fmt.Println("  Downloaded checkpoints file from remote.")
+		fmt.Println("  Downloaded checkpoints file from remote")
 	}
 	if resp.Loaded == 0 {
-		fmt.Println("  No checkpoints found.")
+		fmt.Println("  No checkpoints found")
 		return nil
 	}
 
-	fmt.Printf("  Loaded %d checkpoint(s) (max height: %d)\n", resp.Loaded, resp.MaxHeight)
+	fmt.Printf("  Loaded %s (max height: %d)\n", Plural(resp.Loaded, "checkpoint"), resp.MaxHeight)
 	if resp.FastSync {
 		fmt.Printf("  Fast-sync enabled up to height %d (chain is at %d)\n", resp.MaxHeight, resp.ChainHeight)
 	} else {
-		fmt.Println("  Chain is already past checkpoint height; PoW skipping not applicable.")
+		fmt.Println("  Chain is already past the checkpoint height, so there is no PoW to skip")
 	}
 	return nil
 }
 
 func (s *AttachSession) cmdPurge() error {
-	fmt.Printf("\n%s\n", ErrorHead("Purge", s.noColor))
-	fmt.Println("  This will delete all blockchain data.")
-	fmt.Println("  Your wallet will NOT be deleted.")
-	fmt.Println("  This action CANNOT be undone.")
+	fmt.Printf("\n%s\n\n", WarnHead("Purge", s.noColor))
+	fmt.Println("  This will delete all blockchain data")
+	fmt.Println("  Your wallet will NOT be deleted")
+	fmt.Println("  This action CANNOT be undone")
 	fmt.Print("\n  Confirm purge? [y/N]: ")
 
 	confirm, _ := s.reader.ReadString('\n')
@@ -564,17 +577,18 @@ func (s *AttachSession) cmdPurge() error {
 		return s.handleAPIError(err)
 	}
 
-	fmt.Println("  Blockchain data purged. Core will shut down.")
+	fmt.Println("  Blockchain data purged. The core will shut down")
 	return fmt.Errorf("quit")
 }
 
 func (s *AttachSession) cmdVersion() {
-	fmt.Printf("\n%s\n", SectionHead("Version "+Version, s.noColor))
+	green, _, _, _, _, reset := Palette(s.noColor)
+	fmt.Printf("\n%s\n", SectionHead("blocknet "+green+displayVersion()+reset, s.noColor))
 }
 
 func (s *AttachSession) cmdAbout() {
-	fmt.Printf("\n%s\n", SectionHead("About", s.noColor))
-	fmt.Printf("  Blocknet v%s\n", Version)
+	fmt.Printf("\n%s\n\n", SectionHead("About", s.noColor))
+	fmt.Printf("  Blocknet %s\n", displayVersion())
 	fmt.Println("  Zero-knowledge money. Made in USA.")
 	fmt.Println()
 	fmt.Println("  BSD 3-Clause License")
@@ -583,7 +597,7 @@ func (s *AttachSession) cmdAbout() {
 	fmt.Println("  https://blocknetcrypto.com")
 	fmt.Println("  https://explorer.blocknetcrypto.com")
 	fmt.Println("  https://github.com/blocknetprivacy")
-	fmt.Printf("\n%s\n", SectionHead("Third-Party Libraries", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("Third-Party Libraries", s.noColor))
 	fmt.Println("  libp2p/go-libp2p             MIT          P2P networking")
 	fmt.Println("  pion/webrtc                  MIT          WebRTC transport")
 	fmt.Println("  quic-go/quic-go              MIT          QUIC transport")
@@ -606,7 +620,7 @@ func (s *AttachSession) cmdAbout() {
 }
 
 func (s *AttachSession) cmdLicense() {
-	fmt.Printf("\n%s\n", SectionHead("License", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("License", s.noColor))
 	for _, line := range strings.Split(strings.TrimSpace(licenseText), "\n") {
 		fmt.Printf("  %s\n", line)
 	}
@@ -614,7 +628,7 @@ func (s *AttachSession) cmdLicense() {
 
 func (s *AttachSession) cmdExplore(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: explore <height|hash|mempool>")
+		return fmt.Errorf("usage: %s", exploreUsage)
 	}
 
 	target := args[0]
@@ -684,14 +698,9 @@ func (s *AttachSession) printBlock(raw json.RawMessage) error {
 		return fmt.Errorf("parse response: %w", err)
 	}
 
-	green := "\033[38;2;170;255;0m"
-	dim := "\033[2m"
-	reset := "\033[0m"
-	if s.noColor {
-		green, dim, reset = "", "", ""
-	}
+	green, _, _, _, dim, reset := Palette(s.noColor)
 
-	fmt.Printf("\n%s\n", SectionHead(fmt.Sprintf("Block %d", block.Height), s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead(fmt.Sprintf("Block %d", block.Height), s.noColor))
 	fmt.Printf("  Hash:          %s\n", block.Hash)
 	fmt.Printf("  Previous:      %s\n", block.PrevHash)
 	fmt.Printf("  Merkle Root:   %s\n", block.MerkleRoot)
@@ -710,7 +719,7 @@ func (s *AttachSession) printBlock(raw json.RawMessage) error {
 			}
 			feeStr := FormatAmount(tx.Fee)
 			if tx.Fee == 0 {
-				feeStr = dim + "—" + reset
+				feeStr = dim + "none" + reset
 			}
 			fmt.Printf("    %s  %s  %d in → %d out  fee: %s\n",
 				tag, tx.Hash, tx.Inputs, tx.Outputs, feeStr)
@@ -736,14 +745,9 @@ func (s *AttachSession) printTx(hash string, raw json.RawMessage) error {
 		return fmt.Errorf("parse response: %w", err)
 	}
 
-	green := "\033[38;2;170;255;0m"
-	amber := "\033[38;2;255;170;0m"
-	reset := "\033[0m"
-	if s.noColor {
-		green, amber, reset = "", "", ""
-	}
+	green, _, amber, _, _, reset := Palette(s.noColor)
 
-	fmt.Printf("\n%s\n", SectionHead("Transaction", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("Transaction", s.noColor))
 	fmt.Printf("  Hash:          %s\n", hash)
 
 	if resp.InMempool {
@@ -784,10 +788,10 @@ func (s *AttachSession) exploreMempool() error {
 		return fmt.Errorf("parse response: %w", err)
 	}
 
-	fmt.Printf("\n%s\n", SectionHead("Mempool", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("Mempool", s.noColor))
 
 	if stats.Count == 0 {
-		fmt.Println("  Empty — no pending transactions")
+		fmt.Println("  Empty: no pending transactions")
 		return nil
 	}
 
@@ -838,4 +842,3 @@ func isHex64(s string) bool {
 	}
 	return true
 }
-

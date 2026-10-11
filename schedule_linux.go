@@ -31,7 +31,7 @@ Description=Blocknet auto-upgrade check
 
 [Service]
 Type=oneshot
-ExecStart=%s upgrade
+ExecStart=%s upgrade --nocolor
 `, binPath)
 
 	hours := int(interval.Hours())
@@ -55,15 +55,15 @@ WantedBy=timers.target
 `, onCalendar)
 
 	if err := os.WriteFile(servicePath(), []byte(service), 0644); err != nil {
-		return fmt.Errorf("write service: %w", err)
+		return fmt.Errorf("could not write service: %w", err)
 	}
 	if err := os.WriteFile(timerPath(), []byte(timer), 0644); err != nil {
-		return fmt.Errorf("write timer: %w", err)
+		return fmt.Errorf("could not write timer: %w", err)
 	}
 
 	runCmd("systemctl", "--user", "daemon-reload")
 	if err := runCmd("systemctl", "--user", "enable", "--now", "blocknet-upgrade.timer"); err != nil {
-		return fmt.Errorf("enable timer: %w", err)
+		return fmt.Errorf("could not enable timer: %w", err)
 	}
 	return nil
 }

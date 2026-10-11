@@ -13,12 +13,15 @@ import (
 	"time"
 )
 
+// viewOnlyPhrase describes a view-only wallet everywhere attach mentions one.
+const viewOnlyPhrase = "view-only (watches incoming funds, cannot spend)"
+
 // maxMemoBytes is the largest memo payload a transaction can carry: the core's
 // wallet.MemoSize (128) minus its 4-byte length prefix. Enforced client-side for
 // a clean error before the round-trip; the core re-validates authoritatively.
 const maxMemoBytes = 124
 
-// parseMemoArg converts the trailing memo argument(s) into the API's memo
+// parseMemoArg converts the trailing memo arguments into the API's memo
 // fields. A "hex:<hex>" prefix is decoded to raw bytes and sent as memo_hex;
 // anything else is UTF-8 text sent as memo_text (surrounding quotes stripped).
 // display is the human-readable form shown in the send confirmation.
@@ -73,25 +76,29 @@ func (s *AttachSession) printResolution(input string, r resolvedRecipient) {
 		return
 	}
 	if r.ResolverVerified {
-		fmt.Printf("  Resolved %s -> %s \033[38;2;170;255;0m✓ verified\033[0m\n", input, r.ResolvedAddress)
+		green, _, _, _, _, reset := Palette(s.noColor)
+		fmt.Printf("  Resolved %s -> %s %s✓%s verified\n", input, r.ResolvedAddress, green, reset)
 	} else {
 		fmt.Printf("  Resolved %s -> %s\n", input, r.ResolvedAddress)
 	}
 }
 
-func (s *AttachSession) cmdLoad() error {
+// walletAlreadyLoaded reports whether the core already has a wallet loaded.
+func (s *AttachSession) walletAlreadyLoaded() bool {
 	ctx, cancel := withPatience(defaultAPITimeout)
-	defer cancel()
-
 	_, err := s.client.Get(ctx, "/api/wallet/balance")
+	cancel()
 	if err == nil {
-		fmt.Printf("\n%s\n", SectionHead("Wallet", s.noColor))
-		fmt.Println("  A wallet is already loaded.")
-		return nil
+		return true
 	}
-	if apiErr, ok := err.(*APIError); ok && apiErr.StatusCode == 409 {
-		fmt.Printf("\n%s\n", SectionHead("Wallet", s.noColor))
-		fmt.Println("  A wallet is already loaded.")
+	apiErr, ok := err.(*APIError)
+	return ok && (apiErr.StatusCode == 409 || apiErr.StatusCode == 403)
+}
+
+func (s *AttachSession) cmdLoad() error {
+	if s.walletAlreadyLoaded() {
+		fmt.Printf("\n%s\n\n", SectionHead("Wallet", s.noColor))
+		fmt.Println("  A wallet is already loaded")
 		return nil
 	}
 
@@ -103,46 +110,23 @@ func (s *AttachSession) cmdLoad() error {
 	if cc == nil {
 		return fmt.Errorf("no config for %s", s.network)
 	}
-	dataDir := cc.ResolveDataDir(s.network)
 
-	home, _ := os.UserHomeDir()
-	searchDirs := []string{
-		WalletsDir(),
-		filepath.Join(home, ".config", "blocknet", string(s.network)),
-		home,
-	}
+	// The core only loads wallets from the folder of the wallet file it was
+	// started with (it keeps the base name of the path it is sent), so only
+	// files in that folder are offered.
+	coreDir := filepath.Dir(cc.EffectiveWalletFile(s.network))
+	wallets, _ := filepath.Glob(filepath.Join(coreDir, "*.wallet.dat"))
+	sort.Strings(wallets)
 
-	if abs, err := filepath.Abs(dataDir); err == nil {
-		searchDirs = append(searchDirs, abs)
-	}
-
-	cwd, _ := os.Getwd()
-	if cwd != "" && cwd != home {
-		searchDirs = append(searchDirs, cwd)
-	}
-
-	seen := make(map[string]bool)
-	var wallets []string
-	for _, dir := range searchDirs {
-		matches, _ := filepath.Glob(filepath.Join(dir, "*.wallet.dat"))
-		for _, m := range matches {
-			abs, _ := filepath.Abs(m)
-			if !seen[abs] {
-				seen[abs] = true
-				wallets = append(wallets, abs)
-			}
-		}
-	}
-
-	fmt.Printf("\n%s\n", SectionHead("Load Wallet", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("Load Wallet", s.noColor))
 
 	if len(wallets) > 0 {
-		fmt.Println("  Found wallet files:")
+		fmt.Printf("  Wallet files in %s:\n", coreDir)
 		for i, w := range wallets {
-			fmt.Printf("  %d) %s\n", i+1, w)
+			fmt.Printf("  %d) %s\n", i+1, filepath.Base(w))
 		}
 	} else {
-		fmt.Println("  No wallet files found.")
+		fmt.Printf("  No wallet files in %s\n", coreDir)
 	}
 	fmt.Printf("  %d) Enter a custom path\n", len(wallets)+1)
 	fmt.Printf("  %d) Create a new wallet\n", len(wallets)+2)
@@ -174,6 +158,7 @@ func (s *AttachSession) cmdLoad() error {
 			return fmt.Errorf("empty path")
 		}
 		if strings.HasPrefix(walletPath, "~/") {
+			home, _ := os.UserHomeDir()
 			walletPath = filepath.Join(home, walletPath[2:])
 		}
 		abs, err := filepath.Abs(walletPath)
@@ -183,6 +168,9 @@ func (s *AttachSession) cmdLoad() error {
 		walletPath = abs
 		if _, err := os.Stat(walletPath); err != nil {
 			return fmt.Errorf("file not found: %s", walletPath)
+		}
+		if filepath.Dir(walletPath) != coreDir {
+			return fmt.Errorf("the core only loads wallets from %s\n  Copy the file there, then run 'load' again", coreDir)
 		}
 	case choice == len(wallets)+2:
 		fmt.Println("  Wallet name (without extension):")
@@ -208,31 +196,30 @@ func (s *AttachSession) cmdLoad() error {
 	if len(password) < 3 {
 		return fmt.Errorf("password must be at least 3 characters")
 	}
-
-	recheckCtx, recheckCancel := withPatience(defaultAPITimeout)
-	defer recheckCancel()
-	_, recheckErr := s.client.Get(recheckCtx, "/api/wallet/balance")
-	if recheckErr == nil {
-		fmt.Printf("\n%s\n", SectionHead("Wallet", s.noColor))
-		fmt.Println("  A wallet was loaded in the background (likely from a previous attempt).")
-		fmt.Println("  Run 'balance' to check.")
-		return nil
+	if createFilename != "" {
+		confirmPw, err := s.readPassword("  Confirm password: ")
+		if err != nil {
+			return err
+		}
+		if confirmPw != password {
+			return fmt.Errorf("passwords do not match")
+		}
 	}
-	if apiErr, ok := recheckErr.(*APIError); ok && apiErr.StatusCode == 409 {
-		fmt.Printf("\n%s\n", SectionHead("Wallet", s.noColor))
-		fmt.Println("  A wallet was loaded in the background (likely from a previous attempt).")
-		fmt.Println("  Run 'balance' to check.")
+
+	if s.walletAlreadyLoaded() {
+		fmt.Printf("\n%s\n\n", SectionHead("Wallet", s.noColor))
+		fmt.Println("  A wallet was loaded in the background (likely from a previous attempt)")
+		fmt.Println("  Run 'balance' to check")
 		return nil
 	}
 
 	if createFilename != "" {
 		createCtx, createCancel := withPatience(60 * time.Second)
-		defer createCancel()
-
 		raw, err := s.client.Post(createCtx, "/api/wallet/create", map[string]string{
 			"password": password,
 			"filename": createFilename,
 		})
+		createCancel()
 		if err != nil {
 			if apiErr, ok := err.(*APIError); ok && apiErr.StatusCode == 409 {
 				return fmt.Errorf("%s\n  Use 'load' and select it to open the existing wallet", apiErr.Message)
@@ -247,33 +234,37 @@ func (s *AttachSession) cmdLoad() error {
 		}
 		json.Unmarshal(raw, &resp)
 
-		fmt.Printf("\n  Wallet created\n")
+		s.locked = false
+		fmt.Printf("\n%s\n\n", SectionHead("Wallet Created", s.noColor))
 		fmt.Printf("  Address:  %s\n", resp.Address)
 		fmt.Printf("  Filename: %s\n", resp.Filename)
 
-		cc.WalletFile = filepath.Join(filepath.Dir(cc.EffectiveWalletFile(s.network)), resp.Filename)
-		EnsureConfigDir()
-		SaveConfig(ConfigFile(), cfg)
-
-		s.locked = false
+		cc.WalletFile = filepath.Join(coreDir, resp.Filename)
+		if err := EnsureConfigDir(); err != nil {
+			return fmt.Errorf("create config dir: %w", err)
+		}
+		if err := SaveConfig(ConfigFile(), cfg); err != nil {
+			return fmt.Errorf("save config: %w", err)
+		}
 		return nil
 	}
 
-	if walletPath != "" && walletPath != cc.WalletFile {
+	if walletPath != cc.WalletFile {
 		cc.WalletFile = walletPath
-		EnsureConfigDir()
+		if err := EnsureConfigDir(); err != nil {
+			return fmt.Errorf("create config dir: %w", err)
+		}
 		if err := SaveConfig(ConfigFile(), cfg); err != nil {
 			return fmt.Errorf("save config: %w", err)
 		}
 	}
 
 	loadCtx, loadCancel := withPatience(60 * time.Second)
-	defer loadCancel()
-
 	raw, err := s.client.Post(loadCtx, "/api/wallet/load", map[string]string{
 		"password": password,
 		"filepath": filepath.Base(walletPath),
 	})
+	loadCancel()
 	if err != nil {
 		if apiErr, ok := err.(*APIError); ok {
 			lower := strings.ToLower(apiErr.Message)
@@ -285,11 +276,11 @@ func (s *AttachSession) cmdLoad() error {
 				if strings.Contains(lower, "wrong password") {
 					return fmt.Errorf("wrong password")
 				}
-				return fmt.Errorf("unauthorized — check api.cookie")
+				return fmt.Errorf("unauthorized: check api.cookie")
 			case 403:
 				return fmt.Errorf("wallet file not readable (check file permissions)")
 			case 404:
-				return fmt.Errorf("wallet file not found by the core\n  Ensure it is in the core's wallet directory")
+				return fmt.Errorf("wallet file not found by the core\n  It must be in %s", coreDir)
 			case 422:
 				return fmt.Errorf("wallet file is corrupted\n  Restore from backup or re-import from seed")
 			case 500:
@@ -306,12 +297,11 @@ func (s *AttachSession) cmdLoad() error {
 	}
 	json.Unmarshal(raw, &resp)
 
-	fmt.Printf("\n  Wallet loaded\n")
+	s.locked = false
+	fmt.Printf("\n%s\n\n", SectionHead("Wallet Loaded", s.noColor))
 	fmt.Printf("  Address: %s\n", resp.Address)
 
-	s.locked = false
-
-	if walletPath != "" {
+	{
 		backupDir := WalletsDir()
 		os.MkdirAll(backupDir, 0755)
 		backupPath := filepath.Join(backupDir, filepath.Base(walletPath))
@@ -319,7 +309,7 @@ func (s *AttachSession) cmdLoad() error {
 			src, err := os.ReadFile(walletPath)
 			if err == nil {
 				if err := os.WriteFile(backupPath, src, 0600); err == nil {
-					fmt.Printf("  Backup: %s\n", backupPath)
+					fmt.Printf("  Backup:  %s\n", backupPath)
 				}
 			}
 		}
@@ -338,8 +328,8 @@ func (s *AttachSession) cmdUnload() error {
 	}
 
 	s.locked = false
-	fmt.Printf("\n%s\n", SectionHead("Unloaded", s.noColor))
-	fmt.Println("  Wallet unloaded. Use 'load' to open another.")
+	fmt.Printf("\n%s\n\n", SectionHead("Unloaded", s.noColor))
+	fmt.Println("  Wallet unloaded. Use 'load' to open another")
 	return nil
 }
 
@@ -365,37 +355,37 @@ func (s *AttachSession) cmdBalance() error {
 		return fmt.Errorf("parse response: %w", err)
 	}
 
-	fmt.Printf("\n%s\n", SectionHead("Balance", s.noColor))
-	fmt.Printf("  spendable:  %s\n", FormatAmount(bal.Spendable))
-	fmt.Printf("  confirming: %s\n", FormatAmount(bal.Pending))
+	fmt.Printf("\n%s\n\n", SectionHead("Balance", s.noColor))
+	fmt.Printf("  Spendable:   %s\n", FormatAmount(bal.Spendable))
+	fmt.Printf("  Pending:     %s\n", FormatAmount(bal.Pending))
 	if bal.PendingUnconfirmed > 0 {
 		eta := time.Duration(bal.PendingUnconfETA) * time.Second
-		fmt.Printf("  pending:    %s (est unlock ~%s)\n", FormatAmount(bal.PendingUnconfirmed), eta.Round(time.Minute))
+		fmt.Printf("  Unconfirmed: %s (spendable in about %s)\n", FormatAmount(bal.PendingUnconfirmed), FormatDuration(eta))
 	}
-	fmt.Printf("  total:      %s\n", FormatAmount(bal.Total))
-	fmt.Printf("  outputs:    %d unspent", bal.OutputsUnspent)
+	fmt.Printf("  Total:       %s\n", FormatAmount(bal.Total))
+	fmt.Printf("  Outputs:     %d unspent", bal.OutputsUnspent)
 	if bal.OutputsTotal > bal.OutputsUnspent {
 		fmt.Printf(", %d spent", bal.OutputsTotal-bal.OutputsUnspent)
 	}
 	fmt.Println()
-	if warn := s.syncLagWarning(); warn != "" {
-		fmt.Println(warn)
+	if behind := s.syncLag(); behind > 0 {
+		Warnf("still syncing, %s behind: this may not be your full balance yet", Plural(int(behind), "block"))
 	}
 	return nil
 }
 
-// syncLagWarning returns a one-line caution if the wallet is meaningfully
-// behind the network tip, in which case recently received funds may not be
-// reflected in the balance yet. It returns "" when the wallet is caught up (or
-// only routinely behind, see syncLagWarnBlocks) and on any error fetching
-// status — the warning is best-effort and must never block showing the balance.
-func (s *AttachSession) syncLagWarning() string {
+// syncLag returns how many blocks the wallet is behind the network tip when
+// that is enough that recently received funds may be missing from the
+// balance. It returns 0 when the wallet is caught up (or only routinely
+// behind, see syncLagWarnBlocks) and on any error fetching status. The
+// warning is best-effort and must never block showing the balance.
+func (s *AttachSession) syncLag() uint64 {
 	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
 	raw, err := s.client.Get(ctx, "/api/status")
 	if err != nil {
-		return ""
+		return 0
 	}
 
 	var st struct {
@@ -407,7 +397,7 @@ func (s *AttachSession) syncLagWarning() string {
 		} `json:"wallet"`
 	}
 	if err := json.Unmarshal(raw, &st); err != nil {
-		return ""
+		return 0
 	}
 
 	// The network tip is the chain height, or the sync target while we are
@@ -426,15 +416,9 @@ func (s *AttachSession) syncLagWarning() string {
 	}
 
 	if tip <= scanned || tip-scanned <= syncLagWarnBlocks {
-		return ""
+		return 0
 	}
-
-	amber := "\033[38;2;255;170;0m"
-	rst := "\033[0m"
-	if s.noColor {
-		amber, rst = "", ""
-	}
-	return fmt.Sprintf("  %s⚠ still syncing — %d blocks behind; this may not be your full balance yet%s", amber, tip-scanned, rst)
+	return tip - scanned
 }
 
 func (s *AttachSession) cmdAddress() error {
@@ -455,21 +439,19 @@ func (s *AttachSession) cmdAddress() error {
 	fmt.Printf("\n%s\n\n", SectionHead("Address", s.noColor))
 	fmt.Printf("  %s\n", resp.Address)
 	if resp.ViewOnly {
-		fmt.Println("  (view-only wallet — cannot send or sign)")
+		fmt.Printf("  This wallet is %s\n", viewOnlyPhrase)
 	}
 	fmt.Println()
 
-	idURL := "https://blocknet.id"
-	if !s.noColor {
-		idURL = "\033[4m\033[38;2;170;255;0mhttps://blocknet.id\033[0m"
-	}
+	green, _, _, _, _, reset := Palette(s.noColor)
+	idURL := green + "https://blocknet.id" + reset
 	fmt.Printf("  Get a short name like @name or $name at %s\n", idURL)
 	return nil
 }
 
 func (s *AttachSession) cmdSend(args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: send <address> <amount> [memo|hex:<memo_hex>]")
+		return fmt.Errorf("usage: send <address> <amount|all> [memo|hex:<memo_hex>]")
 	}
 
 	address := SanitizeInput(args[0])
@@ -480,11 +462,17 @@ func (s *AttachSession) cmdSend(args []string) error {
 	if !sendAll {
 		amount, err = ParseAmount(args[1])
 		if err != nil {
-			return fmt.Errorf("invalid amount: %w", err)
+			return err
 		}
 	}
 
-	memoText, memoHex, memoDisplay, err := parseMemoArg(args[2:])
+	// "send <addr> 1 BNT": a unit after the amount belongs to the amount,
+	// not to the memo.
+	rest := args[2:]
+	if len(rest) > 0 && strings.EqualFold(rest[0], "bnt") {
+		rest = rest[1:]
+	}
+	memoText, memoHex, memoDisplay, err := parseMemoArg(rest)
 	if err != nil {
 		return err
 	}
@@ -523,18 +511,21 @@ func (s *AttachSession) cmdSend(args []string) error {
 		resolved = preview.Recipients[0]
 	}
 
-	fmt.Printf("\n%s\n", SectionHead("Send", s.noColor))
-	s.printResolution(address, resolved)
-	fmt.Printf("\n  Send %s to %s?\n", FormatAmount(amount), address)
-	fmt.Printf("  Fee:     %s\n", FormatAmount(preview.Fee))
+	fmt.Printf("\n%s\n\n", SectionHead("Send", s.noColor))
 	if resolved.ResolvedHandle != "" {
-		fmt.Printf("  Address: %s\n", resolved.ResolvedAddress)
+		s.printResolution(address, resolved)
+		fmt.Println()
+	}
+	fmt.Printf("  Send %s to %s?\n", FormatAmount(amount), address)
+	fmt.Printf("  Fee:      %s\n", FormatAmount(preview.Fee))
+	if resolved.ResolvedHandle != "" {
+		fmt.Printf("  Address:  %s\n", resolved.ResolvedAddress)
 	}
 	if preview.Change > 0 {
-		fmt.Printf("  Change:  %s\n", FormatAmount(preview.Change))
+		fmt.Printf("  Change:   %s\n", FormatAmount(preview.Change))
 	}
 	if memoDisplay != "" {
-		fmt.Printf("  Memo:    %s\n", memoDisplay)
+		fmt.Printf("  Memo:     %s\n", memoDisplay)
 	}
 	fmt.Print("  Confirm [y/N]: ")
 
@@ -556,7 +547,7 @@ func (s *AttachSession) cmdSend(args []string) error {
 	}
 	json.Unmarshal(raw, &result)
 
-	fmt.Printf("  Sent: %s\n", result.TxID)
+	fmt.Printf("  Sent:     %s\n", result.TxID)
 	fmt.Printf("  Explorer: https://explorer.blocknetcrypto.com/tx/%s\n", result.TxID)
 	return nil
 }
@@ -613,24 +604,32 @@ func (s *AttachSession) sendAll(ctx context.Context, address, memoText, memoHex,
 		Fee        uint64              `json:"fee"`
 		Recipients []resolvedRecipient `json:"recipients"`
 	}
-	json.Unmarshal(raw, &preview)
+	if err := json.Unmarshal(raw, &preview); err != nil {
+		return fmt.Errorf("parse fee preview: %w", err)
+	}
 
 	var resolved resolvedRecipient
 	if len(preview.Recipients) > 0 {
 		resolved = preview.Recipients[0]
 	}
 
+	if preview.Fee >= total {
+		return fmt.Errorf("balance too small to cover the fee (fee %s)", FormatAmount(preview.Fee))
+	}
 	amount := total - preview.Fee
 
-	fmt.Printf("\n%s\n", SectionHead("Send", s.noColor))
-	s.printResolution(address, resolved)
-	fmt.Printf("\n  Send %s to %s? (all)\n", FormatAmount(amount), address)
-	fmt.Printf("  Fee:    %s\n", FormatAmount(preview.Fee))
+	fmt.Printf("\n%s\n\n", SectionHead("Send", s.noColor))
 	if resolved.ResolvedHandle != "" {
-		fmt.Printf("  Address: %s\n", resolved.ResolvedAddress)
+		s.printResolution(address, resolved)
+		fmt.Println()
+	}
+	fmt.Printf("  Send all (%s) to %s?\n", FormatAmount(amount), address)
+	fmt.Printf("  Fee:      %s\n", FormatAmount(preview.Fee))
+	if resolved.ResolvedHandle != "" {
+		fmt.Printf("  Address:  %s\n", resolved.ResolvedAddress)
 	}
 	if memoDisplay != "" {
-		fmt.Printf("  Memo:   %s\n", memoDisplay)
+		fmt.Printf("  Memo:     %s\n", memoDisplay)
 	}
 	fmt.Print("  Confirm [y/N]: ")
 
@@ -652,14 +651,14 @@ func (s *AttachSession) sendAll(ctx context.Context, address, memoText, memoHex,
 	}
 	json.Unmarshal(raw, &result)
 
-	fmt.Printf("  Sent: %s\n", result.TxID)
+	fmt.Printf("  Sent:     %s\n", result.TxID)
 	fmt.Printf("  Explorer: https://explorer.blocknetcrypto.com/tx/%s\n", result.TxID)
 	return nil
 }
 
 func (s *AttachSession) cmdSign() error {
-	fmt.Printf("\n%s\n", SectionHead("Sign", s.noColor))
-	fmt.Println("  Enter the text to sign, press ENTER when you're done.")
+	fmt.Printf("\n%s\n\n", SectionHead("Sign", s.noColor))
+	fmt.Println("  Enter the text to sign, then press Enter")
 	fmt.Print("\n> ")
 
 	line, err := s.reader.ReadString('\n')
@@ -692,7 +691,7 @@ func (s *AttachSession) cmdSign() error {
 }
 
 func (s *AttachSession) cmdVerifyMsg() error {
-	fmt.Printf("\n%s\n", SectionHead("Verify", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("Verify", s.noColor))
 	fmt.Println("  Enter the address:")
 	fmt.Print("\n> ")
 	addrLine, err := s.reader.ReadString('\n')
@@ -722,6 +721,9 @@ func (s *AttachSession) cmdVerifyMsg() error {
 		return fmt.Errorf("failed to read input: %w", err)
 	}
 	signature := strings.TrimSpace(sigLine)
+	if signature == "" {
+		return fmt.Errorf("signature cannot be empty")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -741,9 +743,9 @@ func (s *AttachSession) cmdVerifyMsg() error {
 	json.Unmarshal(raw, &resp)
 
 	if resp.Valid {
-		fmt.Printf("\n  %s\n", SectionHead("Signature is VALID", s.noColor))
+		fmt.Printf("\n%s\n", SectionHead("Signature is VALID", s.noColor))
 	} else {
-		fmt.Printf("\n  %s\n", ErrorHead("Signature is INVALID", s.noColor))
+		fmt.Printf("\n%s\n", ErrorHead("Signature is INVALID", s.noColor))
 	}
 	return nil
 }
@@ -818,7 +820,7 @@ func (s *AttachSession) cmdHistory() error {
 		})
 	}
 
-	fmt.Printf("\n%s\n", SectionHead("History", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("History", s.noColor))
 	if len(events) == 0 {
 		fmt.Println("  No transactions yet")
 		return nil
@@ -833,41 +835,44 @@ func (s *AttachSession) cmdHistory() error {
 		return events[i].height < events[j].height
 	})
 
-	green := "\033[38;2;170;255;0m"
-	red := "\033[38;2;255;68;68m"
-	amber := "\033[38;2;255;170;0m"
-	reset := "\033[0m"
-	if s.noColor {
-		green, red, amber, reset = "", "", "", ""
+	green, _, amber, pink, _, reset := Palette(s.noColor)
+
+	// Column widths come from the rows so long heights and amounts line up.
+	whereW, amountW := 0, 0
+	where := func(e event) string {
+		if e.pending {
+			return "mempool"
+		}
+		return "block " + strconv.FormatUint(e.height, 10)
+	}
+	for _, e := range events {
+		whereW = max(whereW, len(where(e)))
+		amountW = max(amountW, len(FormatAmount(e.amount)))
 	}
 
 	for _, e := range events {
 		color := green
 		if e.direction == "OUT" {
-			color = red
+			color = pink
 			if e.pending {
 				color = amber
 			}
 		}
-		heightStr := strconv.FormatUint(e.height, 10)
-		if e.pending {
-			heightStr = "mempool"
-		}
 		extras := ""
 		if e.direction == "IN" {
 			if e.coinbase {
-				extras = " coinbase"
+				extras = "  coinbase"
 			}
 			if e.spent {
-				extras += " (spent)"
+				extras += "  (spent)"
 			}
 		}
-		memoStr := ""
+		fmt.Printf("  %s  %s  %s  %s%s\n",
+			PadRight(where(e), whereW), PadRight(color+e.direction+reset, 3),
+			PadLeft(FormatAmount(e.amount), amountW), e.txid, extras)
 		if m := MemoDisplay(e.memoHex); m != "" {
-			memoStr = "\n    memo: " + m
+			fmt.Printf("    Memo: %s\n", m)
 		}
-		fmt.Printf("  block %-8s %s%-3s%s %-16s %s%s%s\n",
-			heightStr, color, e.direction, reset, FormatAmount(e.amount), e.txid, extras, memoStr)
 	}
 	return nil
 }
@@ -906,64 +911,71 @@ func (s *AttachSession) cmdOutputs(args []string) error {
 	var txFilter string
 	txIndexFilter := -1
 
+	const usage = "outputs [spent|unspent|pending] [index]\n         outputs tx <txid>[:<index>]"
+	usageErr := fmt.Errorf("usage: %s", usage)
+
 	if len(args) > 0 {
 		switch strings.ToLower(args[0]) {
 		case "spent", "unspent", "pending":
+			if err := ExtraArgs(args, 2, usage); err != nil {
+				return err
+			}
 			filter = strings.ToLower(args[0])
 			if len(args) == 2 {
 				n, err := strconv.Atoi(args[1])
 				if err != nil || n < 1 {
-					fmt.Println("  Usage: outputs [spent|unspent|pending] [index]")
-					fmt.Println("         outputs tx <txid>")
-					return nil
+					return usageErr
 				}
 				detailIndex = n
 			}
 		case "tx":
-			if len(args) != 2 {
-				fmt.Println("  Usage: outputs tx <txid>")
-				fmt.Println("         outputs tx <txid>:<index>")
-				return nil
+			if len(args) < 2 {
+				return usageErr
+			}
+			if err := ExtraArgs(args, 2, usage); err != nil {
+				return err
 			}
 			parts := strings.SplitN(args[1], ":", 2)
 			txFilter = strings.TrimSpace(parts[0])
+			if !isHex64(txFilter) {
+				return fmt.Errorf("txid must be 64 hex characters")
+			}
+			txFilter = strings.ToLower(txFilter)
 			showByTx = true
 			if len(parts) == 2 {
 				n, err := strconv.Atoi(parts[1])
 				if err != nil || n < 0 {
-					fmt.Println("  Invalid tx output index")
-					return nil
+					return fmt.Errorf("invalid output index %q: use outputs tx <txid>:<index>", parts[1])
 				}
 				txIndexFilter = n
 			}
 		default:
 			n, err := strconv.Atoi(args[0])
-			if err != nil || n < 1 || len(args) > 1 {
-				fmt.Println("  Usage: outputs [spent|unspent|pending] [index]")
-				fmt.Println("         outputs tx <txid>")
-				return nil
+			if err != nil || n < 1 {
+				return usageErr
+			}
+			if err := ExtraArgs(args, 1, usage); err != nil {
+				return err
 			}
 			detailIndex = n
 		}
 	}
 
+	green, _, amber, _, dim, reset := Palette(s.noColor)
 	statusLabel := func(status string) string {
-		if s.noColor {
-			return status
-		}
 		switch status {
 		case "unspent":
-			return "\033[38;2;170;255;0munspent\033[0m"
+			return green + status + reset
 		case "spent":
-			return "\033[38;2;255;68;68mspent\033[0m"
+			return dim + status + reset
 		case "pending":
-			return "\033[38;2;255;170;0mpending\033[0m"
+			return amber + status + reset
 		default:
 			return status
 		}
 	}
 
-	fmt.Printf("\n%s\n", SectionHead("Outputs", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("Outputs", s.noColor))
 
 	type entry struct {
 		TxID, Status, Type, OneTimePub, Commitment, MemoHex string
@@ -977,7 +989,7 @@ func (s *AttachSession) cmdOutputs(args []string) error {
 			continue
 		}
 		if showByTx {
-			if o.TxID != txFilter {
+			if !strings.EqualFold(o.TxID, txFilter) {
 				continue
 			}
 			if txIndexFilter >= 0 && o.OutputIndex != txIndexFilter {
@@ -992,40 +1004,41 @@ func (s *AttachSession) cmdOutputs(args []string) error {
 
 	if len(filtered) == 0 {
 		if resp.SyncedHeight < resp.ChainHeight {
-			fmt.Printf("  No outputs found yet.\n")
-			fmt.Printf("  Wallet scan is still catching up (%d/%d).\n", resp.SyncedHeight, resp.ChainHeight)
+			fmt.Println("  No outputs found yet")
+			fmt.Printf("  Wallet scan is still catching up (%d/%d)\n", resp.SyncedHeight, resp.ChainHeight)
 			fmt.Println("  Try: sync")
+		} else if showByTx {
+			fmt.Println("  No outputs of this wallet in that transaction")
 		} else if filter != "all" {
-			fmt.Printf("  No %s outputs found.\n", filter)
+			fmt.Printf("  No %s outputs found\n", filter)
 		} else {
-			fmt.Println("  No outputs found in this wallet yet.")
-			fmt.Println("  Receive funds, then run sync if needed.")
+			fmt.Println("  No outputs found in this wallet yet")
+			fmt.Println("  Receive funds, then run sync if needed")
 		}
 		return nil
 	}
 
 	printDetail := func(pos int, o entry) {
 		fmt.Printf("  #%d\n", pos)
-		fmt.Printf("    status:       %s\n", statusLabel(o.Status))
-		fmt.Printf("    amount:       %s\n", FormatAmount(o.Amount))
-		fmt.Printf("    type:         %s\n", o.Type)
-		fmt.Printf("    confirmations:%d\n", o.Confirmations)
-		fmt.Printf("    block:        %d\n", o.BlockHeight)
-		fmt.Printf("    tx output:    %s:%d\n", o.TxID, o.OutputIndex)
-		fmt.Printf("    one-time pub: %s\n", o.OneTimePub)
-		fmt.Printf("    commitment:   %s\n", o.Commitment)
+		fmt.Printf("    Status:        %s\n", statusLabel(o.Status))
+		fmt.Printf("    Amount:        %s\n", FormatAmount(o.Amount))
+		fmt.Printf("    Type:          %s\n", o.Type)
+		fmt.Printf("    Confirmations: %d\n", o.Confirmations)
+		fmt.Printf("    Block:         %d\n", o.BlockHeight)
+		fmt.Printf("    Tx Output:     %s:%d\n", o.TxID, o.OutputIndex)
+		fmt.Printf("    One-Time Pub:  %s\n", o.OneTimePub)
+		fmt.Printf("    Commitment:    %s\n", o.Commitment)
 		if o.Status == "spent" && o.SpentHeight > 0 {
-			fmt.Printf("    spent block:  %d\n", o.SpentHeight)
+			fmt.Printf("    Spent Block:   %d\n", o.SpentHeight)
 		}
 		if m := MemoDisplay(o.MemoHex); m != "" {
-			fmt.Printf("    memo:         %s\n", m)
+			fmt.Printf("    Memo:          %s\n", m)
 		}
 	}
 
 	if detailIndex > 0 {
 		if detailIndex > len(filtered) {
-			fmt.Printf("  Output index %d is out of range (1-%d).\n", detailIndex, len(filtered))
-			return nil
+			return fmt.Errorf("output %d is out of range (1 to %d)", detailIndex, len(filtered))
 		}
 		printDetail(detailIndex, filtered[detailIndex-1])
 		return nil
@@ -1041,21 +1054,24 @@ func (s *AttachSession) cmdOutputs(args []string) error {
 		return nil
 	}
 
+	numW := len(fmt.Sprintf("#%d", len(filtered)))
+	typeW := 0
+	for _, o := range filtered {
+		typeW = max(typeW, len(o.Type))
+	}
+	indent := strings.Repeat(" ", numW+4)
 	for i, o := range filtered {
-		fmt.Printf("  #%d  %-12s %-8s conf: %d\n", i+1, statusLabel(o.Status), o.Type, o.Confirmations)
-		fmt.Printf("      amount: %s\n", FormatAmount(o.Amount))
-		fmt.Printf("      block:  %d  tx: %s:%d\n", o.BlockHeight, o.TxID, o.OutputIndex)
+		fmt.Printf("  %s  %s %s  Confirmations: %d\n", PadRight(fmt.Sprintf("#%d", i+1), numW),
+			PadRight(statusLabel(o.Status), 8), PadRight(o.Type, typeW), o.Confirmations)
+		fmt.Printf("%sAmount: %s\n", indent, FormatAmount(o.Amount))
+		fmt.Printf("%sBlock:  %d  Tx: %s:%d\n", indent, o.BlockHeight, o.TxID, o.OutputIndex)
 	}
 	return nil
 }
 
 func (s *AttachSession) cmdSeed() error {
-	amber := "\033[38;2;255;170;0m"
-	rst := "\033[0m"
-	if s.noColor {
-		amber, rst = "", ""
-	}
-	fmt.Printf("\n%s%s%s\n", amber, "# Seed", rst)
+	_, _, amber, _, _, rst := Palette(s.noColor)
+	fmt.Printf("\n%s\n\n", WarnHead("Seed", s.noColor))
 	fmt.Printf("  %sWARNING: Your recovery seed controls all funds.%s\n", amber, rst)
 	fmt.Printf("  %sAnyone with this seed can steal your coins.%s\n", amber, rst)
 	fmt.Printf("  %sNever share it. Never enter it online.%s\n", amber, rst)
@@ -1063,6 +1079,7 @@ func (s *AttachSession) cmdSeed() error {
 
 	confirm, _ := s.reader.ReadString('\n')
 	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
+		fmt.Println("  Cancelled")
 		return nil
 	}
 
@@ -1109,16 +1126,16 @@ func (s *AttachSession) cmdSeed() error {
 	}
 
 	fmt.Println()
-	fmt.Println("  Write these words down and store them safely.")
+	fmt.Println("  Write these words down and store them safely")
 	fmt.Println("  Recover with: import (option 1: recovery seed)")
 	return nil
 }
 
 func (s *AttachSession) cmdImport() error {
-	fmt.Printf("\n%s\n", SectionHead("Import", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("Import", s.noColor))
 	fmt.Println("  1) 12-word recovery seed")
-	fmt.Println("  2) spend-key/view-key (hex private keys)")
-	fmt.Println("  3) view-only (spend public key + view private key)")
+	fmt.Println("  2) Spend key and view key (hex private keys)")
+	fmt.Println("  3) View-only (spend public key and view private key)")
 	fmt.Print("\n  Choose [1/2/3]: ")
 
 	choiceLine, err := s.reader.ReadString('\n')
@@ -1211,6 +1228,16 @@ func (s *AttachSession) importWallet(fields map[string]string) error {
 	if err != nil {
 		return err
 	}
+	if len(password) < 3 {
+		return fmt.Errorf("password must be at least 3 characters")
+	}
+	confirmPw, err := s.readPassword("  Confirm password: ")
+	if err != nil {
+		return err
+	}
+	if confirmPw != password {
+		return fmt.Errorf("passwords do not match")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1229,31 +1256,29 @@ func (s *AttachSession) importWallet(fields map[string]string) error {
 	}
 	json.Unmarshal(raw, &resp)
 
-	fmt.Printf("\n  name: %s\n", resp.Filename)
-	fmt.Printf("  address: %s\n", resp.Address)
+	fmt.Printf("\n%s\n\n", SectionHead("Wallet Imported", s.noColor))
+	fmt.Printf("  Name:    %s\n", resp.Filename)
+	fmt.Printf("  Address: %s\n", resp.Address)
 	if resp.ViewOnly {
-		fmt.Println("  type: view-only (can watch incoming funds, cannot spend)")
+		fmt.Printf("  Type:    %s\n", viewOnlyPhrase)
 	}
 	return nil
 }
 
 func (s *AttachSession) cmdViewKeys() error {
-	fmt.Printf("\n%s\n", SectionHead("View Keys", s.noColor))
+	fmt.Printf("\n%s\n\n", WarnHead("View Keys", s.noColor))
 
-	amber := "\033[38;2;255;170;0m"
-	rst := "\033[0m"
-	if s.noColor {
-		amber, rst = "", ""
-	}
+	_, _, amber, _, _, rst := Palette(s.noColor)
 	fmt.Printf("  %sWARNING: Your view private key lets anyone see all incoming funds.%s\n", amber, rst)
 	fmt.Printf("  %sNever share it unless you understand the implications.%s\n", amber, rst)
 	fmt.Println()
-	fmt.Println("  This shows your view-only keys AND saves a view-only wallet file")
-	fmt.Println("  that can monitor incoming funds but cannot spend.")
+	fmt.Println("  This shows your view keys and saves a wallet file that is")
+	fmt.Printf("  %s\n", viewOnlyPhrase)
 	fmt.Print("\n  Continue? [y/N]: ")
 
 	confirm, _ := s.reader.ReadString('\n')
 	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
+		fmt.Println("  Cancelled")
 		return nil
 	}
 
@@ -1299,18 +1324,18 @@ func (s *AttachSession) cmdViewKeys() error {
 	}
 	json.Unmarshal(raw, &resp)
 
-	fmt.Printf("\n  spend public key:  %s\n", resp.SpendPub)
-	fmt.Printf("  view private key:  %s\n", resp.ViewPriv)
-	fmt.Printf("  view public key:   %s\n", resp.ViewPub)
+	fmt.Printf("\n  Spend Public Key: %s\n", resp.SpendPub)
+	fmt.Printf("  View Private Key: %s\n", resp.ViewPriv)
+	fmt.Printf("  View Public Key:  %s\n", resp.ViewPub)
 
 	if resp.Created {
-		fmt.Println()
-		fmt.Printf("  View-only wallet saved to %s\n", resp.Path)
+		fmt.Printf("  Saved To:         %s\n", resp.Path)
 		if resp.Address != "" {
-			fmt.Printf("  Address: %s\n", resp.Address)
+			fmt.Printf("  Address:          %s\n", resp.Address)
 		}
+		fmt.Println()
 		fmt.Println("  Copy that file to another machine and 'load' it with the file")
-		fmt.Println("  password you just set to watch incoming funds there.")
+		fmt.Println("  password you just set to watch incoming funds there")
 	}
 	return nil
 }
@@ -1320,8 +1345,11 @@ func (s *AttachSession) cmdProve(args []string) error {
 		return fmt.Errorf("usage: prove <txid>")
 	}
 
-	txid := SanitizeInput(args[0])
-	if len(txid) != 64 {
+	if err := ExtraArgs(args, 1, "prove <txid>"); err != nil {
+		return err
+	}
+	txid := strings.ToLower(SanitizeInput(args[0]))
+	if !isHex64(txid) {
 		return fmt.Errorf("txid must be 64 hex characters")
 	}
 
@@ -1339,20 +1367,29 @@ func (s *AttachSession) cmdProve(args []string) error {
 	}
 	json.Unmarshal(raw, &resp)
 
-	fmt.Printf("\n%s\n", SectionHead("Prove", s.noColor))
-	fmt.Printf("  txid:    %s\n", resp.TxID)
-	fmt.Printf("  tx key:  %s\n", resp.TxKey)
+	fmt.Printf("\n%s\n\n", SectionHead("Prove", s.noColor))
+	fmt.Printf("  TxID:   %s\n", resp.TxID)
+	fmt.Printf("  Tx Key: %s\n", resp.TxKey)
 	fmt.Println()
-	fmt.Println("  Share this tx key with the recipient so they can verify you sent the transaction.")
+	fmt.Println("  Share this tx key with the recipient so they can verify you sent the transaction")
 	return nil
 }
 
 func (s *AttachSession) cmdLock() error {
+	locked, err := s.coreLocked()
+	if err != nil {
+		return s.handleAPIError(err)
+	}
+	if locked {
+		fmt.Printf("\n%s\n\n", SectionHead("Locked", s.noColor))
+		fmt.Println("  Already locked")
+		return nil
+	}
+
 	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
-	_, err := s.client.Post(ctx, "/api/wallet/lock", nil)
-	if err != nil {
+	if _, err := s.client.Post(ctx, "/api/wallet/lock", nil); err != nil {
 		return s.handleAPIError(err)
 	}
 
@@ -1362,13 +1399,19 @@ func (s *AttachSession) cmdLock() error {
 }
 
 func (s *AttachSession) cmdUnlock() error {
-	if !s.locked {
-		fmt.Printf("\n%s\n", SectionHead("Unlocked", s.noColor))
+	// Ask the core rather than trusting s.locked: another client may have
+	// locked or unlocked the wallet since this session last looked.
+	locked, err := s.coreLocked()
+	if err != nil {
+		return s.handleAPIError(err)
+	}
+	if !locked {
+		fmt.Printf("\n%s\n\n", SectionHead("Unlocked", s.noColor))
 		fmt.Println("  Already unlocked")
 		return nil
 	}
 
-	password, err := s.readPassword("Password: ")
+	password, err := s.readPassword("  Password: ")
 	if err != nil {
 		return err
 	}
@@ -1376,8 +1419,7 @@ func (s *AttachSession) cmdUnlock() error {
 	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
-	_, err = s.client.Post(ctx, "/api/wallet/unlock", map[string]string{"password": password})
-	if err != nil {
+	if _, err := s.client.Post(ctx, "/api/wallet/unlock", map[string]string{"password": password}); err != nil {
 		return s.handleAPIError(err)
 	}
 
@@ -1387,7 +1429,7 @@ func (s *AttachSession) cmdUnlock() error {
 }
 
 func (s *AttachSession) cmdAudit() error {
-	fmt.Printf("\n%s\n", SectionHead("Audit", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("Audit", s.noColor))
 	fmt.Println("  Scanning wallet outputs for duplicate key images...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1419,34 +1461,24 @@ func (s *AttachSession) cmdAudit() error {
 	}
 	json.Unmarshal(raw, &resp)
 
-	fmt.Printf("  Total outputs:      %d\n", resp.TotalOutputs)
-	fmt.Printf("  Unique key images:  %d\n", resp.UniqueKeyImages)
+	fmt.Printf("  Total Outputs:     %d\n", resp.TotalOutputs)
+	fmt.Printf("  Unique Key Images: %d\n", resp.UniqueKeyImages)
 	if resp.FailedKeyImages > 0 {
-		fmt.Printf("  Failed key images:  %d\n", resp.FailedKeyImages)
+		fmt.Printf("  Failed Key Images: %d\n", resp.FailedKeyImages)
 	}
 
+	green, _, amber, _, _, rst := Palette(s.noColor)
 	if len(resp.DuplicateGroups) == 0 {
-		green := "\033[38;2;170;255;0m"
-		rst := "\033[0m"
-		if s.noColor {
-			green, rst = "", ""
-		}
-		fmt.Printf("\n  %sNo duplicate key images found. Wallet is clean.%s\n", green, rst)
+		fmt.Printf("\n  %s✓%s No duplicate key images found. Wallet is clean\n", green, rst)
 		return nil
 	}
 
-	amber := "\033[38;2;255;170;0m"
-	rst := "\033[0m"
-	if s.noColor {
-		amber, rst = "", ""
-	}
-
-	fmt.Printf("\n  %sDuplicate key images found: %d group(s)%s\n", amber, len(resp.DuplicateGroups), rst)
-	fmt.Printf("  %sBurned outputs: %d (%s unspendable)%s\n", amber, resp.BurnedOutputs, FormatAmount(resp.TotalBurned), rst)
+	fmt.Printf("\n  %s!%s Duplicate key images found: %s\n", amber, rst, Plural(len(resp.DuplicateGroups), "group"))
+	fmt.Printf("  %s!%s Burned outputs: %d (%s unspendable)\n", amber, rst, resp.BurnedOutputs, FormatAmount(resp.TotalBurned))
 
 	for i, group := range resp.DuplicateGroups {
-		fmt.Printf("\n  Group %d — key image: %s\n", i+1, group.KeyImage)
-		fmt.Printf("    burned: %s across %d duplicate(s)\n", FormatAmount(group.BurnedAmount), group.UnspendableCount)
+		fmt.Printf("\n  Group %d (key image %s)\n", i+1, group.KeyImage)
+		fmt.Printf("    Burned: %s across %s\n", FormatAmount(group.BurnedAmount), Plural(group.UnspendableCount, "duplicate"))
 		for _, out := range group.Outputs {
 			spentTag := ""
 			if out.Spent {
@@ -1463,7 +1495,7 @@ func (s *AttachSession) cmdSync() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	fmt.Printf("\n%s\n", SectionHead("Sync", s.noColor))
+	fmt.Printf("\n%s\n\n", SectionHead("Sync", s.noColor))
 	fmt.Println("  Scanning for wallet outputs...")
 
 	raw, err := s.client.Post(ctx, "/api/wallet/sync", nil)
@@ -1482,9 +1514,9 @@ func (s *AttachSession) cmdSync() error {
 	json.Unmarshal(raw, &resp)
 
 	if resp.Status == "already synced" {
-		fmt.Printf("  Wallet is up to date at height %d.\n", resp.SyncedHeight)
+		fmt.Printf("  Wallet is up to date at height %d\n", resp.SyncedHeight)
 	} else {
-		fmt.Printf("  Scanned %d blocks to height %d\n", resp.BlocksScanned, resp.SyncedHeight)
+		fmt.Printf("  Scanned %s to height %d\n", Plural(resp.BlocksScanned, "block"), resp.SyncedHeight)
 		fmt.Printf("  Outputs found: %d\n", resp.OutputsFound)
 		if resp.OutputsSpent > 0 {
 			fmt.Printf("  Outputs spent: %d\n", resp.OutputsSpent)

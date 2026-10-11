@@ -88,44 +88,56 @@ func normalizeHelpTopic(topic string) string {
 	}
 }
 
-func helpCommandDetails(noColor bool) map[string]helpEntry {
-	blocknetIDURL := "https://blocknet.id"
-	if !noColor {
-		blocknetIDURL = "\033[4m\033[38;2;170;255;0mhttps://blocknet.id\033[0m"
-	}
-
+func helpCommandDetails() map[string]helpEntry {
 	return map[string]helpEntry{
 		"load": {
-			usage:         []string{"load"},
-			description:   []string{"Loads a wallet file into the running core."},
-			useWhen:       []string{"you just started the core and need to open your wallet"},
-			exampleInput:  []string{"> load", "  1) /home/username/.config/blocknet/mainnet/main.wallet.dat", "  2) Enter a custom path", "  3) Create a new wallet", "  Choose: 1", "  Password: ********"},
-			exampleOutput: []string{"  Wallet loaded", "  Address: 9PNo..."},
-			notes:         []string{"the chosen wallet path is saved to config so future starts auto-load it"},
+			usage:       []string{"load"},
+			description: []string{"Loads a wallet file into the running core, or creates a new one."},
+			useWhen:     []string{"you just started the core and need to open your wallet"},
+			exampleInput: []string{
+				"> load",
+				"  Wallet files in /home/username/.config/bnt/wallets:",
+				"  1) main.wallet.dat",
+				"  2) Enter a custom path",
+				"  3) Create a new wallet",
+				"",
+				"  Choose: 1",
+				"  Password: ********",
+			},
+			exampleOutput: []string{"# Wallet Loaded", "", "  Address: 9PNo..."},
+			notes: []string{
+				"the core only loads wallet files from its own wallet folder",
+				"a new wallet asks for its password twice",
+				"the chosen wallet is saved to config as wallet_file, but the core does not open it at startup: run 'load' after each start",
+			},
 		},
 		"unload": {
 			usage:         []string{"unload"},
-			description:   []string{"Unloads the currently loaded wallet from the core."},
+			description:   []string{"Unloads the current wallet from the core."},
 			useWhen:       []string{"you want to switch wallets without restarting the core"},
 			exampleInput:  []string{"> unload"},
-			exampleOutput: []string{"# Unloaded", "  Wallet unloaded. Use 'load' to open another."},
+			exampleOutput: []string{"# Unloaded", "", "  Wallet unloaded. Use 'load' to open another"},
 			notes:         []string{"works even if the wallet is locked"},
 		},
 		"help": {
 			usage:         []string{"help", "help <command>"},
 			aliases:       []string{"?"},
-			description:   []string{"Shows all commands or detailed help for one command."},
+			description:   []string{"Shows all commands, or detailed help for one command."},
 			useWhen:       []string{"you are not sure what command to run next"},
 			exampleInput:  []string{"> help send"},
-			exampleOutput: []string{"# Help — send", "  What it does:", "    Sends BNT to another wallet, optionally with a note."},
+			exampleOutput: []string{"# Help: send", "", "  Usage:", "    send <addr> <amt> [memo|hex:<memo_hex>]"},
 		},
 		"balance": {
 			usage:         []string{"balance"},
 			aliases:       []string{"bal", "b"},
-			description:   []string{"Shows your spendable coins, pending coins, and total."},
+			description:   []string{"Shows your spendable, pending and total balance."},
 			useWhen:       []string{"you want to know how much you can spend right now"},
 			exampleInput:  []string{"> bal"},
-			exampleOutput: []string{"# Balance", "  spendable:  12.5 BNT", "  confirming: 1 BNT", "  total:      13.5 BNT"},
+			exampleOutput: []string{"# Balance", "", "  Spendable:   12.5 BNT", "  Pending:     1 BNT", "  Total:       13.5 BNT", "  Outputs:     4 unspent, 2 spent"},
+			notes: []string{
+				"pending coins are in a block but not yet spendable",
+				"unconfirmed coins are still in the mempool (shown only when there are some)",
+			},
 		},
 		"address": {
 			usage:         []string{"address"},
@@ -133,166 +145,218 @@ func helpCommandDetails(noColor bool) map[string]helpEntry {
 			description:   []string{"Shows your receive address to share with someone paying you."},
 			useWhen:       []string{"someone asks where to send you coins"},
 			exampleInput:  []string{"> addr"},
-			exampleOutput: []string{"# Address", "  9PNo..."},
-			notes:         []string{"Get a short name like @name or $name at " + blocknetIDURL},
+			exampleOutput: []string{"# Address", "", "  9PNo...", "", "  Get a short name like @name or $name at https://blocknet.id"},
 		},
 		"send": {
-			usage:       []string{"send <addr> <amt> [memo|hex:<memo_hex>]"},
-			description: []string{"Sends BNT to another wallet, optionally with a note."},
+			usage:       []string{"send <addr> <amt> [memo|hex:<memo_hex>]", "send <addr> all [memo|hex:<memo_hex>]"},
+			description: []string{"Sends BNT to another wallet, optionally with a memo."},
 			useWhen:     []string{"you need to pay someone now"},
 			exampleInput: []string{
 				"> send @rock 100 \"hello\"",
 				"> send $rock 100",
-				"> send bnt1qxy... 1.25",
+				"> send 9PNo... 1.25",
+				"> send 9PNo... all",
 			},
-			exampleOutput: []string{"Sent: 9f0b...", "Explorer: https://explorer.blocknetcrypto.com/tx/9f0b..."},
+			exampleOutput: []string{
+				"# Send",
+				"",
+				"  Resolved @rock -> 9PNo... ✓ verified",
+				"",
+				"  Send 100 BNT to @rock?",
+				"  Fee:      0.0001 BNT",
+				"  Address:  9PNo...",
+				"  Memo:     hello",
+				"  Confirm [y/N]: y",
+				"  Sent:     9f0b...",
+				"  Explorer: https://explorer.blocknetcrypto.com/tx/9f0b...",
+			},
 			notes: []string{
-				"you can send whole numbers or fractions (example: 1 or 1.25 BNT)",
+				"amounts can be whole numbers or fractions, up to 8 decimal places (example: 1 or 1.25)",
 				"memos with spaces are supported",
 				"short names can be used as @name or $name",
-				"'send all' sends your entire spendable balance",
+				"'send <addr> all' sends your whole spendable balance minus the fee",
+				"a bntpay.com or blocknet: payment link can be pasted as a command",
 			},
 		},
 		"sign": {
 			usage:         []string{"sign"},
 			description:   []string{"Signs a message so you can prove wallet ownership."},
 			useWhen:       []string{"a service asks you to prove this wallet is yours"},
-			exampleInput:  []string{"> sign", "  (then type: prove wallet ownership)"},
-			exampleOutput: []string{"# Sign", "  8f2d... (signature hex)"},
-			notes:         []string{"view-only wallets cannot sign", "message should be short (up to about 1,000 characters)"},
+			exampleInput:  []string{"> sign", "> prove wallet ownership"},
+			exampleOutput: []string{"  8f2d... (signature hex)"},
+			notes:         []string{"view-only wallets cannot sign", "the message can be up to 1024 bytes"},
 		},
 		"verify": {
 			usage:         []string{"verify"},
-			description:   []string{"Checks if a signature really came from an address."},
+			description:   []string{"Checks whether a signature really came from an address."},
 			useWhen:       []string{"you received a signed message and need to trust it"},
 			exampleInput:  []string{"> verify", "  (then enter address, message, signature)"},
 			exampleOutput: []string{"# Signature is VALID"},
-			notes:         []string{"signature must be pasted exactly as produced by sign"},
+			notes:         []string{"paste the signature exactly as sign printed it"},
 		},
 		"history": {
-			usage:         []string{"history"},
-			aliases:       []string{"hist", "h"},
-			description:   []string{"Shows incoming transactions, oldest to newest."},
-			useWhen:       []string{"you need to review recent wallet activity"},
-			exampleInput:  []string{"> hist"},
-			exampleOutput: []string{"# History", "  block 14200 IN  72.325 BNT  coinbase  c7f2e1d3..."},
+			usage:       []string{"history"},
+			aliases:     []string{"hist", "h"},
+			description: []string{"Shows incoming and outgoing transactions, oldest to newest."},
+			useWhen:     []string{"you need to review recent wallet activity"},
+			exampleInput: []string{
+				"> hist",
+			},
+			exampleOutput: []string{
+				"# History",
+				"",
+				"  block 14200  IN   72.325 BNT  c7f2e1d3...  coinbase",
+				"  block 14251  OUT      10 BNT  9f0b4a11...",
+				"  mempool      OUT     2.5 BNT  51aa09c2...",
+			},
+			notes: []string{"sends still in the mempool are listed last"},
 		},
 		"outputs": {
-			usage:       []string{"outputs [spent|unspent|pending] [index]", "outputs tx <txid>", "outputs tx <txid>:<index>"},
+			usage:       []string{"outputs [spent|unspent|pending] [index]", "outputs tx <txid>[:<index>]"},
 			aliases:     []string{"outs", "out"},
-			description: []string{"Shows outputs your wallet owns, with status and drill-down details."},
-			useWhen:     []string{"you want to inspect spendable/spent/pending outputs"},
+			description: []string{"Shows the outputs your wallet owns, with status and details."},
+			useWhen:     []string{"you want to inspect spendable, spent or pending outputs"},
 			exampleInput: []string{
 				"> outputs",
 				"> outputs unspent",
 				"> outputs pending 2",
-				"> outputs tx a1b2c3...d4e5",
+				"> outputs tx a1b2c3...d4e5:0",
+			},
+			exampleOutput: []string{
+				"# Outputs",
+				"",
+				"  #1  unspent  coinbase  Confirmations: 120",
+				"      Amount: 72.325 BNT",
+				"      Block:  14200  Tx: c7f2e1d3...:0",
 			},
 			notes: []string{
-				"use filters: spent, unspent, pending",
-				"use an index to see one output's details (example: outputs 3)",
-				"`outputs tx <txid>` shows all owned outputs in that tx",
+				"filters: spent, unspent, pending",
+				"an index shows one output's details (example: outputs 3)",
+				"'outputs tx <txid>' shows every owned output in that transaction",
 			},
 		},
 		"seed": {
 			usage:         []string{"seed"},
-			description:   []string{"Shows your 12-word recovery seed after warning prompts."},
+			description:   []string{"Shows your 12-word recovery seed after a warning."},
 			useWhen:       []string{"you are backing up wallet recovery words"},
 			exampleInput:  []string{"> seed"},
-			exampleOutput: []string{"# Seed", "  WARNING: Your recovery seed controls all funds.", "  Show recovery seed? [y/N]:"},
+			exampleOutput: []string{"# Seed", "", "  WARNING: Your recovery seed controls all funds.", "  Anyone with this seed can steal your coins.", "  Never share it. Never enter it online.", "", "  Show recovery seed? [y/N]:"},
 			notes:         []string{"anyone with this seed can spend your funds"},
 		},
 		"import": {
 			usage:         []string{"import"},
-			description:   []string{"Creates a new wallet file from a 12-word recovery seed, from spend/view private keys, or as view-only from a spend public key and view private key."},
+			description:   []string{"Creates a new wallet file from a 12-word recovery seed, from spend and view private keys, or as view-only from a spend public key and view private key."},
 			useWhen:       []string{"you need to load an existing wallet into this node"},
 			exampleInput:  []string{"> import", "  Choose [1/2/3]: 1"},
-			exampleOutput: []string{"# Import", "  1) 12-word recovery seed", "  2) spend-key/view-key", "  3) view-only"},
-			notes:         []string{"private keys are read without echo", "a view-only wallet can watch incoming funds but cannot spend"},
+			exampleOutput: []string{"# Import", "", "  1) 12-word recovery seed", "  2) Spend key and view key (hex private keys)", "  3) View-only (spend public key and view private key)"},
+			notes:         []string{"private keys are read without echo", "a view-only wallet watches incoming funds and cannot spend"},
 		},
 		"viewkeys": {
-			usage:         []string{"viewkeys"},
-			description:   []string{"Shows your view-only keys and saves a loadable view-only wallet file."},
-			useWhen:       []string{"you want watch-only access on another machine"},
-			exampleInput:  []string{"> viewkeys", "  Continue? [y/N]: y", "  Wallet password: ", "  New password for the view-only wallet file: "},
-			exampleOutput: []string{"# View Keys", "  spend public key:  abc123...", "  view private key:  def456...", "  view public key:   789abc...", "  View-only wallet saved to main.view.wallet.dat"},
-			notes:         []string{"the view-only wallet file uses its own password, not your main wallet password", "the view private key lets anyone see all incoming funds"},
+			usage:        []string{"viewkeys"},
+			description:  []string{"Shows your view keys and saves a view-only wallet file."},
+			useWhen:      []string{"you want watch-only access on another machine"},
+			exampleInput: []string{"> viewkeys", "  Continue? [y/N]: y", "  Wallet password: ", "  New password for the view-only wallet file: ", "  Confirm password: "},
+			exampleOutput: []string{
+				"  Spend Public Key: abc123...",
+				"  View Private Key: def456...",
+				"  View Public Key:  789abc...",
+				"  Saved To:         /home/username/.config/bnt/wallets/main.view.wallet.dat",
+			},
+			notes: []string{"the view-only wallet file uses its own password, not your main wallet password", "the view private key lets anyone see all incoming funds"},
 		},
 		"prove": {
 			usage:         []string{"prove <txid>"},
-			description:   []string{"Generates a proof that you sent a transaction."},
+			description:   []string{"Shows a key that proves you sent a transaction."},
 			useWhen:       []string{"someone needs proof of payment"},
 			exampleInput:  []string{"> prove a1b2c3d4e5f6..."},
-			exampleOutput: []string{"# Prove", "  txid:    a1b2c3d4e5f6...", "  tx key:  deadbeef0123..."},
+			exampleOutput: []string{"# Prove", "", "  TxID:   a1b2c3d4e5f6...", "  Tx Key: deadbeef0123..."},
 			notes:         []string{"works on both full and view-only wallets", "share the tx key with the recipient to prove payment"},
 		},
 		"audit": {
 			usage:         []string{"audit"},
-			description:   []string{"Scans wallet outputs for duplicate key images (burned funds detection)."},
+			description:   []string{"Scans wallet outputs for duplicate key images (burned funds)."},
 			useWhen:       []string{"you suspect a key derivation issue burned some outputs"},
 			exampleInput:  []string{"> audit"},
-			exampleOutput: []string{"# Audit", "  Total outputs:      42", "  Unique key images:  42", "  No duplicate key images found. Wallet is clean."},
-			notes:         []string{"a clean audit means no burned funds", "duplicates indicate permanently unspendable outputs from a historical self-send bug"},
+			exampleOutput: []string{"# Audit", "", "  Scanning wallet outputs for duplicate key images...", "  Total Outputs:     42", "  Unique Key Images: 42", "", "  ✓ No duplicate key images found. Wallet is clean"},
+			notes:         []string{"a clean audit means no burned funds", "duplicates are permanently unspendable outputs from a historical self-send bug"},
 		},
 		"lock": {
 			usage:         []string{"lock"},
-			description:   []string{"Locks wallet actions that require your password."},
+			description:   []string{"Locks the wallet so wallet commands need the password again."},
 			useWhen:       []string{"you are stepping away from your terminal"},
 			exampleInput:  []string{"> lock"},
 			exampleOutput: []string{"# Locked"},
+			notes:         []string{"node commands such as status, peers and explore still work while locked"},
 		},
 		"unlock": {
 			usage:         []string{"unlock"},
-			description:   []string{"Unlocks wallet actions after password confirmation."},
+			description:   []string{"Unlocks the wallet after checking your password."},
 			useWhen:       []string{"you get a 'wallet is locked' error"},
-			exampleInput:  []string{"> unlock"},
-			exampleOutput: []string{"Password: ", "# Unlocked"},
+			exampleInput:  []string{"> unlock", "  Password: ********"},
+			exampleOutput: []string{"# Unlocked"},
 		},
 		"sync": {
 			usage:         []string{"sync"},
 			aliases:       []string{"scan"},
-			description:   []string{"Triggers a blockchain rescan for wallet outputs."},
-			useWhen:       []string{"wallet looks behind chain height or missing transactions"},
+			description:   []string{"Rescans the blockchain for wallet outputs."},
+			useWhen:       []string{"the wallet looks behind the chain or is missing transactions"},
 			exampleInput:  []string{"> sync"},
-			exampleOutput: []string{"# Sync", "  Sync triggered"},
+			exampleOutput: []string{"# Sync", "", "  Scanning for wallet outputs...", "  Scanned 120 blocks to height 14320", "  Outputs found: 2"},
 		},
 		"status": {
-			usage:         []string{"status"},
-			description:   []string{"Shows node health and wallet summary in one screen."},
-			useWhen:       []string{"you need a quick 'is everything healthy?' check"},
-			exampleInput:  []string{"> status"},
-			exampleOutput: []string{"# Node", "  Peers: 8", "  Height: 2450", "# Wallet", "  Balance: 13.5 BNT"},
+			usage:       []string{"status"},
+			description: []string{"Shows node health and a wallet summary on one screen."},
+			useWhen:     []string{"you need a quick 'is everything healthy?' check"},
+			exampleInput: []string{
+				"> status",
+			},
+			exampleOutput: []string{
+				"# Node",
+				"",
+				"  Peer ID:     12D3KooW...",
+				"  Peers:       8",
+				"  Height:      2450",
+				"  Best Hash:   0000c3a5...",
+				"  Syncing:     no",
+				"",
+				"# Wallet",
+				"",
+				"  Type:        full",
+				"  Balance:     13.5 BNT",
+			},
+			notes: []string{"the wallet section is left out when no wallet is loaded or it is locked"},
 		},
 		"peers": {
 			usage:         []string{"peers"},
-			description:   []string{"Lists currently connected peers."},
+			description:   []string{"Lists connected peers and their addresses."},
 			useWhen:       []string{"you need to confirm network connectivity"},
 			exampleInput:  []string{"> peers"},
-			exampleOutput: []string{"# Peers (8)", "  12D3KooW..."},
+			exampleOutput: []string{"# Peers (8)", "", "  12D3KooW...", "    /ip4/203.0.113.5/tcp/28080"},
 		},
 		"banned": {
 			usage:         []string{"banned"},
 			description:   []string{"Shows peers that were banned and why."},
 			useWhen:       []string{"you suspect peer filtering or connectivity issues"},
 			exampleInput:  []string{"> banned"},
-			exampleOutput: []string{"# Banned (1)", "  12D3KooW...", "    reason: repeated bad blocks"},
+			exampleOutput: []string{"# Banned (1)", "", "  12D3KooW...", "    Reason: repeated bad blocks", "    Count:  3x, expires in 1h 5m"},
 		},
 		"export-peer": {
 			usage:         []string{"export-peer"},
-			description:   []string{"Writes this node's own addresses to peer.txt, including its public IP address."},
+			description:   []string{"Writes this node's own addresses, including its public IP address, to peer.txt in the config folder."},
 			useWhen:       []string{"you want other nodes to connect to this node"},
 			exampleInput:  []string{"> export-peer"},
-			exampleOutput: []string{"# Export", "  Peer addresses written to peer.txt"},
+			exampleOutput: []string{"# Export", "", "  Peer addresses written to /home/username/.config/bnt/peer.txt"},
 		},
 		"mining": {
-			usage:       []string{"mining", "mining start", "mining stop", "mining threads <N>"},
-			description: []string{"Controls local mining and how many CPU threads mining uses."},
-			useWhen:     []string{"you want to mine, stop mining, or tune CPU/RAM use"},
+			usage:       []string{"mining", "mining start", "mining stop", "mining threads [N]"},
+			description: []string{"Shows or controls local mining and how many CPU threads it uses."},
+			useWhen:     []string{"you want to mine, stop mining, or tune CPU and RAM use"},
 			exampleInput: []string{
 				"> mining start",
 				"> mining threads 4",
 				"> mining stop",
 			},
+			exampleOutput: []string{"# Mining", "", "  Status:       active", "  Running For:  12m", "  Threads:      4", "  Hashrate:     310.52 H/s", "  Total Hashes: 223574"},
 			notes: []string{
 				"roughly 2GB RAM per thread",
 				"thread aliases: threads, thread, t",
@@ -301,189 +365,203 @@ func helpCommandDetails(noColor bool) map[string]helpEntry {
 		"explore": {
 			usage:       []string{"explore <height>", "explore <hash>", "explore mempool"},
 			aliases:     []string{"exp"},
-			description: []string{"Look up a block by height, a block or transaction by hash, or view mempool stats."},
+			description: []string{"Looks up a block by height, a block or transaction by hash, or shows mempool stats."},
 			useWhen:     []string{"you want to inspect chain data without leaving the terminal"},
 			exampleInput: []string{
 				"> explore 14207",
 				"> explore 0000c3a5b7e2d1f4...50321",
 				"> explore mempool",
 			},
+			exampleOutput: []string{"# Block 14207", "", "  Hash:          0000c3a5...", "  Previous:      0000a1f2...", "  Confirmations: 12"},
 			notes: []string{
 				"a 64-char hex hash is tried as a block hash first, then as a tx hash",
-				"numeric input is always treated as a block height",
+				"a number is always read as a block height",
 			},
 		},
 		"mempool": {
 			usage:         []string{"mempool"},
 			description:   []string{"Shows mempool statistics and pending transactions."},
-			useWhen:       []string{"you want to see what's waiting to be mined"},
+			useWhen:       []string{"you want to see what is waiting to be mined"},
 			exampleInput:  []string{"> mempool"},
-			exampleOutput: []string{"# Mempool", "  Transactions: 5", "  Size:         8.2 KB", "  Fee (min):    0.0001 BNT"},
+			exampleOutput: []string{"# Mempool", "", "  Transactions: 5", "  Size:         8.2 KB", "  Fee (min):    0.0001 BNT"},
 			notes:         []string{"shortcut for 'explore mempool'"},
 		},
 		"certify": {
 			usage:         []string{"certify"},
-			description:   []string{"Verifies chain integrity (difficulty, timestamps, block linkage)."},
+			description:   []string{"Checks chain integrity (difficulty, timestamps, block linkage)."},
 			useWhen:       []string{"you suspect corruption or strange chain behavior"},
 			exampleInput:  []string{"> certify"},
-			exampleOutput: []string{"# Certify", "  Chain height: 125000", "  Chain is clean. No violations found."},
+			exampleOutput: []string{"# Certify", "", "  Verifying chain integrity (difficulty, timestamps, linkage)...", "  Chain Height: 125000", "  ✓ Chain is clean. No violations found"},
 			notes:         []string{"arithmetic-only check, no PoW re-hashing", "may take a moment on long chains"},
 		},
 		"save-checkpoints": {
 			usage:         []string{"save-checkpoints"},
-			description:   []string{"Write checkpoints for known blocks to disk (every 100 blocks)."},
+			description:   []string{"Writes checkpoints for known blocks to disk (every 100 blocks)."},
 			useWhen:       []string{"you want to publish checkpoints so nodes can fast-sync"},
 			exampleInput:  []string{"> save-checkpoints"},
-			exampleOutput: []string{"# Save Checkpoints", "  Wrote 3 checkpoint(s) up to height 14200"},
+			exampleOutput: []string{"# Save Checkpoints", "", "  Wrote 3 checkpoints up to height 14200"},
 			notes:         []string{"checkpoints let nodes skip proof-of-work re-verification below the checkpoint height"},
 		},
 		"load-checkpoints": {
 			usage:         []string{"load-checkpoints"},
-			description:   []string{"Download/reload checkpoints to enable faster sync."},
+			description:   []string{"Downloads or reloads checkpoints to enable faster sync."},
 			useWhen:       []string{"you are syncing a fresh node and want to skip PoW re-verification"},
 			exampleInput:  []string{"> load-checkpoints"},
-			exampleOutput: []string{"# Load Checkpoints", "  Loaded 142 checkpoint(s) (max height: 14200)"},
+			exampleOutput: []string{"# Load Checkpoints", "", "  Loaded 142 checkpoints (max height: 14200)"},
 			notes:         []string{"only speeds up sync below the max checkpoint height"},
 		},
 		"purge": {
 			usage:         []string{"purge"},
 			description:   []string{"Deletes local chain data but keeps your wallet and funds."},
-			useWhen:       []string{"chain is stuck/corrupted and regular sync cannot recover"},
-			exampleInput:  []string{"> purge", "  Confirm purge? [y/N]: y"},
-			exampleOutput: []string{"# Purge", "  Blockchain data purged."},
-			notes:         []string{"your wallet file and money are not deleted", "requires password confirmation"},
+			useWhen:       []string{"the chain is stuck or corrupted and sync cannot recover"},
+			exampleInput:  []string{"> purge", "  Confirm purge? [y/N]: y", "  Password: ********"},
+			exampleOutput: []string{"  Blockchain data purged. The core will shut down"},
+			notes:         []string{"your wallet file and money are not deleted", "asks for your wallet password", "attach exits afterwards"},
 		},
 		"version": {
 			usage:         []string{"version"},
-			description:   []string{"Prints the Blocknet version."},
+			description:   []string{"Shows the Blocknet version."},
 			useWhen:       []string{"you are reporting bugs or checking for updates"},
 			exampleInput:  []string{"> version"},
-			exampleOutput: []string{"# Version 1.0.x"},
+			exampleOutput: []string{"# blocknet v1.1.0"},
 		},
 		"about": {
 			usage:         []string{"about"},
-			description:   []string{"Shows project info and upstream links."},
-			useWhen:       []string{"you want project metadata"},
+			description:   []string{"Shows project info, links and third-party libraries."},
+			useWhen:       []string{"you want project details"},
 			exampleInput:  []string{"> about"},
-			exampleOutput: []string{"# About", "  Blocknet vX.Y.Z"},
+			exampleOutput: []string{"# About", "", "  Blocknet v1.1.0"},
 		},
 		"license": {
 			usage:         []string{"license"},
-			description:   []string{"Prints the full software license text."},
-			useWhen:       []string{"you need legal/license details"},
+			description:   []string{"Shows the full software license text."},
+			useWhen:       []string{"you need license details"},
 			exampleInput:  []string{"> license"},
-			exampleOutput: []string{"# License", "  BSD 3-Clause License ..."},
+			exampleOutput: []string{"# License", "", "  BSD 3-Clause License"},
 		},
 		"quit": {
 			usage:        []string{"quit"},
 			aliases:      []string{"exit", "q"},
-			description:  []string{"Exits the attach session."},
+			description:  []string{"Exits attach. The core keeps running."},
 			useWhen:      []string{"you are done"},
 			exampleInput: []string{"> q"},
+			notes:        []string{"to stop the core, run 'blocknet stop' after quitting"},
 		},
 	}
 }
 
-func (s *AttachSession) cmdHelp(args []string) {
+// helpRow is one line of the command overview.
+type helpRow struct{ cmd, desc string }
+
+var helpWalletRows = []helpRow{
+	{"load", "Loads a wallet file into the core, or creates one"},
+	{"unload", "Unloads the current wallet"},
+	{"balance", "Shows the wallet balance"},
+	{"address", "Shows the receive address"},
+	{"send <addr> <amt> [memo]", "Sends BNT, with an optional memo"},
+	{"send <addr> all [memo]", "Sends the whole spendable balance"},
+	{"sign", "Signs a message with your spend key"},
+	{"verify", "Checks a signed message against an address"},
+	{"history", "Shows incoming and outgoing transactions"},
+	{"outputs", "Shows wallet outputs (spent, unspent, pending)"},
+	{"seed", "Shows the recovery seed (careful)"},
+	{"import", "Creates a wallet from a seed, keys or view keys"},
+	{"viewkeys", "Shows view keys and saves a view-only wallet"},
+	{"lock", "Locks the wallet"},
+	{"unlock", "Unlocks the wallet"},
+	{"prove <txid>", "Shows a payment proof for a transaction"},
+	{"audit", "Checks the wallet for burned outputs"},
+	{"sync", "Rescans blocks for wallet outputs"},
+}
+
+var helpDaemonRows = []helpRow{
+	{"status", "Shows node and wallet status"},
+	{"explore <id>", "Looks up a block, a transaction or the mempool"},
+	{"mempool", "Shows mempool statistics"},
+	{"peers", "Lists connected peers"},
+	{"banned", "Lists banned peers"},
+	{"export-peer", "Writes this node's addresses to peer.txt"},
+	{"mining", "Shows or controls mining (start, stop, threads)"},
+	{"certify", "Checks chain integrity (difficulty, timestamps)"},
+	{"save-checkpoints", "Writes checkpoints for known blocks to disk"},
+	{"load-checkpoints", "Downloads or reloads checkpoints for faster sync"},
+	{"purge", "Deletes all blockchain data (cannot be undone)"},
+	{"version", "Shows the version"},
+	{"about", "Shows information about this software"},
+	{"license", "Shows the license"},
+	{"quit", "Exits attach (the core keeps running)"},
+}
+
+var helpAliasRows = []helpRow{
+	{"bal, b", "balance"},
+	{"addr, a", "address"},
+	{"hist, h", "history"},
+	{"outs, out", "outputs"},
+	{"scan", "sync"},
+	{"exp", "explore"},
+	{"exit, q", "quit"},
+	{"?", "help"},
+}
+
+func (s *AttachSession) cmdHelp(args []string) error {
+	green, _, _, _, _, reset := Palette(s.noColor)
+
 	if len(args) > 0 {
+		if err := ExtraArgs(args, 1, "help [command]"); err != nil {
+			return err
+		}
 		topic := normalizeHelpTopic(args[0])
-		if topic == "" {
-			fmt.Printf("\n%s\n", ErrorHead("Help", s.noColor))
-			fmt.Printf("  Unknown command: %s\n", args[0])
-			fmt.Println("  Use 'help' to list available commands.")
-			return
+		entry, ok := helpCommandDetails()[topic]
+		if topic == "" || !ok {
+			return fmt.Errorf("unknown command: %s (type 'help' for commands)", args[0])
 		}
 
-		entry, ok := helpCommandDetails(s.noColor)[topic]
-		if !ok {
-			fmt.Printf("\n%s\n", ErrorHead("Help", s.noColor))
-			fmt.Printf("  No detailed help available for: %s\n", topic)
-			return
+		section := func(label string, lines []string, bullet bool) {
+			if len(lines) == 0 {
+				return
+			}
+			fmt.Printf("\n  %s%s%s:\n", green, label, reset)
+			for _, line := range lines {
+				switch {
+				case line == "":
+					fmt.Println()
+				case bullet:
+					fmt.Printf("    %s-%s %s\n", green, reset, line)
+				default:
+					fmt.Printf("    %s\n", line)
+				}
+			}
 		}
 
-		labelColor := "\033[38;2;170;255;0m"
-		resetColor := "\033[0m"
-		if s.noColor {
-			labelColor, resetColor = "", ""
-		}
-
-		fmt.Printf("\n%s\n", SectionHead("Help — "+topic, s.noColor))
+		fmt.Printf("\n%s\n", SectionHead("Help: "+topic, s.noColor))
+		section("Usage", entry.usage, false)
 		if len(entry.aliases) > 0 {
-			fmt.Printf("  %sShort name%s:\n", labelColor, resetColor)
-			fmt.Printf("    %s\n\n", strings.Join(entry.aliases, ", "))
+			section("Short names", []string{strings.Join(entry.aliases, ", ")}, false)
 		}
-
-		fmt.Printf("  %sWhat it does%s:\n", labelColor, resetColor)
-		for _, line := range entry.description {
-			fmt.Printf("    %s\n", line)
-		}
-
-		if len(entry.useWhen) > 0 {
-			fmt.Printf("\n  %sUse this when%s:\n", labelColor, resetColor)
-			for _, line := range entry.useWhen {
-				fmt.Printf("    %s\n", line)
-			}
-		}
-		if len(entry.exampleInput) > 0 {
-			fmt.Printf("\n  %sExample input%s:\n", labelColor, resetColor)
-			for _, line := range entry.exampleInput {
-				fmt.Printf("    %s\n", line)
-			}
-		}
-		if len(entry.exampleOutput) > 0 {
-			fmt.Printf("\n  %sExample output%s:\n", labelColor, resetColor)
-			for _, line := range entry.exampleOutput {
-				fmt.Printf("    %s\n", line)
-			}
-		}
-		if len(entry.notes) > 0 {
-			fmt.Printf("\n  %sNotes%s:\n", labelColor, resetColor)
-			for _, line := range entry.notes {
-				fmt.Printf("    %s-%s %s\n", labelColor, resetColor, line)
-			}
-		}
-		return
+		section("What it does", entry.description, false)
+		section("Use this when", entry.useWhen, false)
+		section("Example input", entry.exampleInput, false)
+		section("Example output", entry.exampleOutput, false)
+		section("Notes", entry.notes, true)
+		return nil
 	}
 
-	fmt.Printf(`
-%s
-  load              Load a wallet file into the core
-  unload            Unload the current wallet
-  balance           Show wallet balance
-  address           Show receiving address
-  send <addr> <amt> [memo|hex:<memo_hex>] Send funds with optional memo
-  sign              Sign a message with your spend key
-  verify            Verify a signed message against an address
-  history           Show transaction history
-  outputs           Show wallet outputs (spent and unspent)
-  seed              Show wallet recovery seed (careful!)
-  import            Create a wallet from a seed, keys, or view-only keys
-  viewkeys          Export view-only keys
-  lock              Lock wallet
-  unlock            Unlock wallet
-  prove <txid>      Generate payment proof
-  audit             Check wallet for burned outputs
-  sync              Rescan blocks for outputs
-
-%s
-  status            Show node and wallet status
-  explore <id>      Look up a block, transaction, or mempool
-  mempool           Show mempool statistics
-  peers             List connected peers
-  banned            List banned peers
-  export-peer       Write this node's own addresses to peer.txt
-  mining            Manage mining
-  certify           Check chain integrity (difficulty + timestamps)
-  save-checkpoints  Write checkpoints for known blocks to disk
-  load-checkpoints  Download/reload checkpoints for faster sync
-  purge             Delete all blockchain data (cannot be undone)
-  version           Print version
-  about             About this software
-  license           Show license
-  quit              Exit (saves automatically)
-  help <command>    Show detailed help for a command
-
-  Need more info on any command? Type: help <command>
-  Example: help send
-`, SectionHead("Wallet", s.noColor), SectionHead("Daemon", s.noColor))
+	width := 0
+	for _, rows := range [][]helpRow{helpWalletRows, helpDaemonRows, helpAliasRows} {
+		for _, r := range rows {
+			width = max(width, len(r.cmd))
+		}
+	}
+	printRows := func(head string, rows []helpRow) {
+		fmt.Printf("\n%s\n\n", SectionHead(head, s.noColor))
+		for _, r := range rows {
+			fmt.Printf("  %s  %s\n", PadRight(r.cmd, width), r.desc)
+		}
+	}
+	printRows("Wallet", helpWalletRows)
+	printRows("Daemon", helpDaemonRows)
+	printRows("Short Names", helpAliasRows)
+	fmt.Println()
+	fmt.Println("  Type 'help <command>' for details. Example: help send")
+	return nil
 }

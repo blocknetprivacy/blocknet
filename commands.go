@@ -3,15 +3,139 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
 
+// defaultCoreConfig is the stock config for one network, the same one a fresh
+// config file gets.
+func defaultCoreConfig(net Network) *CoreConfig {
+	if cc := DefaultConfig().Cores[net]; cc != nil {
+		return cc
+	}
+	return &CoreConfig{Version: "latest"}
+}
+
+// ensureCoreConfig returns the config for net, adding the default one when
+// the config file has none.
+func ensureCoreConfig(cfg *Config, net Network) *CoreConfig {
+	if cfg.Cores == nil {
+		cfg.Cores = make(map[Network]*CoreConfig)
+	}
+	if cfg.Cores[net] == nil {
+		cfg.Cores[net] = defaultCoreConfig(net)
+	}
+	return cfg.Cores[net]
+}
+
+// pickNetwork chooses a network when the user named none: the only enabled
+// one, else mainnet. With needAPI, only cores with an API address count.
+func pickNetwork(cfg *Config, needAPI bool) (Network, int) {
+	var enabled []Network
+	for _, net := range []Network{Mainnet, Testnet} {
+		cc := cfg.Cores[net]
+		if cc != nil && cc.Enabled && (!needAPI || cc.APIAddr != "") {
+			enabled = append(enabled, net)
+		}
+	}
+	if len(enabled) == 1 {
+		return enabled[0], 1
+	}
+	return Mainnet, len(enabled)
+}
+
+// versionsInUse maps each installed core version to the networks that run
+// it: what "latest" or "nightly" resolves to, plus every pinned version.
+// With enabledOnly, disabled cores do not count.
+func versionsInUse(cfg *Config, enabledOnly bool) map[string][]Network {
+	inUse := make(map[string][]Network)
+	add := func(ver string, net Network) {
+		if !slices.Contains(inUse[ver], net) {
+			inUse[ver] = append(inUse[ver], net)
+		}
+	}
+	for _, net := range []Network{Mainnet, Testnet} {
+		cc := cfg.Cores[net]
+		if cc == nil || (enabledOnly && !cc.Enabled) {
+			continue
+		}
+		if resolved, err := ResolveInstalledVersion(cc.Version); err == nil {
+			add(resolved, net)
+		}
+		if IsPinned(cc.Version) {
+			add(cc.Version, net)
+		}
+	}
+	return inUse
+}
+
+// inUseBy returns the networks using ver. Versions compare without case:
+// macOS and Windows folders are case-insensitive, so "V1.0.0" and "v1.0.0"
+// are the same installed core.
+func inUseBy(inUse map[string][]Network, ver string) ([]Network, bool) {
+	var nets []Network
+	found := false
+	for v, ns := range inUse {
+		if strings.EqualFold(v, ver) {
+			found = true
+			for _, n := range ns {
+				if !slices.Contains(nets, n) {
+					nets = append(nets, n)
+				}
+			}
+		}
+	}
+	slices.Sort(nets)
+	return nets, found
+}
+
+func joinNetworks(nets []Network) string {
+	parts := make([]string, len(nets))
+	for i, n := range nets {
+		parts[i] = string(n)
+	}
+	return strings.Join(parts, " and ")
+}
+
+// normalizeVersion lowercases the tracking names, checks the rest is a safe
+// folder name, and maps it to the installed folder's real name when only the
+// case differs.
+func normalizeVersion(v string) (string, error) {
+	if l := strings.ToLower(v); l == "latest" || l == "nightly" {
+		return l, nil
+	}
+	if err := ValidateVersionName(v); err != nil {
+		return "", err
+	}
+	return canonicalVersion(v), nil
+}
+
 func cmdStart(args []string) error {
+	return startNetworks(args, "Start", "blocknet start [mainnet|testnet]", nil)
+}
+
+func cmdRestart(args []string) error {
+	return startNetworks(args, "Restart", "blocknet restart [mainnet|testnet]", func(networks []Network) {
+		// Keep the watchdog watching: the core comes straight back.
+		if err := stopNetworks(networks, true, false); err != nil {
+			Warnf("%v", err)
+		}
+	})
+}
+
+// startNetworks starts the named network, or every enabled one. before runs
+// after the heading and before anything starts (restart uses it to stop).
+// An empty title prints no heading (setup has printed its own).
+func startNetworks(args []string, title, usage string, before func([]Network)) error {
+	if err := ExtraArgs(args, 1, usage); err != nil {
+		return err
+	}
 	cfg, err := LoadConfig(ConfigFile())
 	if err != nil {
 		return err
@@ -35,47 +159,42 @@ func cmdStart(args []string) error {
 			}
 		}
 		if len(networks) == 0 {
-			return fmt.Errorf("no cores enabled in config — enable one or specify a network")
+			return fmt.Errorf("no cores enabled: run blocknet enable <mainnet|testnet> or name a network")
 		}
 	}
 
-	if warns := validateConfig(cfg, networks); len(warns) > 0 {
-		for _, w := range warns {
-			fmt.Fprintf(os.Stderr, "  warning: %s\n", w)
-		}
+	green, _, _, _, dim, reset := Palette(NoColor)
+	nc := func(net Network) string { return NetColor(net, NoColor) }
+
+	if title != "" {
+		fmt.Printf("\n%s\n\n", SectionHead(title, NoColor))
+	}
+
+	for _, w := range validateConfig(cfg, networks) {
+		Warnf("%s", w)
+	}
+
+	if before != nil {
+		before(networks)
 	}
 
 	maybeAutoUpgrade(cfg)
 	ensureScheduleFromConfig(cfg)
 
-	green, pink, dim, reset := "\033[38;2;170;255;0m", "\033[38;2;255;0;170m", "\033[38;2;160;160;160m", "\033[0m"
-	if NoColor {
-		green, pink, dim, reset = "", "", "", ""
-	}
-	netColor := func(net Network) string {
-		if net == Testnet {
-			return pink
-		}
-		return green
-	}
-
 	for _, net := range networks {
 		if pid, err := readCorePidFile(net); err == nil && processAlive(pid) {
-			fmt.Printf("  %s%s%s already running %s(pid %d)%s\n", netColor(net), net, reset, dim, pid, reset)
+			fmt.Printf("  %s%s%s already running %s(pid %d)%s\n", nc(net), net, reset, dim, pid, reset)
+			watchNetwork(net)
 			continue
 		}
 
 		cc := cfg.Cores[net]
 		if cc == nil {
-			cc = &CoreConfig{Enabled: true, Version: "latest"}
-			if net == Mainnet {
-				cc.APIAddr = "127.0.0.1:8332"
-			} else {
-				cc.APIAddr = "127.0.0.1:18332"
-			}
+			cc = defaultCoreConfig(net)
+			cc.Enabled = true
 		}
 		if !cc.Enabled {
-			fmt.Printf("  %s%s%s is disabled — run %sblocknet enable %s%s first\n", netColor(net), net, reset, green, net, reset)
+			fmt.Printf("  %s%s%s is disabled. Run %sblocknet enable %s%s first.\n", nc(net), net, reset, green, net, reset)
 			continue
 		}
 
@@ -89,7 +208,7 @@ func cmdStart(args []string) error {
 			res, err := RefreshCheckpoints(cc.ResolveDataDir(net))
 			switch {
 			case err != nil:
-				fmt.Fprintf(os.Stderr, "  warning: checkpoints refresh failed: %v\n", err)
+				Warnf("checkpoints refresh failed: %v", err)
 			case res.Replaced && res.Backup != "":
 				fmt.Printf("  %s✓%s Checkpoints updated %s(%d entries, max %d, old file saved as %s)%s\n", green, reset, dim, res.Entries, res.MaxHeight, res.Backup, reset)
 			case res.Replaced:
@@ -97,16 +216,18 @@ func cmdStart(args []string) error {
 			}
 		}
 
-		fmt.Printf("  Starting %s%s%s core %s(%s)...%s\n", netColor(net), net, reset, dim, resolved, reset)
+		fmt.Printf("  Starting %s%s%s core %s(%s)...%s\n", nc(net), net, reset, dim, resolved, reset)
 		pid, err := startCore(net, cc, binPath)
 		if err != nil {
 			return err
 		}
+		// "stop <net>" took it out of a running watchdog's set: put it back.
+		watchNetwork(net)
 
 		if cc.ExplorerAddr != "" {
-			fmt.Printf("  %s✓%s %s%s%s running %s(pid %d, api %s, explorer %s)%s\n", green, reset, netColor(net), net, reset, dim, pid, cc.APIAddr, cc.ExplorerAddr, reset)
+			fmt.Printf("  %s✓%s %s%s%s running %s(pid %d, api %s, explorer %s)%s\n", green, reset, nc(net), net, reset, dim, pid, cc.APIAddr, cc.ExplorerAddr, reset)
 		} else {
-			fmt.Printf("  %s✓%s %s%s%s running %s(pid %d, api %s)%s\n", green, reset, netColor(net), net, reset, dim, pid, cc.APIAddr, reset)
+			fmt.Printf("  %s✓%s %s%s%s running %s(pid %d, api %s)%s\n", green, reset, nc(net), net, reset, dim, pid, cc.APIAddr, reset)
 		}
 	}
 	printUpgradeNotice(runningCoreNotice(cfg), NoColor)
@@ -115,52 +236,64 @@ func cmdStart(args []string) error {
 }
 
 func cmdStop(args []string) error {
-	var networks []Network
+	if err := ExtraArgs(args, 1, "blocknet stop [mainnet|testnet]"); err != nil {
+		return err
+	}
+	networks := []Network{Mainnet, Testnet}
 	if len(args) > 0 {
 		net, err := ParseNetwork(args[0])
 		if err != nil {
 			return err
 		}
 		networks = []Network{net}
-	} else {
-		networks = []Network{Mainnet, Testnet}
 	}
 
-	stopWatchdog()
-
-	green, pink, dim, reset := "\033[38;2;170;255;0m", "\033[38;2;255;0;170m", "\033[38;2;160;160;160m", "\033[0m"
-	if NoColor {
-		green, pink, dim, reset = "", "", "", ""
+	fmt.Printf("\n%s\n\n", SectionHead("Stop", NoColor))
+	if err := stopNetworks(networks, len(args) > 0, true); err != nil {
+		return err
 	}
-	_ = green
+	fmt.Println()
+	return nil
+}
 
-	stopped := 0
+// stopNetworks stops each core. A core that is not running is not an error.
+// With explicit (the user named the network) a real failure is returned;
+// otherwise it is shown as a warning and the next core is stopped. With
+// unwatch, each network is also taken out of the watchdog's set.
+func stopNetworks(networks []Network, explicit, unwatch bool) error {
+	_, _, _, _, dim, reset := Palette(NoColor)
+
+	stopped, failed := 0, 0
 	for _, net := range networks {
-		if err := stopCore(net); err != nil {
-			if len(args) > 0 {
-				return err
+		if unwatch {
+			unwatchNetwork(net)
+		}
+		err := stopCore(net)
+		switch {
+		case err == nil:
+			stopped++
+			fmt.Printf("  %s%s%s core stopped\n", NetColor(net, NoColor), net, reset)
+		case errors.Is(err, errCoreNotRunning):
+			if explicit {
+				fmt.Printf("  %s%s%s core %snot running%s\n", NetColor(net, NoColor), net, reset, dim, reset)
 			}
-			continue
+		case explicit:
+			return err
+		default:
+			failed++
+			Warnf("%v", err)
 		}
-		stopped++
-		nc := green
-		if net == Testnet {
-			nc = pink
-		}
-		fmt.Printf("  %s%s%s core %sstopped%s\n", nc, net, reset, dim, reset)
 	}
-	if stopped == 0 && len(args) == 0 {
+	if stopped == 0 && failed == 0 && !explicit {
 		fmt.Printf("  %sNo cores running%s\n", dim, reset)
 	}
 	return nil
 }
 
-func cmdRestart(args []string) error {
-	cmdStop(args)
-	return cmdStart(args)
-}
-
-func cmdStatus(_ []string) error {
+func cmdStatus(args []string) error {
+	if err := ExtraArgs(args, 0, "blocknet status"); err != nil {
+		return err
+	}
 	cfg, err := LoadConfig(ConfigFile())
 	if err != nil {
 		return err
@@ -168,19 +301,20 @@ func cmdStatus(_ []string) error {
 
 	spawnAutoUpgrade(cfg)
 
-	green, pink, dim, reset := "\033[38;2;170;255;0m", "\033[38;2;255;0;170m", "\033[2m", "\033[0m"
-	if NoColor {
-		green, pink, dim, reset = "", "", "", ""
-	}
+	_, _, amber, _, dim, reset := Palette(NoColor)
 
 	notice := builtinUpgradeNotice
 
 	watchedNets := make(map[Network]bool)
-	if wdPid, _, err := readWatchdogState(); err == nil && processAlive(wdPid) {
-		_, nets, _ := readWatchdogState()
+	if wdPid, nets, err := readWatchdogState(); err == nil && processAlive(wdPid) {
 		for _, n := range nets {
 			watchedNets[n] = true
 		}
+	}
+
+	// One column for every value: the longest label is "Explorer:".
+	row := func(label, value string) {
+		fmt.Printf("  %s %s\n", PadRight(label+":", len("Explorer:")), value)
 	}
 
 	for _, net := range []Network{Mainnet, Testnet} {
@@ -189,10 +323,7 @@ func cmdStatus(_ []string) error {
 			continue
 		}
 
-		netColor := green
-		if net == Testnet {
-			netColor = pink
-		}
+		netColor := NetColor(net, NoColor)
 
 		enabledTag := fmt.Sprintf("%senabled%s", netColor, reset)
 		if !cc.Enabled {
@@ -202,11 +333,6 @@ func cmdStatus(_ []string) error {
 		pid, pidErr := readCorePidFile(net)
 		alive := pidErr == nil && processAlive(pid)
 		healthy := alive && cc.APIAddr != "" && checkHealth(cc.APIAddr)
-
-		amber := "\033[38;2;255;170;0m"
-		if NoColor {
-			amber = ""
-		}
 
 		runTag := fmt.Sprintf("%sstopped%s", dim, reset)
 		if alive && healthy {
@@ -227,8 +353,9 @@ func cmdStatus(_ []string) error {
 			versionLabel = fmt.Sprintf("%s (%s)", resolved, cc.Version)
 		}
 
-		fmt.Printf("\n%s#%s %s [%s] [%s]%s\n", netColor, reset, net, runTag, enabledTag, monitorTag)
-		fmt.Printf("  Version: %s\n", versionLabel)
+		label := fmt.Sprintf("%s [%s] [%s]%s", net, runTag, enabledTag, monitorTag)
+		fmt.Printf("\n%s\n\n", NetHead(net, label, NoColor))
+		row("Version", versionLabel)
 
 		if !healthy || cc.APIAddr == "" {
 			continue
@@ -255,12 +382,12 @@ func cmdStatus(_ []string) error {
 		}
 		json.Unmarshal(raw, &status)
 
-		fmt.Printf("  Height:   %d\n", status.Height)
-		fmt.Printf("  Peers:    %d\n", status.Peers)
-		fmt.Printf("  Syncing:  %v\n", status.Syncing)
-		fmt.Printf("  API:      %s\n", cc.APIAddr)
+		row("Height", fmt.Sprintf("%d", status.Height))
+		row("Peers", fmt.Sprintf("%d", status.Peers))
+		row("Syncing", YesNo(status.Syncing))
+		row("API", cc.APIAddr)
 		if cc.ExplorerAddr != "" {
-			fmt.Printf("  Explorer: %s\n", cc.ExplorerAddr)
+			row("Explorer", cc.ExplorerAddr)
 		}
 	}
 	printUpgradeNotice(notice, NoColor)
@@ -269,6 +396,9 @@ func cmdStatus(_ []string) error {
 }
 
 func cmdAttach(args []string) error {
+	if err := ExtraArgs(args, 1, "blocknet attach [mainnet|testnet]"); err != nil {
+		return err
+	}
 	cfg, err := LoadConfig(ConfigFile())
 	if err != nil {
 		return err
@@ -281,20 +411,10 @@ func cmdAttach(args []string) error {
 			return err
 		}
 	} else {
-		var enabled []Network
-		for _, net := range []Network{Mainnet, Testnet} {
-			cc := cfg.Cores[net]
-			if cc != nil && cc.Enabled && cc.APIAddr != "" {
-				enabled = append(enabled, net)
-			}
-		}
-		switch len(enabled) {
-		case 0:
+		var n int
+		targetNet, n = pickNetwork(cfg, true)
+		if n == 0 {
 			return fmt.Errorf("no cores enabled with an API address")
-		case 1:
-			targetNet = enabled[0]
-		default:
-			targetNet = Mainnet
 		}
 	}
 
@@ -337,12 +457,16 @@ func cmdEnable(args []string) error  { return setEnabled(args, true) }
 func cmdDisable(args []string) error { return setEnabled(args, false) }
 
 func setEnabled(args []string, enabled bool) error {
+	word, title := "enable", "Enable"
+	if !enabled {
+		word, title = "disable", "Disable"
+	}
+	usage := fmt.Sprintf("blocknet %s <mainnet|testnet>", word)
 	if len(args) == 0 {
-		word := "enable"
-		if !enabled {
-			word = "disable"
-		}
-		return fmt.Errorf("usage: blocknet %s <mainnet|testnet>", word)
+		return fmt.Errorf("usage: %s", usage)
+	}
+	if err := ExtraArgs(args, 1, usage); err != nil {
+		return err
 	}
 
 	net, err := ParseNetwork(args[0])
@@ -355,53 +479,37 @@ func setEnabled(args []string, enabled bool) error {
 		return err
 	}
 
-	cc := cfg.Cores[net]
-	if cc == nil {
-		return fmt.Errorf("no config for %s", net)
-	}
-
+	cc := ensureCoreConfig(cfg, net)
 	cc.Enabled = enabled
-	if !enabled {
-		stopWatchdog()
-	}
 	if err := EnsureConfigDir(); err != nil {
 		return err
 	}
 	if err := SaveConfig(ConfigFile(), cfg); err != nil {
 		return err
 	}
-
-	green, pink, dim, reset := "\033[38;2;170;255;0m", "\033[38;2;255;0;170m", "\033[38;2;160;160;160m", "\033[0m"
-	if NoColor {
-		green, pink, dim, reset = "", "", "", ""
-	}
-	nc := green
-	if net == Testnet {
-		nc = pink
-	}
-	label := "enabled"
-	labelColor := green
 	if !enabled {
-		label = "disabled"
-		labelColor = dim
+		unwatchNetwork(net)
 	}
-	fmt.Printf("  %s%s%s %s%s%s\n", nc, net, reset, labelColor, label, reset)
+
+	green, _, _, _, _, reset := Palette(NoColor)
+	fmt.Printf("\n%s\n\n", SectionHead(title, NoColor))
+	fmt.Printf("  %s✓%s %s%s%s %sd\n\n", green, reset, NetColor(net, NoColor), net, reset, word)
 	return nil
 }
 
-func cmdUpgrade(_ []string) error {
-	green, amber, dim, reset := "\033[38;2;170;255;0m", "\033[38;2;255;170;0m", "\033[38;2;160;160;160m", "\033[0m"
-	if NoColor {
-		green, amber, dim, reset = "", "", "", ""
+func cmdUpgrade(args []string) error {
+	if err := ExtraArgs(args, 0, "blocknet upgrade"); err != nil {
+		return err
 	}
+	green, _, _, _, dim, reset := Palette(NoColor)
 
 	fmt.Printf("\n%s\n\n", SectionHead("Upgrade", NoColor))
 	fmt.Printf("  %sChecking for new releases...%s\n", dim, reset)
 
 	if tag, err := selfUpgrade(); err != nil {
-		fmt.Printf("  %sblocknet self-upgrade failed: %v%s\n", amber, err, reset)
+		Warnf("blocknet self-upgrade failed: %v", err)
 	} else if tag != "" {
-		fmt.Printf("  %s✓%s blocknet upgraded to %s%s%s\n", green, reset, green, tag, reset)
+		fmt.Printf("  %s✓%s Blocknet upgraded to %s%s%s\n", green, reset, green, tag, reset)
 	}
 
 	stableErr := upgradeStable()
@@ -415,23 +523,23 @@ func cmdUpgrade(_ []string) error {
 		updated, err := refreshNightly(downloadProgress)
 		switch {
 		case err != nil:
-			fmt.Printf("\n  %snightly upgrade failed: %v%s\n", amber, err, reset)
+			Warnf("nightly upgrade failed: %v", err)
 		case updated:
-			fmt.Printf("\n  %s✓%s Installed new nightly build\n", green, reset)
+			fmt.Println()
+			fmt.Printf("  %s✓%s Installed new nightly build\n", green, reset)
 			restartTracking(cfg, "nightly", "nightly", CoreBinaryPath("nightly"))
 		default:
-			fmt.Printf("  %snightly already up to date%s\n", dim, reset)
+			fmt.Printf("  %sNightly already up to date%s\n", dim, reset)
 		}
+	}
+	if stableErr == nil {
 		fmt.Println()
 	}
 	return stableErr
 }
 
 func upgradeStable() error {
-	green, cyan, amber, dim, reset := "\033[38;2;170;255;0m", "\033[38;2;0;170;255m", "\033[38;2;255;170;0m", "\033[38;2;160;160;160m", "\033[0m"
-	if NoColor {
-		green, cyan, amber, dim, reset = "", "", "", "", ""
-	}
+	green, cyan, amber, pink, dim, reset := Palette(NoColor)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -445,20 +553,20 @@ func upgradeStable() error {
 
 	destPath := CoreBinaryPath(latest.Tag)
 	if _, err := os.Stat(destPath); err == nil {
-		fmt.Printf("  %s%s already installed%s\n\n", dim, latest.Tag, reset)
+		fmt.Printf("  %s%s is already installed%s\n", dim, latest.Tag, reset)
 		return nil
 	}
 
 	asset := FindAsset(latest.Assets)
 	if asset == nil {
-		return fmt.Errorf("release %s does not include a binary for your platform (%s)\n  this is expected for early releases before multi-platform builds were added\n  try a newer version: blocknet install latest", latest.Tag, CoreAssetPrefix())
+		return fmt.Errorf("latest release %s has no binary for your platform (%s)", latest.Tag, CoreAssetPrefix())
 	}
 	expectedSHA, err := ResolveAssetSHA256(ctx, latest.Assets, asset.Name)
 	if err != nil {
 		return fmt.Errorf("checksum: %w", err)
 	}
 
-	fmt.Printf("  %sDownloading %s...%s\n", cyan, asset.Name, reset)
+	fmt.Printf("  %sDownloading %s%s\n", cyan, asset.Name, reset)
 	dlCtx, dlCancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer dlCancel()
 
@@ -466,8 +574,9 @@ func upgradeStable() error {
 		fmt.Println()
 		return fmt.Errorf("download: %w", err)
 	}
-	fmt.Printf("\n  %s✓ verified%s", green, reset)
-	fmt.Printf("\n  %s✓%s Installed %s%s%s\n", green, reset, green, latest.Tag, reset)
+	fmt.Println()
+	fmt.Printf("  %s✓%s Checksum verified\n", green, reset)
+	fmt.Printf("  %s✓%s Installed %s%s%s\n", green, reset, green, latest.Tag, reset)
 
 	cfg, err := LoadConfig(ConfigFile())
 	if err != nil {
@@ -478,24 +587,28 @@ func upgradeStable() error {
 	for _, net := range runningCores(cfg, "latest") {
 		cc := cfg.Cores[net]
 		fmt.Printf("  %sRestarting %s core with %s...%s\n", amber, net, latest.Tag, reset)
-		stopCore(net)
+		if err := stopCore(net); err != nil && !errors.Is(err, errCoreNotRunning) {
+			Warnf("%v", err)
+		}
 		newPid, err := startCore(net, cc, destPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "  %s✗ %s restart failed: %v%s\n", "\033[38;2;255;0;170m", net, err, reset)
+			fmt.Fprintf(os.Stderr, "  %s✗%s %s%s%s restart failed: %v\n", pink, reset, NetColor(net, NoColor), net, reset, err)
 			continue
 		}
-		fmt.Printf("  %s✓%s %s core running %s(pid %d)%s\n", green, reset, net, dim, newPid, reset)
+		fmt.Printf("  %s✓%s %s%s%s core running %s(pid %d)%s\n", green, reset, NetColor(net, NoColor), net, reset, dim, newPid, reset)
 		restarted++
 	}
 
 	if restarted == 0 {
 		fmt.Printf("  %sRestart running cores to use the new version%s\n", dim, reset)
 	}
-	fmt.Println()
 	return nil
 }
 
-func cmdList(_ []string) error {
+func cmdList(args []string) error {
+	if err := ExtraArgs(args, 0, "blocknet list"); err != nil {
+		return err
+	}
 	cfg, err := LoadConfig(ConfigFile())
 	if err != nil {
 		return err
@@ -509,21 +622,7 @@ func cmdList(_ []string) error {
 		return fmt.Errorf("fetch releases: %w", err)
 	}
 
-	inUse := make(map[string][]Network)
-	for _, net := range []Network{Mainnet, Testnet} {
-		cc := cfg.Cores[net]
-		if cc == nil || !cc.Enabled {
-			continue
-		}
-		v := strings.ToLower(cc.Version)
-		if v == "latest" {
-			if resolved, err := ResolveInstalledVersion("latest"); err == nil {
-				inUse[resolved] = append(inUse[resolved], net)
-			}
-		} else {
-			inUse[cc.Version] = append(inUse[cc.Version], net)
-		}
-	}
+	inUse := versionsInUse(cfg, true)
 
 	installed := make(map[string]bool)
 	for _, r := range releases {
@@ -535,49 +634,61 @@ func cmdList(_ []string) error {
 		installed["nightly"] = true
 	}
 
-	cyan, green, pink, dim, reset := "\033[38;2;0;170;255m", "\033[38;2;170;255;0m", "\033[38;2;255;0;170m", "\033[38;2;160;160;160m", "\033[0m"
-	if NoColor {
-		cyan, green, pink, dim, reset = "", "", "", "", ""
-	}
+	_, _, _, _, dim, reset := Palette(NoColor)
 
-	fmt.Printf("\n%s\n\n", SectionHead("Versions", NoColor))
-	fmt.Printf("  %s%-12s %-18s %s%s\n", dim, "version", "date", "status", reset)
-	fmt.Printf("  %s%s%s\n", dim, strings.Repeat("─", 50), reset)
+	const dateFormat = "Jan 02, 2006"
+	nightlyDate := "-"
+	tagWidth := len("nightly")
+	for _, r := range releases {
+		if r.Tag == "nightly" {
+			if !r.Date.IsZero() {
+				nightlyDate = r.Date.Format(dateFormat)
+			}
+			continue
+		}
+		if !r.Prerelease && len(r.Tag) > tagWidth {
+			tagWidth = len(r.Tag)
+		}
+	}
+	dateWidth := len(dateFormat) + 2
 
 	formatNets := func(nets []Network) string {
 		var parts []string
 		for _, net := range nets {
-			c := green
-			if net == Testnet {
-				c = pink
-			}
-			parts = append(parts, fmt.Sprintf("%s[%s]%s", c, net, reset))
+			parts = append(parts, fmt.Sprintf("%s[%s]%s", NetColor(net, NoColor), net, reset))
 		}
 		return strings.Join(parts, " ")
 	}
-
-	nightlyStatus := ""
-	if nets, ok := inUse["nightly"]; ok {
-		nightlyStatus = formatNets(nets)
-	} else if installed["nightly"] {
-		nightlyStatus = fmt.Sprintf("%sinstalled%s", cyan, reset)
+	status := func(tag string) string {
+		if nets, ok := inUseBy(inUse, tag); ok {
+			return formatNets(nets)
+		}
+		if installed[tag] {
+			return "installed"
+		}
+		return ""
 	}
-	fmt.Printf("  %-12s %-18s %s\n", "nightly", "latest", nightlyStatus)
+	printRow := func(tag, date, st string) {
+		line := fmt.Sprintf("  %s  %s %s", PadRight(tag, tagWidth), PadRight(date, dateWidth), st)
+		fmt.Println(strings.TrimRight(line, " "))
+	}
+
+	fmt.Printf("\n%s\n\n", SectionHead("Versions", NoColor))
+	fmt.Printf("  %s%s  %s %s%s\n", dim, PadRight("Version", tagWidth), PadRight("Date", dateWidth), "Status", reset)
+	fmt.Printf("  %s%s%s\n", dim, strings.Repeat("─", tagWidth+dateWidth+23), reset)
+
+	printRow("nightly", nightlyDate, status("nightly"))
 
 	for _, r := range releases {
-		if r.Prerelease {
+		if r.Prerelease || r.Tag == "nightly" {
 			continue
 		}
-		date := r.Date.Format("Jan 02, 2006")
-		status := ""
-		if nets, ok := inUse[r.Tag]; ok {
-			status = formatNets(nets)
-		} else if installed[r.Tag] {
-			status = fmt.Sprintf("%sinstalled%s", cyan, reset)
-		} else {
+		date := r.Date.Format(dateFormat)
+		st := status(r.Tag)
+		if st == "" {
 			date = fmt.Sprintf("%s%s%s", dim, date, reset)
 		}
-		fmt.Printf("  %-12s %-18s %s\n", r.Tag, date, status)
+		printRow(r.Tag, date, st)
 	}
 	fmt.Println()
 	return nil
@@ -587,12 +698,15 @@ func cmdInstall(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: blocknet install <version>")
 	}
-	version := args[0]
-
-	green, cyan, dim, reset := "\033[38;2;170;255;0m", "\033[38;2;0;170;255m", "\033[38;2;160;160;160m", "\033[0m"
-	if NoColor {
-		green, cyan, dim, reset = "", "", "", ""
+	if err := ExtraArgs(args, 1, "blocknet install <version>"); err != nil {
+		return err
 	}
+	version, err := normalizeVersion(args[0])
+	if err != nil {
+		return err
+	}
+
+	green, cyan, _, _, dim, reset := Palette(NoColor)
 
 	fmt.Printf("\n%s\n\n", SectionHead("Install", NoColor))
 	fmt.Printf("  %sFinding %s...%s\n", dim, version, reset)
@@ -600,19 +714,22 @@ func cmdInstall(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	if strings.EqualFold(version, "latest") {
+	if version == "latest" {
 		latest, err := LatestRelease(ctx)
 		if err != nil {
 			return fmt.Errorf("fetch releases: %w", err)
 		}
 		version = latest.Tag
+		if err := ValidateVersionName(version); err != nil {
+			return err
+		}
 		fmt.Printf("  Latest is %s%s%s\n", green, version, reset)
 	}
 
 	destPath := CoreBinaryPath(version)
 	if version != "nightly" {
 		if _, err := os.Stat(destPath); err == nil {
-			fmt.Printf("  %s%s already installed%s\n\n", dim, version, reset)
+			fmt.Printf("  %s%s is already installed%s\n\n", dim, version, reset)
 			return nil
 		}
 	}
@@ -622,24 +739,28 @@ func cmdInstall(args []string) error {
 		return fmt.Errorf("fetch releases: %w", err)
 	}
 
-	var asset *Asset
-	var expectedSHA string
-	for _, r := range releases {
-		if r.Tag != version {
-			continue
-		}
-		asset = FindAsset(r.Assets)
-		if asset == nil {
+	var release *Release
+	for i := range releases {
+		if strings.EqualFold(releases[i].Tag, version) {
+			release = &releases[i]
 			break
 		}
-		expectedSHA, err = ResolveAssetSHA256(ctx, r.Assets, asset.Name)
-		if err != nil {
-			return fmt.Errorf("checksum: %w", err)
-		}
-		break
 	}
+	if release == nil {
+		return fmt.Errorf("version %s not found (run blocknet list)", version)
+	}
+	if err := ValidateVersionName(release.Tag); err != nil {
+		return err
+	}
+	version = release.Tag
+	destPath = CoreBinaryPath(version)
+	asset := FindAsset(release.Assets)
 	if asset == nil {
-		return fmt.Errorf("release %s does not include a binary for your platform (%s)\n  this is expected for early releases before multi-platform builds were added\n  try: blocknet list (to see available versions)", version, CoreAssetPrefix())
+		return fmt.Errorf("release %s has no binary for your platform (%s). Run blocknet list to pick a newer version", version, CoreAssetPrefix())
+	}
+	expectedSHA, err := ResolveAssetSHA256(ctx, release.Assets, asset.Name)
+	if err != nil {
+		return fmt.Errorf("checksum: %w", err)
 	}
 
 	fmt.Printf("  %sDownloading %s%s\n", cyan, asset.Name, reset)
@@ -651,10 +772,13 @@ func cmdInstall(args []string) error {
 		return fmt.Errorf("download: %w", err)
 	}
 	if version == "nightly" {
-		os.WriteFile(nightlyMarker(), []byte(expectedSHA+"\n"), 0644)
+		if err := os.WriteFile(nightlyMarker(), []byte(expectedSHA+"\n"), 0644); err != nil {
+			Warnf("could not save the nightly checksum: %v", err)
+		}
 	}
-	fmt.Printf("\n  %s✓ verified%s", green, reset)
-	fmt.Printf("\n  %s✓%s Installed %s%s%s\n\n", green, reset, green, version, reset)
+	fmt.Println()
+	fmt.Printf("  %s✓%s Checksum verified\n", green, reset)
+	fmt.Printf("  %s✓%s Installed %s%s%s\n\n", green, reset, green, version, reset)
 	return nil
 }
 
@@ -662,11 +786,20 @@ func cmdUninstall(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: blocknet uninstall <version>")
 	}
-	version := args[0]
+	if err := ExtraArgs(args, 1, "blocknet uninstall <version>"); err != nil {
+		return err
+	}
+	version, err := normalizeVersion(args[0])
+	if err != nil {
+		return err
+	}
 
-	dim, reset := "\033[38;2;160;160;160m", "\033[0m"
-	if NoColor {
-		dim, reset = "", ""
+	cfg, err := LoadConfig(ConfigFile())
+	if err != nil {
+		return err
+	}
+	if nets, ok := inUseBy(versionsInUse(cfg, false), version); ok {
+		return fmt.Errorf("%s is in use by %s. Switch to another version first with blocknet use <version> %s", version, joinNetworks(nets), nets[0])
 	}
 
 	dir := CoreDir(version)
@@ -676,48 +809,76 @@ func cmdUninstall(args []string) error {
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("remove %s: %w", dir, err)
 	}
-	fmt.Printf("\n  %sUninstalled %s%s\n\n", dim, version, reset)
+
+	green, _, _, _, _, reset := Palette(NoColor)
+	fmt.Printf("\n%s\n\n", SectionHead("Uninstall", NoColor))
+	fmt.Printf("  %s✓%s Removed %s\n\n", green, reset, version)
 	return nil
 }
 
 func cmdUse(args []string) error {
+	const usage = "blocknet use <version> [mainnet|testnet]"
 	if len(args) == 0 {
-		return fmt.Errorf("usage: blocknet use <version> [mainnet|testnet]")
+		return fmt.Errorf("usage: %s", usage)
 	}
-	version := args[0]
+	if err := ExtraArgs(args, 2, usage); err != nil {
+		return err
+	}
+	version, err := normalizeVersion(args[0])
+	if err != nil {
+		return err
+	}
+	if version != "latest" {
+		if _, err := os.Stat(CoreBinaryPath(version)); err != nil {
+			return fmt.Errorf("%s is not installed (run blocknet install %s)", version, version)
+		}
+	}
 
 	cfg, err := LoadConfig(ConfigFile())
 	if err != nil {
 		return err
 	}
 
+	green, _, _, _, dim, reset := Palette(NoColor)
+	var msg string
 	if len(args) >= 2 {
 		net, err := ParseNetwork(args[1])
 		if err != nil {
 			return err
 		}
-		cc := cfg.Cores[net]
-		if cc == nil {
-			return fmt.Errorf("no config for %s", net)
-		}
-		cc.Version = version
-		fmt.Printf("  %s set to %s\n", net, version)
+		ensureCoreConfig(cfg, net).Version = version
+		msg = fmt.Sprintf("%s%s%s set to %s", NetColor(net, NoColor), net, reset, version)
 	} else {
+		set := 0
 		for _, net := range []Network{Mainnet, Testnet} {
 			if cc := cfg.Cores[net]; cc != nil {
 				cc.Version = version
+				set++
 			}
 		}
-		fmt.Printf("  All cores set to %s\n", version)
+		if set == 0 {
+			ensureCoreConfig(cfg, Mainnet).Version = version
+		}
+		msg = fmt.Sprintf("All cores set to %s", version)
 	}
 
 	if err := EnsureConfigDir(); err != nil {
 		return err
 	}
-	return SaveConfig(ConfigFile(), cfg)
+	if err := SaveConfig(ConfigFile(), cfg); err != nil {
+		return err
+	}
+
+	fmt.Printf("\n%s\n\n", SectionHead("Use", NoColor))
+	fmt.Printf("  %s✓%s %s\n", green, reset, msg)
+	fmt.Printf("  %sRestart running cores to use it%s\n\n", dim, reset)
+	return nil
 }
 
-func cmdConfig(_ []string) error {
+func cmdConfig(args []string) error {
+	if err := ExtraArgs(args, 0, "blocknet config"); err != nil {
+		return err
+	}
 	cfg, err := LoadConfig(ConfigFile())
 	if err != nil {
 		return err
@@ -727,37 +888,53 @@ func cmdConfig(_ []string) error {
 		return err
 	}
 	fmt.Printf("\n%s\n\n", SectionHead("Config", NoColor))
-	fmt.Println(ColorizeJSON(string(data), NoColor))
+	for _, line := range strings.Split(ColorizeJSON(string(data), NoColor), "\n") {
+		fmt.Printf("  %s\n", line)
+	}
+	fmt.Println()
 	return nil
 }
 
 func cmdLogs(args []string) error {
-	net := Mainnet
+	if err := ExtraArgs(args, 1, "blocknet logs [mainnet|testnet]"); err != nil {
+		return err
+	}
+	var net Network
 	if len(args) > 0 {
 		var err error
 		net, err = ParseNetwork(args[0])
 		if err != nil {
 			return err
 		}
+	} else {
+		cfg, err := LoadConfig(ConfigFile())
+		if err != nil {
+			return err
+		}
+		net, _ = pickNetwork(cfg, false)
 	}
 
 	path := LogFile(net)
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	f, err := os.Open(path)
+	if os.IsNotExist(err) {
 		return fmt.Errorf("no log file for %s (has it been started?)", net)
 	}
-
-	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { f.Close() }()
 
-	info, _ := f.Stat()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
 	offset := int64(0)
 	if info.Size() > 8192 {
 		offset = info.Size() - 8192
 	}
-	f.Seek(offset, io.SeekStart)
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return err
+	}
 	if offset > 0 {
 		buf := make([]byte, 1)
 		for {
@@ -767,73 +944,91 @@ func cmdLogs(args []string) error {
 			}
 		}
 	}
-	io.Copy(os.Stdout, f)
+	if _, err := io.Copy(os.Stdout, f); err != nil {
+		return err
+	}
 
-	fmt.Printf("\n  following %s log... (ctrl+c to stop)\n\n", net)
+	_, _, _, _, dim, reset := Palette(NoColor)
+	fmt.Printf("\n  %sFollowing %s log (ctrl+c to stop)%s\n\n", dim, net, reset)
 
 	for {
 		n, err := io.Copy(os.Stdout, f)
 		if err != nil {
 			return err
 		}
-		if n == 0 {
-			time.Sleep(25 * time.Millisecond)
+		if n > 0 {
+			continue
 		}
+		time.Sleep(100 * time.Millisecond)
+
+		// The log was truncated or replaced: start over from the top of the
+		// new file instead of waiting forever past its end.
+		cur, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		pos, perr := f.Seek(0, io.SeekCurrent)
+		open, serr := f.Stat()
+		if perr == nil && serr == nil && cur.Size() >= pos && os.SameFile(cur, open) {
+			continue
+		}
+		nf, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		f.Close()
+		f = nf
+		fmt.Printf("\n  %s%s log restarted%s\n\n", dim, net, reset)
 	}
 }
 
-func cmdCleanup(_ []string) error {
+func cmdCleanup(args []string) error {
+	if err := ExtraArgs(args, 0, "blocknet cleanup"); err != nil {
+		return err
+	}
 	cfg, err := LoadConfig(ConfigFile())
 	if err != nil {
 		return err
 	}
 
-	inUse := make(map[string]bool)
-	for _, net := range []Network{Mainnet, Testnet} {
-		cc := cfg.Cores[net]
-		if cc == nil {
-			continue
-		}
-		if resolved, err := ResolveInstalledVersion(cc.Version); err == nil {
-			inUse[resolved] = true
-		}
-		if IsPinned(cc.Version) {
-			inUse[cc.Version] = true
-		}
-	}
+	inUse := versionsInUse(cfg, false)
+
+	fmt.Printf("\n%s\n\n", SectionHead("Cleanup", NoColor))
 
 	coresDir := filepath.Join(ConfigDir(), "cores")
 	entries, err := os.ReadDir(coresDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Println("  No core versions installed")
+			fmt.Printf("  No core versions installed\n\n")
 			return nil
 		}
 		return err
 	}
 
+	green, _, _, _, _, reset := Palette(NoColor)
 	var removed int
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		ver := e.Name()
-		if inUse[ver] {
+		if _, ok := inUseBy(inUse, ver); ok {
 			continue
 		}
 		dir := filepath.Join(coresDir, ver)
 		if err := os.RemoveAll(dir); err != nil {
-			fmt.Fprintf(os.Stderr, "  warning: could not remove %s: %v\n", ver, err)
+			Warnf("could not remove %s: %v", ver, err)
 			continue
 		}
-		fmt.Printf("  Removed %s\n", ver)
+		fmt.Printf("  %s✓%s Removed %s\n", green, reset, ver)
 		removed++
 	}
 
 	if removed == 0 {
 		fmt.Println("  Nothing to clean up")
 	} else {
-		fmt.Printf("  Cleaned up %d version(s)\n", removed)
+		fmt.Printf("  Cleaned up %s\n", Plural(removed, "version"))
 	}
+	fmt.Println()
 	return nil
 }

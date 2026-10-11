@@ -67,9 +67,9 @@ func maybeAutoUpgrade(cfg *Config) {
 	writeLastCheck()
 
 	if tag, err := selfUpgrade(); err != nil {
-		fmt.Fprintf(os.Stderr, "  warning: blocknet self-upgrade failed: %v\n", err)
+		Warnf("could not upgrade blocknet: %v", err)
 	} else if tag != "" {
-		fmt.Printf("  blocknet upgraded to %s\n", tag)
+		fmt.Printf("  Upgraded blocknet to %s\n", tag)
 	}
 
 	autoUpgradeStable(cfg)
@@ -98,23 +98,23 @@ func autoUpgradeStable(cfg *Config) {
 	}
 	expectedSHA, err := ResolveAssetSHA256(ctx, latest.Assets, asset.Name)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "  warning: auto-upgrade checksum unavailable: %v\n", err)
+		Warnf("could not get the checksum for %s: %v", latest.Tag, err)
 		return
 	}
 
 	fmt.Printf("  New core version available: %s\n", latest.Tag)
-	fmt.Printf("  Downloading %s...\n", asset.Name)
+	fmt.Printf("  Downloading %s\n", asset.Name)
 
 	dlCtx, dlCancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer dlCancel()
 
 	if err := DownloadAsset(dlCtx, asset.URL, destPath, expectedSHA, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "  warning: auto-upgrade download failed: %v\n", err)
+		Warnf("could not download %s: %v", latest.Tag, err)
 		return
 	}
 
-	fmt.Printf("  \033[38;2;170;255;0m✓ verified\033[0m\n")
-	fmt.Printf("  Installed %s\n", latest.Tag)
+	green, _, _, _, _, reset := Palette(NoColor)
+	fmt.Printf("  %s✓%s Verified and installed %s\n", green, reset, latest.Tag)
 
 	restartTracking(cfg, "latest", latest.Tag, destPath)
 }
@@ -122,27 +122,29 @@ func autoUpgradeStable(cfg *Config) {
 func autoUpgradeNightly(cfg *Config) {
 	updated, err := refreshNightly(nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "  warning: nightly upgrade failed: %v\n", err)
+		Warnf("could not upgrade nightly: %v", err)
 		return
 	}
 	if !updated {
 		return
 	}
-	fmt.Println("  Installed new nightly build")
+	fmt.Println("  Installed a new nightly build")
 	restartTracking(cfg, "nightly", "nightly", CoreBinaryPath("nightly"))
 }
 
 func restartTracking(cfg *Config, track, label, binPath string) int {
+	green, _, _, _, dim, reset := Palette(NoColor)
 	restarted := 0
 	for _, net := range runningCores(cfg, track) {
-		fmt.Printf("  Restarting %s core with %s...\n", net, label)
+		nc := NetColor(net, NoColor)
+		fmt.Printf("  Restarting %s%s%s core with %s...\n", nc, net, reset, label)
 		stopCore(net)
 		newPid, err := startCore(net, cfg.Cores[net], binPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "  warning: %s restart failed: %v\n", net, err)
+			Warnf("could not restart %s: %v", net, err)
 			continue
 		}
-		fmt.Printf("  %s core restarted (pid %d)\n", net, newPid)
+		fmt.Printf("  %s✓%s Restarted %s%s%s core %s(pid %d)%s\n", green, reset, nc, net, reset, dim, newPid, reset)
 		restarted++
 	}
 	return restarted

@@ -35,7 +35,7 @@ func (e *APIError) Error() string {
 func NewCoreClient(apiAddr, cookiePath string) (*CoreClient, error) {
 	token, err := readCookie(cookiePath)
 	if err != nil {
-		return nil, fmt.Errorf("read cookie %s: %w", cookiePath, err)
+		return nil, fmt.Errorf("could not read cookie %s: %w", cookiePath, err)
 	}
 
 	base := apiAddr
@@ -87,7 +87,7 @@ func (c *CoreClient) send(ctx context.Context, method, path string, body any) (j
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
-			return nil, fmt.Errorf("marshal request: %w", err)
+			return nil, fmt.Errorf("could not encode request: %w", err)
 		}
 		r = strings.NewReader(string(data))
 	}
@@ -164,7 +164,7 @@ func (c *CoreClient) do(ctx context.Context, method, path string, body io.Reader
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, fmt.Errorf("could not read response: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

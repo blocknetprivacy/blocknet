@@ -41,6 +41,7 @@ func installSchedule(binPath string, interval time.Duration) error {
     <array>
         <string>%s</string>
         <string>upgrade</string>
+        <string>--nocolor</string>
     </array>
     <key>StartInterval</key>
     <integer>%d</integer>
@@ -55,11 +56,11 @@ func installSchedule(binPath string, interval time.Duration) error {
 	runCmd("launchctl", "bootout", fmt.Sprintf("gui/%d", os.Getuid()), plistPath)
 
 	if err := os.WriteFile(plistPath, []byte(plist), 0644); err != nil {
-		return fmt.Errorf("write plist: %w", err)
+		return fmt.Errorf("could not write plist: %w", err)
 	}
 
 	if err := runCmd("launchctl", "bootstrap", fmt.Sprintf("gui/%d", os.Getuid()), plistPath); err != nil {
-		return fmt.Errorf("launchctl bootstrap: %w", err)
+		return fmt.Errorf("could not load launchd job: %w", err)
 	}
 	return nil
 }

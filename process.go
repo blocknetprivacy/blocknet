@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -95,7 +96,7 @@ func spawnCore(net Network, cc *CoreConfig, binPath string, flags []string) (int
 	// progress). A live, busy core is left to finish coming up.
 	if err := awaitCoreReady(pid, cc.APIAddr, cookiePath, logPath); err != nil {
 		if processAlive(pid) {
-			cmd.Process.Kill() // wedged, not busy — reclaim it
+			cmd.Process.Kill() // wedged, not busy: reclaim it
 		}
 		os.Remove(CorePidFile(net))
 		logFile.Close()
@@ -115,7 +116,7 @@ func spawnCore(net Network, cc *CoreConfig, binPath string, flags []string) (int
 //   - alive but no progress for a while  -> wedged (error) after coreStallTimeout
 //
 // While the process keeps using CPU or doing disk I/O it is "up but busy", and
-// we wait for as long as it needs — a slow cold start is not a failure.
+// we wait for as long as it needs. A slow cold start is not a failure.
 func awaitCoreReady(pid int, apiAddr, cookiePath, logPath string) error {
 	const (
 		pollInterval     = 25 * time.Millisecond
@@ -144,11 +145,11 @@ func awaitCoreReady(pid int, apiAddr, cookiePath, logPath string) error {
 				lastAdvance = time.Now()
 			}
 		} else {
-			// Progress can't be measured here (non-Linux) — assume it's working.
+			// Progress can't be measured here (non-Linux), so assume it's working.
 			lastAdvance = time.Now()
 		}
 		if time.Since(lastAdvance) > coreStallTimeout {
-			return fmt.Errorf("core is alive but made no progress for %s and its API never came up (see %s)", coreStallTimeout, logPath)
+			return fmt.Errorf("core is alive but made no progress for %s and its API never came up (see %s)", FormatDuration(coreStallTimeout), logPath)
 		}
 		time.Sleep(pollInterval)
 	}
@@ -180,14 +181,18 @@ func coreResponds(apiAddr, cookiePath string) (bool, int) {
 	return true, status.PID
 }
 
+// errCoreNotRunning is wrapped by stopCore when there was nothing to stop.
+// Any other stopCore error is a real failure.
+var errCoreNotRunning = errors.New("core not running")
+
 func stopCore(net Network) error {
 	pid, err := readCorePidFile(net)
 	if err != nil {
-		return fmt.Errorf("%s core not running (no pidfile)", net)
+		return fmt.Errorf("%s %w (no pidfile)", net, errCoreNotRunning)
 	}
 	if !processAlive(pid) {
 		os.Remove(CorePidFile(net))
-		return fmt.Errorf("%s core not running (stale pidfile)", net)
+		return fmt.Errorf("%s %w (stale pidfile)", net, errCoreNotRunning)
 	}
 
 	proc, err := os.FindProcess(pid)

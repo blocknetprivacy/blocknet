@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 )
 
 func parseYes(input string, defaultYes bool) bool {
@@ -32,14 +35,14 @@ func parseYes(input string, defaultYes bool) bool {
 func validateAddr(addr string) error {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("invalid address %q — expected host:port (e.g. 127.0.0.1:8332)", addr)
+		return fmt.Errorf("invalid address %q: expected host:port, like 127.0.0.1:8332", addr)
 	}
 	if host == "" {
 		return fmt.Errorf("missing host in %q", addr)
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port < 1 || port > 65535 {
-		return fmt.Errorf("invalid port in %q — must be 1-65535", addr)
+		return fmt.Errorf("invalid port in %q: must be 1 to 65535", addr)
 	}
 	return nil
 }
@@ -58,10 +61,7 @@ func formatBytes(n int64) string {
 }
 
 func downloadProgress(downloaded, total int64) {
-	green, reset := "\033[38;2;170;255;0m", "\033[0m"
-	if NoColor {
-		green, reset = "", ""
-	}
+	green, _, _, _, _, reset := Palette(NoColor)
 	width := 30
 	if total > 0 {
 		pct := float64(downloaded) / float64(total)
@@ -76,20 +76,64 @@ func downloadProgress(downloaded, total int64) {
 	}
 }
 
-func cmdSetup(_ []string) error {
-	reader := bufio.NewReader(os.Stdin)
+// errSetupCancelled means the user closed input (Ctrl-D) at a prompt.
+var errSetupCancelled = errors.New("setup cancelled")
 
-	green, dim, cyan, bold, reset := "\033[38;2;170;255;0m", "\033[38;2;160;160;160m", "\033[38;2;0;170;255m", "\033[1m", "\033[0m"
-	if NoColor {
-		green, dim, cyan, bold, reset = "", "", "", "", ""
+// setupCancelledError is a cancel that came after setup had already saved
+// something. done lists what, for the cancel message.
+type setupCancelledError struct{ done []string }
+
+func (e *setupCancelledError) Error() string { return errSetupCancelled.Error() }
+func (e *setupCancelledError) Is(target error) bool {
+	return target == errSetupCancelled
+}
+
+func cmdSetup(args []string) error {
+	if err := ExtraArgs(args, 0, "blocknet setup"); err != nil {
+		return err
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return fmt.Errorf("setup needs an interactive terminal")
+	}
+	err := runSetup(bufio.NewReader(os.Stdin))
+	if errors.Is(err, errSetupCancelled) {
+		// The cursor is still on the prompt line.
+		fmt.Print("\n\n  Setup cancelled\n")
+		var partial *setupCancelledError
+		if errors.As(err, &partial) {
+			fmt.Printf("  Already done: %s\n", strings.Join(partial.done, ", "))
+		}
+		fmt.Println()
+		return nil
+	}
+	return err
+}
+
+func runSetup(reader *bufio.Reader) (err error) {
+	green, cyan, _, _, dim, reset := Palette(NoColor)
+
+	// done records what is already saved, so a later cancel can say so.
+	var done []string
+	defer func() {
+		if len(done) > 0 && errors.Is(err, errSetupCancelled) {
+			err = &setupCancelledError{done: done}
+		}
+	}()
+	head := func(h string) { fmt.Printf("\n%s\n\n", h) }
+
+	// askYes asks a yes or no question. hint is the text in parentheses.
+	askYes := func(hint string, def bool) (bool, error) {
+		fmt.Printf("  yes or no %s%s%s: ", cyan, hint, reset)
+		answer, err := readLine(reader)
+		if err != nil {
+			return false, errSetupCancelled
+		}
+		return parseYes(answer, def), nil
 	}
 
-	fmt.Println()
-	fmt.Printf("  %sWelcome to Blocknet!%s\n", green, reset)
-	fmt.Println()
-	fmt.Println("  This will walk you through setting up your node.")
-	fmt.Println("  You can always re-run this or edit the config file directly.")
-	fmt.Println()
+	head(SectionHead("Blocknet setup", NoColor))
+	fmt.Println("  This walks you through setting up your node.")
+	fmt.Println("  You can run it again or edit the config file at any time.")
 
 	cfgPath := ConfigFile()
 	cfg := DefaultConfig()
@@ -99,46 +143,34 @@ func cmdSetup(_ []string) error {
 		if loaded, loadErr := LoadConfig(cfgPath); loadErr == nil {
 			cfg = loaded
 			hasExisting = true
-			warn := "\033[38;2;255;170;0m"
-			if NoColor {
-				warn = ""
-			}
-			fmt.Printf("  %sCurrent config (\033[4m%s\033[24m):%s\n\n", warn, cfgPath, reset)
-
-			if mc := cfg.Cores[Mainnet]; mc != nil {
-				tag := "disabled"
-				if mc.Enabled {
-					tag = fmt.Sprintf("enabled, API %s", mc.APIAddr)
-				}
-				fmt.Printf("    mainnet:      %s\n", tag)
-			}
-			if tc := cfg.Cores[Testnet]; tc != nil {
-				tag := "disabled"
-				if tc.Enabled {
-					tag = fmt.Sprintf("enabled, API %s", tc.APIAddr)
-				}
-				fmt.Printf("    testnet:      %s\n", tag)
-			}
 			fmt.Println()
+			fmt.Printf("  Current config: %s%s%s\n", dim, cfgPath, reset)
+			for _, n := range []Network{Mainnet, Testnet} {
+				cc := cfg.Cores[n]
+				if cc == nil {
+					continue
+				}
+				tag := "disabled"
+				if cc.Enabled {
+					tag = fmt.Sprintf("enabled, API %s", cc.APIAddr)
+				}
+				label := strings.ToUpper(string(n)[:1]) + string(n)[1:] + ":"
+				fmt.Printf("  %s%s\n", PadRight(label, 10), tag)
+			}
 		}
+	}
+	if cfg.Cores == nil {
+		cfg.Cores = map[Network]*CoreConfig{}
+	}
+	if cfg.Cores[Mainnet] == nil {
+		cfg.Cores[Mainnet] = DefaultConfig().Cores[Mainnet]
 	}
 
 	ynHint := func(current, def bool) string {
 		if hasExisting {
-			cur, d := "no", "no"
-			if current {
-				cur = "yes"
-			}
-			if def {
-				d = "yes"
-			}
-			return fmt.Sprintf("(current: %s%s%s, default: %s)", green, cur, cyan, d)
+			return fmt.Sprintf("(current: %s%s%s, default: %s)", green, YesNo(current), cyan, YesNo(def))
 		}
-		d := "no"
-		if def {
-			d = "yes"
-		}
-		return fmt.Sprintf("(default: %s)", d)
+		return fmt.Sprintf("(default: %s)", YesNo(def))
 	}
 
 	ynVal := func(current, def bool) bool {
@@ -148,118 +180,105 @@ func cmdSetup(_ []string) error {
 		return def
 	}
 
-	addrHint := func(current, def string) string {
-		if hasExisting && current != "" {
-			return fmt.Sprintf("(current: %s%s%s, default: %s)", green, current, cyan, def)
+	// askAddr asks for a host:port. An empty answer keeps current (or def
+	// when there is none); an invalid one warns and keeps it too.
+	askAddr := func(current, def string) (string, error) {
+		keep := current
+		if keep == "" {
+			keep = def
 		}
-		return fmt.Sprintf("(default: %s)", def)
+		hint := fmt.Sprintf("(default: %s)", def)
+		if hasExisting && current != "" {
+			hint = fmt.Sprintf("(current: %s%s%s, default: %s)", green, current, cyan, def)
+		}
+		fmt.Printf("  %s%s%s: ", cyan, hint, reset)
+		answer, err := readLine(reader)
+		if err != nil {
+			return "", errSetupCancelled
+		}
+		if answer == "" {
+			return keep, nil
+		}
+		if err := validateAddr(answer); err != nil {
+			Warnf("%v; using %s", err, keep)
+			return keep, nil
+		}
+		return answer, nil
 	}
 
-	// --- Advanced settings gate ---
-	fmt.Printf("\n%s\n\n", SectionHead("Advanced", NoColor))
-
-	fmt.Println("  That covers the basics! Want to configure advanced settings?")
-	fmt.Printf("  %s(testnet, API ports, explorer, checkpoints)%s\n", dim, reset)
-	fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
-	if parseYes(readLine(reader), true) {
+	// askExplorer asks whether to serve a block explorer and on which address.
+	askExplorer := func(net Network, cc *CoreConfig, def string) error {
+		enabled := cc.ExplorerAddr != ""
+		fmt.Printf("  Enable the %s block explorer?\n", net)
+		fmt.Printf("  %sServes a block explorer you can open in your browser.%s\n", dim, reset)
+		yes, err := askYes(ynHint(enabled, true), ynVal(enabled, true))
+		if err != nil {
+			return err
+		}
+		if !yes {
+			cc.ExplorerAddr = ""
+			return nil
+		}
 		fmt.Println()
+		fmt.Printf("  Explorer address for %s:\n", net)
+		addr, err := askAddr(cc.ExplorerAddr, def)
+		if err != nil {
+			return err
+		}
+		cc.ExplorerAddr = addr
+		return nil
+	}
 
-		// --- Testnet ---
-		fmt.Printf("\n%s\n\n", ErrorHead("Testnet", NoColor))
-
+	// Advanced settings
+	head(SectionHead("Advanced", NoColor))
+	fmt.Println("  Configure advanced settings?")
+	fmt.Printf("  %s(testnet, API ports, explorer, checkpoints)%s\n", dim, reset)
+	advanced, err := askYes("(default: yes)", true)
+	if err != nil {
+		return err
+	}
+	if advanced {
+		// Testnet
+		head(NetHead(Testnet, "Testnet", NoColor))
 		testnetEnabled := cfg.Cores[Testnet] != nil && cfg.Cores[Testnet].Enabled
-		fmt.Println("  Enable testnet? A separate network for testing — coins have no value.")
-		fmt.Printf("  yes or no %s%s%s: ", cyan, ynHint(testnetEnabled, true), reset)
-		if parseYes(readLine(reader), ynVal(testnetEnabled, true)) {
+		fmt.Println("  Enable testnet? It is a separate network for testing. Its coins have no value.")
+		yes, err := askYes(ynHint(testnetEnabled, true), ynVal(testnetEnabled, true))
+		if err != nil {
+			return err
+		}
+		if yes {
 			if cfg.Cores[Testnet] == nil {
 				cfg.Cores[Testnet] = &CoreConfig{Version: "latest", APIAddr: "127.0.0.1:18332"}
 			}
-			cfg.Cores[Testnet].Enabled = true
+			tc := cfg.Cores[Testnet]
+			tc.Enabled = true
 			fmt.Println()
-
-			fmt.Println("  Testnet API address — where tools connect to your testnet node.")
-			fmt.Printf("  %s%s%s: ", cyan, addrHint(cfg.Cores[Testnet].APIAddr, "127.0.0.1:18332"), reset)
-			if answer := readLine(reader); answer != "" {
-				if err := validateAddr(answer); err != nil {
-					fmt.Printf("  %s%v — keeping current%s\n", dim, err, reset)
-				} else {
-					cfg.Cores[Testnet].APIAddr = answer
-				}
+			fmt.Println("  Testnet API address, where tools connect to your testnet node:")
+			if tc.APIAddr, err = askAddr(tc.APIAddr, "127.0.0.1:18332"); err != nil {
+				return err
 			}
 			fmt.Println()
-
-			explorerEnabled := cfg.Cores[Testnet].ExplorerAddr != ""
-			fmt.Println("  Enable the testnet block explorer?")
-			fmt.Printf("  %sServes a web-based block explorer you can open in your browser.%s\n", dim, reset)
-			fmt.Printf("  yes or no %s%s%s: ", cyan, ynHint(explorerEnabled, true), reset)
-			if parseYes(readLine(reader), ynVal(explorerEnabled, true)) {
-				fmt.Println()
-				fmt.Println("  Testnet explorer address:")
-				explorerAddr := cfg.Cores[Testnet].ExplorerAddr
-				if explorerAddr == "" {
-					explorerAddr = "127.0.0.1:18080"
-				}
-				fmt.Printf("  %s%s%s: ", cyan, addrHint(explorerAddr, "127.0.0.1:18080"), reset)
-				answer := readLine(reader)
-				if answer == "" {
-					cfg.Cores[Testnet].ExplorerAddr = explorerAddr
-				} else if err := validateAddr(answer); err != nil {
-					fmt.Printf("  %s%v — keeping current%s\n", dim, err, reset)
-					cfg.Cores[Testnet].ExplorerAddr = explorerAddr
-				} else {
-					cfg.Cores[Testnet].ExplorerAddr = answer
-				}
-			} else {
-				cfg.Cores[Testnet].ExplorerAddr = ""
+			if err := askExplorer(Testnet, tc, "127.0.0.1:18080"); err != nil {
+				return err
 			}
 		} else if cfg.Cores[Testnet] != nil {
 			cfg.Cores[Testnet].Enabled = false
 		}
-		fmt.Println()
 
-		// --- Mainnet ---
-		fmt.Printf("\n%s\n\n", SectionHead("Mainnet", NoColor))
-
-		fmt.Println("  Mainnet API address — how tools like 'blocknet attach' connect to your node.")
-		fmt.Printf("  %s%s%s: ", cyan, addrHint(cfg.Cores[Mainnet].APIAddr, "127.0.0.1:8332"), reset)
-		if answer := readLine(reader); answer != "" {
-			if err := validateAddr(answer); err != nil {
-				fmt.Printf("  %s%v — keeping current%s\n", dim, err, reset)
-			} else {
-				cfg.Cores[Mainnet].APIAddr = answer
-			}
+		// Mainnet
+		mc := cfg.Cores[Mainnet]
+		head(NetHead(Mainnet, "Mainnet", NoColor))
+		fmt.Println("  Mainnet API address, where tools like 'blocknet attach' connect to your node:")
+		if mc.APIAddr, err = askAddr(mc.APIAddr, "127.0.0.1:8332"); err != nil {
+			return err
 		}
 		fmt.Println()
-
-		mainExplorerEnabled := cfg.Cores[Mainnet].ExplorerAddr != ""
-		fmt.Println("  Enable the mainnet block explorer?")
-		fmt.Printf("  %sServes a web-based block explorer you can open in your browser.%s\n", dim, reset)
-		fmt.Printf("  yes or no %s%s%s: ", cyan, ynHint(mainExplorerEnabled, true), reset)
-		if parseYes(readLine(reader), ynVal(mainExplorerEnabled, true)) {
-			fmt.Println()
-			fmt.Println("  Mainnet explorer address:")
-			explorerAddr := cfg.Cores[Mainnet].ExplorerAddr
-			if explorerAddr == "" {
-				explorerAddr = "127.0.0.1:8080"
-			}
-			fmt.Printf("  %s%s%s: ", cyan, addrHint(explorerAddr, "127.0.0.1:8080"), reset)
-			answer := readLine(reader)
-			if answer == "" {
-				cfg.Cores[Mainnet].ExplorerAddr = explorerAddr
-			} else if err := validateAddr(answer); err != nil {
-				fmt.Printf("  %s%v — keeping current%s\n", dim, err, reset)
-				cfg.Cores[Mainnet].ExplorerAddr = explorerAddr
-			} else {
-				cfg.Cores[Mainnet].ExplorerAddr = answer
-			}
-		} else {
-			cfg.Cores[Mainnet].ExplorerAddr = ""
+		if err := askExplorer(Mainnet, mc, "127.0.0.1:8080"); err != nil {
+			return err
 		}
-		fmt.Println()
 
-		// --- Checkpoints ---
-		fmt.Printf("\n%s\n\n", SectionHead("Sync", NoColor))
-
+		// Checkpoints
+		head(SectionHead("Sync", NoColor))
 		currentCheckpoints := false
 		for _, cc := range cfg.Cores {
 			if cc.SaveCheckpoints {
@@ -269,36 +288,37 @@ func cmdSetup(_ []string) error {
 		}
 		fmt.Println("  Save checkpoints during sync?")
 		fmt.Printf("  %sWrites a checkpoint every 100 blocks so future syncs can skip verified ranges.%s\n", dim, reset)
-		fmt.Printf("  yes or no %s%s%s: ", cyan, ynHint(currentCheckpoints, false), reset)
-		if parseYes(readLine(reader), ynVal(currentCheckpoints, false)) {
-			for i := range cfg.Cores {
-				cfg.Cores[i].SaveCheckpoints = true
-			}
-		} else {
-			for i := range cfg.Cores {
-				cfg.Cores[i].SaveCheckpoints = false
-			}
+		save, err := askYes(ynHint(currentCheckpoints, false), ynVal(currentCheckpoints, false))
+		if err != nil {
+			return err
 		}
-		fmt.Println()
+		for _, cc := range cfg.Cores {
+			cc.SaveCheckpoints = save
+		}
 	}
 
-	// --- Save config ---
+	// Save config
+	head(SectionHead("Config", NoColor))
 	if err := EnsureConfigDir(); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
+		return fmt.Errorf("could not create the config directory: %w", err)
 	}
 	if err := SaveConfig(cfgPath, cfg); err != nil {
-		return fmt.Errorf("save config: %w", err)
+		return fmt.Errorf("could not save config: %w", err)
 	}
-	fmt.Printf("  Config saved to %s%s%s\n\n", dim, cfgPath, reset)
+	fmt.Printf("  %s✓%s Saved to %s%s%s\n", green, reset, dim, cfgPath, reset)
+	done = append(done, "config saved to "+cfgPath)
 
 	if binPath, _ := os.Executable(); binPath != "" {
 		if err := installSchedule(binPath, cfg.CheckIntervalDuration()); err != nil {
-			fmt.Printf("  %sCouldn't set up auto-updates: %v%s\n", dim, err, reset)
+			Warnf("could not set up auto-updates: %v", err)
+		} else {
+			fmt.Printf("  %s✓%s Auto-updates scheduled\n", green, reset)
+			done = append(done, "auto-updates scheduled")
 		}
-		fmt.Println()
 	}
 
-	// --- Install core ---
+	// Install core
+	head(SectionHead("Core", NoColor))
 	hasCore := false
 	if resolved, err := ResolveInstalledVersion("latest"); err == nil {
 		if _, err := os.Stat(CoreBinaryPath(resolved)); err == nil {
@@ -308,98 +328,123 @@ func cmdSetup(_ []string) error {
 
 	if hasCore {
 		fmt.Println("  A core version is already installed.")
-		fmt.Println()
 	} else {
-		fmt.Printf("\n%s\n\n", SectionHead("Download", NoColor))
-
-		fmt.Println("  You don't have a core installed yet.")
-		fmt.Println("  Download the latest one now?")
-		fmt.Printf("  %sThis is needed before you can start your node.%s\n", dim, reset)
-		fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
-		if parseYes(readLine(reader), true) {
-			fmt.Println()
-
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-			defer cancel()
-
-			latest, err := LatestRelease(ctx)
-			if err != nil {
-				fmt.Printf("  %sCouldn't check for releases: %v%s\n", dim, err, reset)
-				fmt.Println("  Check your internet connection and try: blocknet install latest")
-			} else {
-				asset := FindAsset(latest.Assets)
-				if asset == nil {
-					fmt.Printf("  %sNo download available for your platform in %s%s\n", dim, latest.Tag, reset)
-					fmt.Println("  You can install manually later: blocknet install latest")
-				} else {
-					expectedSHA, err := ResolveAssetSHA256(ctx, latest.Assets, asset.Name)
-					if err != nil {
-						fmt.Printf("  %sChecksum lookup failed: %v%s\n", dim, err, reset)
-						fmt.Println("  Try again later: blocknet install latest")
-						fmt.Println()
-					}
-					if err == nil {
-						fmt.Printf("  Downloading %s (%s)...\n", latest.Tag, asset.Name)
-						destPath := CoreBinaryPath(latest.Tag)
-						if err := DownloadAsset(ctx, asset.URL, destPath, expectedSHA, downloadProgress); err != nil {
-							fmt.Println()
-							fmt.Printf("  %sDownload failed: %v%s\n", dim, err, reset)
-							fmt.Println("  Check your internet connection and try: blocknet install latest")
-						} else {
-							fmt.Println()
-							fmt.Printf("  %s✓ verified%s\n", green, reset)
-							fmt.Printf("  Installed %s\n", latest.Tag)
-							hasCore = true
-						}
-					}
-				}
+		fmt.Println("  You don't have a core installed yet. Download the latest one now?")
+		fmt.Printf("  %sYou need one before you can start your node.%s\n", dim, reset)
+		yes, err := askYes("(default: yes)", true)
+		if err != nil {
+			return err
+		}
+		if yes {
+			hasCore = setupDownloadCore()
+			if hasCore {
+				done = append(done, "core installed")
 			}
 		}
-		fmt.Println()
 	}
 
-	// --- Shell integration ---
+	// Shell integration
 	if shell := detectShell(); shell != "" {
 		rcFile := shellRCFile(shell)
 		binPath, _ := os.Executable()
 
-		fmt.Printf("\n%s\n\n", SectionHead("Shell", NoColor))
-
+		head(SectionHead("Shell", NoColor))
 		fmt.Println("  Set up the 'bnt' shortcut so you can use blocknet from any terminal?")
-		fmt.Printf("  %sAdds blocknet to your PATH and enables tab completion.%s\n", dim, reset)
-		fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
-		if parseYes(readLine(reader), true) {
-			if err := installShellIntegration(shell, rcFile, binPath); err != nil {
-				fmt.Printf("  %sCouldn't set up shell: %v%s\n", dim, err, reset)
-			} else {
-				fmt.Println("  Done. Open a new terminal to use 'blocknet' and 'bnt'.")
+		fmt.Printf("  %sAdds blocknet to your PATH and turns on tab completion.%s\n", dim, reset)
+		yes, err := askYes("(default: yes)", true)
+		if err != nil {
+			return err
+		}
+		if yes {
+			changed, err := installShellIntegration(shell, rcFile, binPath)
+			switch {
+			case err != nil:
+				Warnf("could not set up the shell: %v", err)
+			case changed:
+				fmt.Printf("  %s✓%s Updated %s. Open a new terminal to use 'blocknet' and 'bnt'.\n", green, reset, rcFile)
+			default:
+				fmt.Printf("  %s✓%s Already set up in %s\n", green, reset, rcFile)
 			}
 		}
-		fmt.Println()
 	}
 
-	// --- Start now? ---
+	// Start now
+	started := false
 	if hasCore {
+		head(SectionHead("Start", NoColor))
 		fmt.Println("  Start your node now?")
-		fmt.Printf("  yes or no %s(default: yes)%s: ", cyan, reset)
-		if parseYes(readLine(reader), true) {
+		yes, err := askYes("(default: yes)", true)
+		if err != nil {
+			return err
+		}
+		if yes {
+			// The "# Start" heading above stands for the start output too.
 			fmt.Println()
-			if err := cmdStart(nil); err != nil {
-				fmt.Printf("  %sCouldn't start: %v%s\n\n", dim, err, reset)
+			if err := startNetworks(nil, "", "blocknet start [mainnet|testnet]", nil); err != nil {
+				Warnf("could not start: %v", err)
+			} else {
+				// cmdStart ends with a blank line of its own.
+				started = true
 			}
 		} else {
-			fmt.Println()
-			fmt.Printf("  You can start later with: %sblocknet start%s\n", bold, reset)
+			fmt.Printf("  You can start later with: %sblocknet start%s\n", green, reset)
 		}
-		fmt.Println()
 	}
 
-	fmt.Printf("  %sSetup complete!%s Here's what you can do next:\n\n", green, reset)
-	fmt.Println("    blocknet status            See what's running")
-	fmt.Println("    blocknet attach mainnet     Open the interactive shell")
-	fmt.Println("    blocknet help               See all commands")
+	if !started {
+		fmt.Println()
+	}
+	fmt.Printf("%s\n\n", SectionHead("Setup complete", NoColor))
+	next := [][2]string{
+		{"blocknet status", "See what's running"},
+		{"blocknet attach mainnet", "Open the interactive shell"},
+		{"blocknet help", "See all commands"},
+	}
+	for _, row := range next {
+		fmt.Printf("  %s%s%s%s\n", PadRight(row[0], 26), dim, row[1], reset)
+	}
 	fmt.Println()
 	return nil
+}
+
+// setupDownloadCore downloads and installs the latest core. It reports
+// failures as warnings and returns whether a core is now installed.
+func setupDownloadCore() bool {
+	green, _, _, _, _, reset := Palette(NoColor)
+	retry := "  Check your internet connection and try: blocknet install latest"
+	fmt.Println()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	latest, err := LatestRelease(ctx)
+	if err != nil {
+		Warnf("could not check for releases: %v", err)
+		fmt.Println(retry)
+		return false
+	}
+	asset := FindAsset(latest.Assets)
+	if asset == nil {
+		Warnf("%s has no download for your platform", latest.Tag)
+		fmt.Println("  You can install one later: blocknet install latest")
+		return false
+	}
+	expectedSHA, err := ResolveAssetSHA256(ctx, latest.Assets, asset.Name)
+	if err != nil {
+		Warnf("could not get the checksum for %s: %v", latest.Tag, err)
+		fmt.Println("  Try again later: blocknet install latest")
+		return false
+	}
+	fmt.Printf("  Downloading %s (%s)\n", latest.Tag, asset.Name)
+	if err := DownloadAsset(ctx, asset.URL, CoreBinaryPath(latest.Tag), expectedSHA, downloadProgress); err != nil {
+		fmt.Println()
+		Warnf("could not download %s: %v", latest.Tag, err)
+		fmt.Println(retry)
+		return false
+	}
+	fmt.Println()
+	fmt.Printf("  %s✓%s Verified and installed %s\n", green, reset, latest.Tag)
+	return true
 }
 
 func detectShell() string {
@@ -444,9 +489,11 @@ func shellRCFile(shell string) string {
 	return ""
 }
 
-func installShellIntegration(shell, rcFile, binPath string) error {
+// installShellIntegration adds the PATH entry, the bnt alias and completions
+// to rcFile. It reports whether it changed the file.
+func installShellIntegration(shell, rcFile, binPath string) (bool, error) {
 	if rcFile == "" {
-		return fmt.Errorf("couldn't determine rc file for %s", shell)
+		return false, fmt.Errorf("could not find the rc file for %s", shell)
 	}
 
 	existing, _ := os.ReadFile(rcFile)
@@ -488,21 +535,22 @@ func installShellIntegration(shell, rcFile, binPath string) error {
 	}
 
 	if len(block) == 0 {
-		return nil
+		return false, nil
 	}
 
-	if shell == "fish" {
-		os.MkdirAll(filepath.Dir(rcFile), 0755)
+	if err := os.MkdirAll(filepath.Dir(rcFile), 0o755); err != nil {
+		return false, err
 	}
 
-	f, err := os.OpenFile(rcFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(rcFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return err
+		return false, err
 	}
-	defer f.Close()
-
-	_, err = fmt.Fprintf(f, "\n# Blocknet\n%s\n", strings.Join(block, "\n"))
-	return err
+	if _, err := fmt.Fprintf(f, "\n# Blocknet\n%s\n", strings.Join(block, "\n")); err != nil {
+		f.Close()
+		return false, err
+	}
+	return true, f.Close()
 }
 
 func dirInPATH(dir string) bool {
@@ -514,7 +562,12 @@ func dirInPATH(dir string) bool {
 	return false
 }
 
-func readLine(reader *bufio.Reader) string {
-	line, _ := reader.ReadString('\n')
-	return strings.TrimSpace(line)
+// readLine reads one answer. It returns io.EOF (or another read error) when
+// input ends, so callers can stop instead of taking every default.
+func readLine(reader *bufio.Reader) (string, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
 }

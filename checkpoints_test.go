@@ -81,3 +81,38 @@ func TestRefreshCheckpointsRejectsRemoteWithoutEntries(t *testing.T) {
 		t.Fatalf("local file changed: %q", got)
 	}
 }
+
+func TestCheckCheckpointsReportsWithoutWriting(t *testing.T) {
+	a, b, c := strings.Repeat("A", 64), strings.Repeat("B", 64), strings.Repeat("C", 64)
+	serveCheckpoints(t, "100:"+a+"\n200:"+b+"\n")
+
+	dir := t.TempDir()
+	st, err := CheckCheckpoints(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.Missing || !st.Stale || st.Entries != 2 || st.MaxHeight != 200 {
+		t.Fatalf("missing file: unexpected status %+v", st)
+	}
+	if _, err := os.Stat(CheckpointsPath(dir)); !os.IsNotExist(err) {
+		t.Fatal("CheckCheckpoints created checkpoints.dat")
+	}
+
+	stale := "100:" + a + "\n200:" + c + "\n"
+	if err := os.WriteFile(CheckpointsPath(dir), []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err = CheckCheckpoints(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Missing || !st.Stale {
+		t.Fatalf("stale file: unexpected status %+v", st)
+	}
+	if got, _ := os.ReadFile(CheckpointsPath(dir)); string(got) != stale {
+		t.Fatalf("CheckCheckpoints changed the file: %q", got)
+	}
+	if _, err := os.Stat(CheckpointsPath(dir) + ".bak"); !os.IsNotExist(err) {
+		t.Fatal("CheckCheckpoints wrote a backup")
+	}
+}

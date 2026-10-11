@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -57,5 +62,30 @@ func TestFileSHA256(t *testing.T) {
 	const want = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 	if got != want {
 		t.Fatalf("expected %s, got %s", want, got)
+	}
+}
+
+func TestListReleasesFollowsPages(t *testing.T) {
+	const total = 137
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+		var items []string
+		for i := (page - 1) * per; i < page*per && i < total; i++ {
+			items = append(items, fmt.Sprintf(`{"tag_name":"v0.%d.0"}`, i))
+		}
+		fmt.Fprintf(w, "[%s]", strings.Join(items, ","))
+	}))
+	defer srv.Close()
+
+	rels, err := listReleasesFrom(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rels) != total {
+		t.Fatalf("got %d releases, want %d", len(rels), total)
+	}
+	if rels[total-1].Tag != fmt.Sprintf("v0.%d.0", total-1) {
+		t.Fatalf("last tag %s", rels[total-1].Tag)
 	}
 }

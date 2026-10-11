@@ -20,6 +20,9 @@ func testSessionWithWallet(t *testing.T, handler http.Handler, input, walletName
 	tmpDir := t.TempDir()
 	t.Setenv("BNT_CONFIG_DIR", tmpDir)
 	t.Setenv("HOME", tmpDir)
+	// The wallet menu must not depend on the shell's folder (the repo root
+	// holds a real testnet.wallet.dat), so run from an empty temp folder.
+	t.Chdir(t.TempDir())
 
 	walletsDir := filepath.Join(tmpDir, "wallets")
 	os.MkdirAll(walletsDir, 0755)
@@ -91,7 +94,7 @@ func TestCmdLoad_RaceConditionWalletLoadedDuringMenu(t *testing.T) {
 			t.Error("POST /api/wallet/create should not have been called")
 			w.WriteHeader(http.StatusConflict)
 		}
-	}), "2\ntestwallet\ntestpass\n", "testwallet.wallet.dat")
+	}), "2\ntestwallet\ntestpass\ntestpass\n", "testwallet.wallet.dat")
 
 	err := session.cmdLoad()
 	if err != nil {
@@ -152,7 +155,7 @@ func TestCmdCreate_NormalSuccess(t *testing.T) {
 				"filename": "testwallet.wallet.dat",
 			})
 		}
-	}), "2\ntestwallet\ntestpass\n", "testwallet.wallet.dat")
+	}), "2\ntestwallet\ntestpass\ntestpass\n", "testwallet.wallet.dat")
 
 	err := session.cmdLoad()
 	if err != nil {

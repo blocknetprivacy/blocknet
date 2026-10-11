@@ -33,6 +33,6 @@ func ResolveNetwork(arg string, running []Network) (Network, error) {
 	case 1:
 		return running[0], nil
 	default:
-		return "", fmt.Errorf("multiple cores running — specify mainnet or testnet")
+		return "", fmt.Errorf("multiple cores running: specify mainnet or testnet")
 	}
 }
