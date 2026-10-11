@@ -31,13 +31,13 @@ func installSchedule(binPath string, interval time.Duration) error {
 
 	err := runCmd("schtasks", "/create",
 		"/tn", taskName,
-		"/tr", fmt.Sprintf(`"%s" upgrade`, binPath),
+		"/tr", fmt.Sprintf(`"%s" upgrade --nocolor`, binPath),
 		"/sc", "minute",
 		"/mo", fmt.Sprintf("%d", minutes),
 		"/f",
 	)
 	if err != nil {
-		return fmt.Errorf("schtasks create: %w", err)
+		return fmt.Errorf("could not create scheduled task: %w", err)
 	}
 	return nil
 }

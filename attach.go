@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 )
@@ -74,7 +76,7 @@ func (s *AttachSession) Run() error {
 			if err.Error() == "quit" {
 				return nil
 			}
-			fmt.Printf("\n%s\n  %v\n", ErrorHead("Error", s.noColor), err)
+			fmt.Fprintf(os.Stderr, "\n%s\n\n  %v\n", ErrorHead("Error", s.noColor), capitalize(err.Error()))
 		}
 	}
 }
@@ -95,13 +97,21 @@ func (s *AttachSession) executeCommand(line string) error {
 	cmd := strings.ToLower(parts[0])
 	args := parts[1:]
 
-	if s.locked && cmd != "unlock" && cmd != "load" && cmd != "unload" && cmd != "help" && cmd != "?" && cmd != "quit" && cmd != "exit" && cmd != "q" {
-		return fmt.Errorf("wallet is locked, use 'unlock' first")
+	if a, ok := commandArity[cmd]; ok {
+		if err := ExtraArgs(args, a.max, a.usage); err != nil {
+			return err
+		}
+	}
+
+	if needsUnlockedWallet[cmd] {
+		if err := s.ensureUnlocked(); err != nil {
+			return err
+		}
 	}
 
 	switch cmd {
 	case "help", "?":
-		s.cmdHelp(args)
+		return s.cmdHelp(args)
 	case "version":
 		s.cmdVersion()
 	case "status":
@@ -173,6 +183,116 @@ func (s *AttachSession) executeCommand(line string) error {
 	return nil
 }
 
+// arity is the most arguments a command takes and its usage line.
+type arity struct {
+	max   int
+	usage string
+}
+
+// commandArity holds every fixed-arity command and alias, so extra arguments
+// are rejected in one place. Commands that take free text (send with its memo)
+// or read their input from prompts (sign, verify) are left out.
+var commandArity = map[string]arity{
+	"help": {1, "help [command]"}, "?": {1, "help [command]"},
+	"version": {0, "version"},
+	"status":  {0, "status"},
+	"balance": {0, "balance"}, "bal": {0, "balance"}, "b": {0, "balance"},
+	"address": {0, "address"}, "addr": {0, "address"}, "a": {0, "address"},
+	"history": {0, "history"}, "hist": {0, "history"}, "h": {0, "history"},
+	"outputs": {2, outputsUsage}, "outs": {2, outputsUsage}, "out": {2, outputsUsage},
+	"peers":       {0, "peers"},
+	"banned":      {0, "banned"},
+	"export-peer": {0, "export-peer"},
+	"mining":      {2, miningUsage},
+	"load":        {0, "load"},
+	"unload":      {0, "unload"},
+	"sync":        {0, "sync"}, "scan": {0, "sync"},
+	"seed":     {0, "seed"},
+	"import":   {0, "import"},
+	"viewkeys": {0, "viewkeys"},
+	"prove":    {1, "prove <txid>"},
+	"lock":     {0, "lock"},
+	"unlock":   {0, "unlock"},
+	"audit":    {0, "audit"},
+	"explore":  {1, exploreUsage}, "exp": {1, exploreUsage},
+	"mempool":          {0, "mempool"},
+	"purge":            {0, "purge"},
+	"certify":          {0, "certify"},
+	"save-checkpoints": {0, "save-checkpoints"},
+	"load-checkpoints": {0, "load-checkpoints"},
+	"license":          {0, "license"},
+	"about":            {0, "about"},
+	"quit":             {0, "quit"}, "exit": {0, "quit"}, "q": {0, "quit"},
+}
+
+// Usage lines shared by the arity table and the commands themselves.
+const (
+	outputsUsage = "outputs [spent|unspent|pending] [index] | outputs tx <txid>[:<index>]"
+	miningUsage  = "mining [start|stop|threads [N]]"
+	exploreUsage = "explore <height|hash|mempool>"
+)
+
+// needsUnlockedWallet lists the commands whose core endpoints refuse to run
+// while the wallet is locked. Node commands, load/unload, lock/unlock,
+// import, verify and purge do not need an unlocked wallet.
+var needsUnlockedWallet = map[string]bool{
+	"balance": true, "bal": true, "b": true,
+	"address": true, "addr": true, "a": true,
+	"send": true, "sign": true,
+	"history": true, "hist": true, "h": true,
+	"outputs": true, "outs": true, "out": true,
+	"seed": true, "viewkeys": true, "prove": true, "audit": true,
+	"sync": true, "scan": true,
+}
+
+// errLocked is the error every command returns while the wallet is locked.
+var errLocked = fmt.Errorf("wallet is locked, use 'unlock' first")
+
+// coreLocked asks the core whether the loaded wallet is locked. It returns
+// an error when the core cannot say (no wallet loaded, core down).
+func (s *AttachSession) coreLocked() (bool, error) {
+	ctx, cancel := withPatience(defaultAPITimeout)
+	defer cancel()
+	_, err := s.client.Get(ctx, "/api/wallet/balance")
+	if err == nil {
+		s.locked = false
+		return false, nil
+	}
+	if apiErr, ok := err.(*APIError); ok && apiErr.StatusCode == 403 && strings.Contains(apiErr.Message, "locked") {
+		s.locked = true
+		return true, nil
+	}
+	return false, err
+}
+
+// ensureUnlocked stops a wallet command early when the wallet is locked, so
+// the user is not asked for input that the core will refuse. The local flag
+// can be stale (another client may have unlocked), so it is checked with the
+// core before refusing.
+func (s *AttachSession) ensureUnlocked() error {
+	if !s.locked {
+		return nil
+	}
+	locked, err := s.coreLocked()
+	if err != nil {
+		return s.handleAPIError(err)
+	}
+	if locked {
+		return errLocked
+	}
+	return nil
+}
+
+// capitalize upper-cases the first letter of an error message for display.
+// Go error strings stay lowercase; only the printed "# Error" block changes.
+func capitalize(msg string) string {
+	r, size := utf8.DecodeRuneInString(msg)
+	if r == utf8.RuneError {
+		return msg
+	}
+	return string(unicode.ToUpper(r)) + msg[size:]
+}
+
 func (s *AttachSession) readPassword(prompt string) (string, error) {
 	fmt.Print(prompt)
 	fd := int(os.Stdin.Fd())
@@ -189,25 +309,39 @@ func (s *AttachSession) handleAPIError(err error) error {
 	if apiErr, ok := err.(*APIError); ok {
 		if apiErr.StatusCode == 403 && strings.Contains(apiErr.Message, "locked") {
 			s.locked = true
-			return fmt.Errorf("wallet is locked, use 'unlock' first")
+			return errLocked
 		}
 		return fmt.Errorf("%s", apiErr.Message)
 	}
 	return err
 }
 
+// bannerInner is the room for the title on the banner's middle line: the bar
+// is 28 blocks wide between its end caps and keeps 4 blocks on each side.
+const bannerInner = 22
+
+// bannerTitle is "BLOCKNET <version>", with the version cut short so the title
+// always leaves at least a 1-column margin on each side of the bar.
+func bannerTitle() string {
+	const prefix = "BLOCKNET "
+	ver := []rune(displayVersion())
+	if room := bannerInner - 2 - len(prefix); len(ver) > room {
+		ver = append(ver[:room-1], '…')
+	}
+	return prefix + string(ver)
+}
+
 // printLogo renders the BLOCKNET banner, matching the core's interactive menu so
-// the attach session feels like the same product. Testnet gets the pink accent.
+// the attach session feels like the same product. The accent follows the network.
 func (s *AttachSession) printLogo() {
-	green := "\033[38;5;118m"
-	if s.network == Testnet {
-		green = "\033[38;2;255;0;170m"
-	}
-	reset := "\033[0m"
-	if s.noColor {
-		green = ""
-		reset = ""
-	}
+	accent := NetColor(s.network, s.noColor)
+	_, _, _, _, _, reset := Palette(s.noColor)
+
+	const inner = bannerInner
+	title := bannerTitle()
+	pad := max(inner-VisibleLen(title), 2)
+	left := (pad + 1) / 2
+	right := pad - left
 
 	logo := []string{
 		`        ▄███████▄`,
@@ -219,13 +353,13 @@ func (s *AttachSession) printLogo() {
 		`                  ▀███████▀`,
 		``,
 		`  ▄████████████████████████████▄`,
-		fmt.Sprintf(`  ████    BLOCKNET v%s   ████`, Version),
+		"  ████" + strings.Repeat(" ", left) + title + strings.Repeat(" ", right) + "████",
 		`  ▀████████████████████████████▀`,
 	}
 
 	fmt.Println()
 	for _, line := range logo {
-		fmt.Printf("%s%s%s\n", green, line, reset)
+		fmt.Printf("%s%s%s\n", accent, line, reset)
 		time.Sleep(40 * time.Millisecond)
 	}
 	fmt.Println()
@@ -266,7 +400,7 @@ func (s *AttachSession) printWelcome() {
 
 	st := res[0]
 	if st.err != nil {
-		fmt.Printf("\n  Connected to %s (status unavailable)\n", s.network)
+		fmt.Printf("  Connected to %s (status unavailable)\n", s.network)
 		fmt.Println("  Type 'help' for available commands")
 		printUpgradeNotice(builtinUpgradeNotice, s.noColor)
 		return
@@ -297,11 +431,14 @@ func (s *AttachSession) printWelcome() {
 			balStr += fmt.Sprintf(" + %s pending", FormatAmount(bal.Pending))
 		}
 
-		fmt.Printf("\n  Address: %s\n", addr.Address)
+		fmt.Printf("  Address: %s\n", addr.Address)
 		fmt.Printf("  Balance: %s\n", balStr)
 	}
 
 	fmt.Printf("  Height:  %d\n", status.Height)
+	if s.locked {
+		fmt.Println("  Wallet:  locked (use 'unlock')")
+	}
 	fmt.Println()
 	fmt.Println("  Type 'help' for available commands")
 	printUpgradeNotice(upgradeNoticeFrom(st.raw), s.noColor)
@@ -319,7 +456,7 @@ func (s *AttachSession) listenEvents() {
 					Height uint64 `json:"height"`
 				}
 				if json.Unmarshal([]byte(data), &block) == nil {
-					fmt.Printf("\n%s\n", SectionHead(fmt.Sprintf("Mined block %d", block.Height), s.noColor))
+					fmt.Printf("\n%s\n\n", SectionHead(fmt.Sprintf("Mined block %d", block.Height), s.noColor))
 					fmt.Printf("  https://explorer.blocknetcrypto.com/block/%d\n", block.Height)
 				}
 			}

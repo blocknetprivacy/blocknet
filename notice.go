@@ -43,18 +43,12 @@ func runningCoreNotice(cfg *Config) string {
 	return builtinUpgradeNotice
 }
 
+// printUpgradeNotice prints the notice as its own section: a blank line, an
+// amber "# Network upgrade" heading, a blank line and the plain wrapped text.
 func printUpgradeNotice(text string, noColor bool) {
-	amber, reset := "\033[38;2;255;170;0m", "\033[0m"
-	if noColor {
-		amber, reset = "", ""
-	}
-	fmt.Println()
-	for i, line := range wrapWords(text, 72) {
-		if i == 0 {
-			fmt.Printf("  %s%s%s\n", amber, line, reset)
-		} else {
-			fmt.Printf("  %s\n", line)
-		}
+	fmt.Printf("\n%s\n\n", WarnHead("Network upgrade", noColor))
+	for _, line := range wrapWords(text, 72) {
+		fmt.Printf("  %s\n", line)
 	}
 }
 

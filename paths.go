@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 )
 
@@ -19,6 +20,28 @@ func ConfigFile() string {
 	return filepath.Join(ConfigDir(), "config.json")
 }
 
+var versionNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// maxVersionNameLen keeps version folder names well under filesystem limits.
+const maxVersionNameLen = 64
+
+// ValidateVersionName rejects version names that are not a plain folder
+// name, such as "", ".", "..", anything with a path separator, or anything
+// longer than maxVersionNameLen. Every
+// version taken from the user goes through it before it reaches CoreDir.
+func ValidateVersionName(version string) error {
+	if len(version) > maxVersionNameLen {
+		return fmt.Errorf("invalid version: longer than %d characters", maxVersionNameLen)
+	}
+	if version == "" || version == "." || version == ".." ||
+		!versionNameRe.MatchString(version) || filepath.Base(version) != version {
+		return fmt.Errorf("invalid version %q: use a tag like v0.7.0, latest or nightly", version)
+	}
+	return nil
+}
+
+// CoreDir is the folder for one installed core version. Validate user input
+// with ValidateVersionName first.
 func CoreDir(version string) string {
 	return filepath.Join(ConfigDir(), "cores", version)
 }

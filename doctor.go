@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -33,11 +34,11 @@ func validateConfig(cfg *Config, networks []Network) []string {
 			continue
 		}
 		if cc.APIAddr == "" {
-			warns = append(warns, fmt.Sprintf("%s has no API address — attach won't work", n))
+			warns = append(warns, fmt.Sprintf("%s has no API address, so attach will not work", n))
 		}
 		if IsPinned(cc.Version) {
 			if _, err := os.Stat(CoreBinaryPath(cc.Version)); os.IsNotExist(err) {
-				warns = append(warns, fmt.Sprintf("%s is pinned to %s but it's not installed", n, cc.Version))
+				warns = append(warns, fmt.Sprintf("%s is pinned to %s, which is not installed", n, cc.Version))
 			}
 		}
 	}
@@ -45,57 +46,66 @@ func validateConfig(cfg *Config, networks []Network) []string {
 	return warns
 }
 
-func cmdDoctor(_ []string) error {
-	green, red, amber, pink, dim, reset := "\033[38;2;170;255;0m", "\033[38;2;255;80;80m", "\033[38;2;255;170;0m", "\033[38;2;255;0;170m", "\033[2m", "\033[0m"
-	if NoColor {
-		green, red, amber, pink, dim, reset = "", "", "", "", "", ""
+// doctorLabelWidth pads check labels so their details line up in one column.
+const doctorLabelWidth = 20
+
+func cmdDoctor(args []string) error {
+	if err := ExtraArgs(args, 0, "blocknet doctor"); err != nil {
+		return err
 	}
+	green, _, amber, pink, dim, reset := Palette(NoColor)
 
-	pass := func(msg string) { fmt.Printf("  %s✓%s %s\n", green, reset, msg) }
-	fail := func(msg string) { fmt.Printf("  %s✗%s %s\n", red, reset, msg) }
-	warn := func(msg string) { fmt.Printf("  %s·%s %s\n", amber, reset, msg) }
-	info := func(msg string) { fmt.Printf("  %s·%s %s\n", dim, reset, msg) }
+	issues, warnings := 0, 0
+	line := func(mark, label, detail string) {
+		if detail == "" {
+			fmt.Printf("  %s %s\n", mark, label)
+			return
+		}
+		fmt.Printf("  %s %s%s\n", mark, PadRight(label, doctorLabelWidth), detail)
+	}
+	// pass is a check that is fine, fail is an issue, warn is worth a look
+	// but not an issue, info is neutral.
+	pass := func(label, detail string) { line(green+"✓"+reset, label, detail) }
+	fail := func(label, detail string) { issues++; line(pink+"✗"+reset, label, detail) }
+	warn := func(label, detail string) { warnings++; line(amber+"!"+reset, label, detail) }
+	info := func(label, detail string) { line(dim+"·"+reset, label, detail) }
 	hint := func(msg string) { fmt.Printf("    %s→%s %s\n", dim, reset, msg) }
-	section := func(name string) { fmt.Printf("\n%s\n", SectionHead(name, NoColor)) }
+	section := func(head string) { fmt.Printf("\n%s\n\n", head) }
 
-	issues := 0
 	allNets := []Network{Mainnet, Testnet}
 
-	// ── Config ──────────────────────────────────────────────
+	// Config
 
-	section("Config")
+	section(SectionHead("Config", NoColor))
 
 	cfgDir := ConfigDir()
 	if fi, err := os.Stat(cfgDir); err == nil && fi.IsDir() {
-		pass(fmt.Sprintf("Config directory exists (%s)", cfgDir))
+		pass("Config directory", cfgDir)
 	} else {
-		fail(fmt.Sprintf("Config directory missing (%s)", cfgDir))
+		fail("Config directory", "missing ("+cfgDir+")")
 		hint("Run 'blocknet setup' to create it")
-		issues++
 	}
 
 	cfgPath := ConfigFile()
 	if _, err := os.Stat(cfgPath); err == nil {
-		pass("Config file found")
+		pass("Config file", cfgPath)
 	} else {
-		info("No config file (using defaults)")
+		info("Config file", "none, using defaults")
 	}
 
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
-		fail(fmt.Sprintf("Config file is invalid: %v", err))
-		hint("Run 'blocknet setup' to regenerate it")
-		issues++
+		fail("Config file", fmt.Sprintf("invalid: %v", err))
+		hint("Run 'blocknet setup' to write a new one")
 		cfg = DefaultConfig()
 	}
 
 	if warns := validateConfig(cfg, allNets); len(warns) > 0 {
 		for _, w := range warns {
-			fail(w)
-			issues++
+			fail("Config check", w)
 		}
 	} else {
-		pass("Config validation passed")
+		pass("Config check", "no problems found")
 	}
 
 	coresDir := filepath.Join(ConfigDir(), "cores")
@@ -107,17 +117,16 @@ func cmdDoctor(_ []string) error {
 		}
 	}
 	if coreCount > 0 {
-		pass(fmt.Sprintf("%d core version(s) installed", coreCount))
+		pass("Core versions", Plural(coreCount, "version")+" installed")
 	} else {
-		fail("No core versions installed")
+		fail("Core versions", "none installed")
 		hint("Run 'blocknet install latest' to install one")
-		issues++
 	}
 
 	if fi, err := os.Stat(WalletsDir()); err == nil && fi.IsDir() {
-		pass("Wallets directory exists")
+		pass("Wallets directory", WalletsDir())
 	} else {
-		info("Wallets directory will be created on first start")
+		info("Wallets directory", "will be created on first start")
 	}
 
 	if wEntries, err := os.ReadDir(WalletsDir()); err == nil {
@@ -128,13 +137,13 @@ func cmdDoctor(_ []string) error {
 			}
 		}
 		if backupCount > 0 {
-			pass(fmt.Sprintf("%d wallet backup(s) in wallets directory", backupCount))
+			pass("Wallet files", Plural(backupCount, "file")+" in the wallets directory")
 		} else {
-			info("No wallet backups in wallets directory")
+			info("Wallet files", "none in the wallets directory")
 		}
 	}
 
-	// ── Per-network ─────────────────────────────────────────
+	// Per network
 
 	for _, n := range allNets {
 		cc := cfg.Cores[n]
@@ -142,87 +151,71 @@ func cmdDoctor(_ []string) error {
 			continue
 		}
 
-		netColor := green
-		if n == Testnet {
-			netColor = pink
-		}
 		title := strings.ToUpper(string(n)[:1]) + string(n)[1:]
-		fmt.Printf("\n%s#%s %s\n", netColor, reset, title)
+		section(NetHead(n, title, NoColor))
 
-		// Data directory
 		dd := cc.ResolveDataDir(n)
 		if fi, err := os.Stat(dd); err == nil && fi.IsDir() {
-			pass("Data directory exists")
+			pass("Data directory", dd)
 		} else {
-			info(fmt.Sprintf("Data directory will be created on first start (%s)", dd))
+			info("Data directory", "will be created on first start ("+dd+")")
 		}
 
-		// Wallet file
-		if cc.WalletFile != "" {
-			fi, err := os.Stat(cc.EffectiveWalletFile(n))
-			if err != nil {
-			fail(fmt.Sprintf("Wallet file not found (%s)", cc.WalletFile))
-			hint(fmt.Sprintf("Use 'blocknet attach %s' and run 'load' to pick a wallet", n))
-			issues++
-			} else if fi.Size() == 0 {
-			fail(fmt.Sprintf("Wallet file is empty (%s)", cc.WalletFile))
-			hint("File may be corrupted — use 'import' in attach mode to recover from seed")
-			issues++
+		// The core always gets the effective path, so check that one.
+		walletPath := cc.EffectiveWalletFile(n)
+		if fi, err := os.Stat(walletPath); err != nil {
+			if cc.WalletFile == "" {
+				info("Wallet file", "none yet ("+walletPath+")")
 			} else {
-				pass(fmt.Sprintf("Wallet file exists (%s)", filepath.Base(cc.WalletFile)))
-				if runtime.GOOS != "windows" && fi.Mode().Perm()&0077 != 0 {
-				fail(fmt.Sprintf("Wallet permissions too open (mode %04o, want 0600)", fi.Mode().Perm()))
-				hint(fmt.Sprintf("chmod 600 %s", cc.WalletFile))
-				issues++
-				}
+				fail("Wallet file", "not found ("+walletPath+")")
+				hint(fmt.Sprintf("Use 'blocknet attach %s' and run 'load' to pick a wallet", n))
+			}
+		} else if fi.Size() == 0 {
+			fail("Wallet file", "empty ("+walletPath+")")
+			hint("The file may be damaged. Use 'import' in attach to recover from your seed")
+		} else {
+			pass("Wallet file", walletPath)
+			if runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
+				fail("Wallet permissions", fmt.Sprintf("too open (mode %04o, want 0600)", fi.Mode().Perm()))
+				hint("chmod 600 " + walletPath)
 			}
 		}
 
-		// Core binary
 		if cc.Enabled {
 			resolved, err := ResolveInstalledVersion(cc.Version)
 			if err != nil {
-				fail(fmt.Sprintf("Core version %q not available: %v", cc.Version, err))
-				issues++
+				fail("Core binary", fmt.Sprintf("version %q not available: %v", cc.Version, err))
 			} else {
 				binPath := CoreBinaryPath(resolved)
 				if _, err := os.Stat(binPath); err == nil {
-					pass(fmt.Sprintf("Core binary exists (%s)", resolved))
+					pass("Core binary", resolved)
 				} else {
-				fail(fmt.Sprintf("Core binary missing at %s", binPath))
-				hint(fmt.Sprintf("Run 'blocknet install %s'", resolved))
-				issues++
+					fail("Core binary", "missing ("+binPath+")")
+					hint(fmt.Sprintf("Run 'blocknet install %s'", resolved))
 				}
 			}
 		}
 
-		// Public API exposure
 		if cc.APIAddr != "" {
 			host, port, splitErr := net.SplitHostPort(cc.APIAddr)
 			if splitErr == nil {
 				if host == "" || host == "0.0.0.0" || host == "::" {
-					fail(fmt.Sprintf("API bound to all interfaces (%s) — use 127.0.0.1", cc.APIAddr))
+					fail("API address", fmt.Sprintf("bound to all interfaces (%s)", cc.APIAddr))
 					hint(fmt.Sprintf("Set api_addr to \"127.0.0.1:%s\" in config.json", port))
-					issues++
 				} else if ip := net.ParseIP(host); ip != nil && !ip.IsLoopback() {
-					fail(fmt.Sprintf("API bound to non-loopback address (%s)", cc.APIAddr))
+					fail("API address", fmt.Sprintf("bound to a non-loopback address (%s)", cc.APIAddr))
 					hint(fmt.Sprintf("Set api_addr to \"127.0.0.1:%s\" in config.json", port))
-					issues++
 				}
 			}
 		}
 
-		// Port / process state
 		pid, pidErr := readCorePidFile(n)
 		alive := pidErr == nil && processAlive(pid)
 
-		if cc.Enabled && cc.APIAddr != "" {
-			if alive {
-				pass(fmt.Sprintf("API port in use by running core (pid %d)", pid))
-			} else {
-				ln, listenErr := net.Listen("tcp", cc.APIAddr)
-				if listenErr != nil {
-				fail(fmt.Sprintf("API port %s already in use by another process", cc.APIAddr))
+		if cc.Enabled && cc.APIAddr != "" && !alive {
+			ln, listenErr := net.Listen("tcp", cc.APIAddr)
+			if listenErr != nil {
+				fail("API port", cc.APIAddr+" is in use by another process")
 				if _, p, splitErr := net.SplitHostPort(cc.APIAddr); splitErr == nil {
 					if runtime.GOOS == "windows" {
 						hint(fmt.Sprintf("netstat -ano | findstr :%s", p))
@@ -230,147 +223,81 @@ func cmdDoctor(_ []string) error {
 						hint(fmt.Sprintf("lsof -i :%s", p))
 					}
 				}
-				issues++
-				} else {
-					ln.Close()
-					pass(fmt.Sprintf("API port %s is available", cc.APIAddr))
-				}
+			} else {
+				ln.Close()
+				pass("API port", cc.APIAddr+" is free")
 			}
 		}
 
 		if pidErr != nil {
-			info("Core is not running")
+			info("Core process", "not running")
 		} else if alive {
-			pass(fmt.Sprintf("Core is running (pid %d)", pid))
+			pass("Core process", fmt.Sprintf("running (pid %d)", pid))
 		} else {
-			fail(fmt.Sprintf("Stale pidfile (pid %d not running)", pid))
+			fail("Core process", fmt.Sprintf("stale pidfile (pid %d is not running)", pid))
 			hint(fmt.Sprintf("Remove %s to fix", CorePidFile(n)))
-			issues++
 		}
 
-		// Cookie (running cores only)
 		if alive {
 			cookie := CookiePath(cc.ResolveDataDir(n))
 			cfi, statErr := os.Stat(cookie)
 			data, readErr := os.ReadFile(cookie)
 			if readErr != nil {
-				fail(fmt.Sprintf("Cookie file not readable (%s)", cookie))
+				fail("Cookie file", "not readable ("+cookie+")")
 				hint(fmt.Sprintf("Try 'blocknet restart %s'", n))
-				issues++
 			} else if len(strings.TrimSpace(string(data))) == 0 {
-				fail("Cookie file is empty")
+				fail("Cookie file", "empty ("+cookie+")")
 				hint(fmt.Sprintf("Try 'blocknet restart %s'", n))
-				issues++
 			} else {
-				pass("Cookie file is valid")
+				pass("Cookie file", "valid")
 			}
-			if statErr == nil && runtime.GOOS != "windows" && cfi.Mode().Perm()&0077 != 0 {
-				fail(fmt.Sprintf("Cookie permissions too open (mode %04o, want 0600)", cfi.Mode().Perm()))
-				hint(fmt.Sprintf("chmod 600 %s", cookie))
-				issues++
+			if statErr == nil && runtime.GOOS != "windows" && cfi.Mode().Perm()&0o077 != 0 {
+				fail("Cookie permissions", fmt.Sprintf("too open (mode %04o, want 0600)", cfi.Mode().Perm()))
+				hint("chmod 600 " + cookie)
 			}
 		}
 
-		// API health (running cores only)
 		if alive && cc.APIAddr != "" {
 			if checkHealth(cc.APIAddr) {
-				pass("API responding")
+				pass("API health", "responding")
 			} else {
-			fail("API not responding")
-			hint(fmt.Sprintf("Check 'blocknet logs %s' or try 'blocknet restart %s'", n, n))
-			issues++
+				fail("API health", "not responding")
+				hint(fmt.Sprintf("Check 'blocknet logs %s' or try 'blocknet restart %s'", n, n))
 			}
 		}
 
-		// Wallet diagnostics (running cores only)
 		if alive && cc.APIAddr != "" {
-			dataDir := cc.ResolveDataDir(n)
-			client, clientErr := NewCoreClient(cc.APIAddr, CookiePath(dataDir))
-			if clientErr == nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				raw, statusErr := client.Status(ctx)
-				cancel()
-				if statusErr == nil {
-					var statusResp struct {
-						Wallet *struct {
-							DataVersion   int    `json:"data_version"`
-							EncFormat     string `json:"enc_format"`
-							AddrFormat    string `json:"addr_format"`
-							CreatedAt     string `json:"created_at"`
-							FileSizeBytes int64  `json:"file_size_bytes"`
-						} `json:"wallet"`
-					}
-					json.Unmarshal(raw, &statusResp)
-
-					if statusResp.Wallet == nil {
-						info("Wallet not loaded — some diagnostics omitted")
-					} else {
-						w := statusResp.Wallet
-						if w.DataVersion > 0 {
-							pass(fmt.Sprintf("Wallet data version: %d", w.DataVersion))
-						} else {
-							fail("Wallet data version unavailable")
-						}
-						if w.EncFormat != "" {
-							pass(fmt.Sprintf("Wallet enc format: %s", w.EncFormat))
-						} else {
-							fail("Wallet enc format unavailable")
-						}
-						if w.AddrFormat != "" {
-							pass(fmt.Sprintf("Wallet addr format: %s", w.AddrFormat))
-						} else {
-							fail("Wallet addr format unavailable")
-						}
-						if w.CreatedAt != "" {
-							if t, parseErr := time.Parse(time.RFC3339, w.CreatedAt); parseErr == nil {
-								pass(fmt.Sprintf("Wallet age: %s", formatAge(t)))
-							} else if t, parseErr := time.Parse("2006-01-02T15:04:05Z", w.CreatedAt); parseErr == nil {
-								pass(fmt.Sprintf("Wallet age: %s", formatAge(t)))
-							} else {
-								fail("Wallet age unavailable")
-							}
-						} else {
-							fail("Wallet age unavailable")
-						}
-						if w.FileSizeBytes > 0 {
-							pass(fmt.Sprintf("Wallet size: %s", formatFileSize(w.FileSizeBytes)))
-						} else {
-							fail("Wallet size unavailable")
-						}
-					}
-				}
-			}
+			doctorWallet(cc, n, pass, warn, info)
 		}
 
 		if n == Mainnet && !cc.FullSync {
-			res, cpErr := RefreshCheckpoints(cc.ResolveDataDir(n))
+			st, cpErr := CheckCheckpoints(cc.ResolveDataDir(n))
+			refresh := fmt.Sprintf("Run 'blocknet start %s' to download them", n)
+			if alive {
+				refresh = fmt.Sprintf("Run 'blocknet restart %s' to download them", n)
+			}
 			switch {
 			case cpErr != nil:
-				fail(fmt.Sprintf("Checkpoints refresh failed: %v", cpErr))
-				issues++
-			case res.Replaced:
-				warn(fmt.Sprintf("Checkpoints were stale or missing; updated (%d entries, max %d)", res.Entries, res.MaxHeight))
-				if res.Backup != "" {
-					hint(fmt.Sprintf("Old file saved as %s", res.Backup))
-				}
-				if alive {
-					hint(fmt.Sprintf("Run 'blocknet restart %s' to use them", n))
-				}
+				warn("Checkpoints", fmt.Sprintf("could not check: %v", cpErr))
+			case st.Missing:
+				warn("Checkpoints", "missing")
+				hint(refresh)
+			case st.Stale:
+				warn("Checkpoints", fmt.Sprintf("out of date (bntpool has %d entries, up to height %d)", st.Entries, st.MaxHeight))
+				hint(refresh)
 			default:
-				pass(fmt.Sprintf("Checkpoints match bntpool (%d entries, max %d)", res.Entries, res.MaxHeight))
+				pass("Checkpoints", fmt.Sprintf("match bntpool (%d entries, up to height %d)", st.Entries, st.MaxHeight))
 			}
 		}
 
-		// Log size
-		logPath := LogFile(n)
-		if fi, logErr := os.Stat(logPath); logErr == nil {
-			info(fmt.Sprintf("Log: %s", formatFileSize(fi.Size())))
+		if fi, logErr := os.Stat(LogFile(n)); logErr == nil {
+			info("Log size", formatBytes(fi.Size()))
 		}
 	}
 
-	// ── System ──────────────────────────────────────────────
+	// System
 
-	section("System")
+	section(SectionHead("System", NoColor))
 
 	if wdPid, wdErr := readWatchdogPid(); wdErr == nil && processAlive(wdPid) {
 		_, nets, _ := readWatchdogState()
@@ -379,23 +306,73 @@ func cmdDoctor(_ []string) error {
 			netList = append(netList, string(wn))
 		}
 		if len(netList) > 0 {
-			pass(fmt.Sprintf("Watchdog running (pid %d, watching %s)", wdPid, strings.Join(netList, ", ")))
+			pass("Watchdog", fmt.Sprintf("running (pid %d, watching %s)", wdPid, strings.Join(netList, ", ")))
 		} else {
-			pass(fmt.Sprintf("Watchdog running (pid %d)", wdPid))
+			pass("Watchdog", fmt.Sprintf("running (pid %d)", wdPid))
 		}
 	} else {
-		warn("Watchdog not running")
+		warn("Watchdog", "not running")
 	}
 
 	printUpgradeNotice(runningCoreNotice(cfg), NoColor)
 
 	fmt.Println()
-	if issues == 0 {
-		fmt.Printf("  %sAll checks passed%s\n\n", green, reset)
-	} else {
-		fmt.Printf("  %s%d issue(s) found%s\n\n", red, issues, reset)
+	switch {
+	case issues > 0:
+		fmt.Printf("  %s✗%s %s found\n\n", pink, reset, Plural(issues, "issue"))
+	case warnings > 0:
+		fmt.Printf("  %s✓%s All checks passed %s(%s)%s\n\n", green, reset, dim, Plural(warnings, "warning"), reset)
+	default:
+		fmt.Printf("  %s✓%s All checks passed\n\n", green, reset)
 	}
 	return nil
+}
+
+// doctorWallet reports what the running core says about its loaded wallet.
+// Fields the core does not report are warnings, not issues.
+func doctorWallet(cc *CoreConfig, n Network, pass, warn, info func(label, detail string)) {
+	client, err := NewCoreClient(cc.APIAddr, CookiePath(cc.ResolveDataDir(n)))
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	raw, err := client.Status(ctx)
+	cancel()
+	if err != nil {
+		return
+	}
+	var statusResp struct {
+		Wallet *struct {
+			DataVersion   int    `json:"data_version"`
+			EncFormat     string `json:"enc_format"`
+			AddrFormat    string `json:"addr_format"`
+			CreatedAt     string `json:"created_at"`
+			FileSizeBytes int64  `json:"file_size_bytes"`
+		} `json:"wallet"`
+	}
+	json.Unmarshal(raw, &statusResp)
+
+	w := statusResp.Wallet
+	if w == nil {
+		info("Wallet", "not loaded, some checks skipped")
+		return
+	}
+	check := func(label string, ok bool, value string) {
+		if ok {
+			pass(label, value)
+		} else {
+			warn(label, "not reported by the core")
+		}
+	}
+	check("Wallet version", w.DataVersion > 0, strconv.Itoa(w.DataVersion))
+	check("Wallet encryption", w.EncFormat != "", w.EncFormat)
+	check("Wallet addresses", w.AddrFormat != "", w.AddrFormat)
+	age := ""
+	if t, err := time.Parse(time.RFC3339, w.CreatedAt); err == nil {
+		age = formatAge(t)
+	}
+	check("Wallet age", age != "", age)
+	check("Wallet size", w.FileSizeBytes > 0, formatBytes(w.FileSizeBytes))
 }
 
 func formatAge(created time.Time) string {
@@ -423,17 +400,4 @@ func formatAge(created time.Time) string {
 	}
 	parts = append(parts, fmt.Sprintf("%dd", d))
 	return strings.Join(parts, " ")
-}
-
-func formatFileSize(bytes int64) string {
-	switch {
-	case bytes < 1024:
-		return fmt.Sprintf("%d B", bytes)
-	case bytes < 1024*1024:
-		return fmt.Sprintf("%.1f KB", float64(bytes)/1024)
-	case bytes < 1024*1024*1024:
-		return fmt.Sprintf("%.1f MB", float64(bytes)/(1024*1024))
-	default:
-		return fmt.Sprintf("%.1f GB", float64(bytes)/(1024*1024*1024))
-	}
 }

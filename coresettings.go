@@ -79,11 +79,11 @@ func (cc *CoreConfig) whitelistIDs(net Network) ([]string, error) {
 	}
 	data, err := os.ReadFile(file)
 	if err != nil {
-		return nil, fmt.Errorf("whitelist file %s: %w", file, err)
+		return nil, fmt.Errorf("could not read whitelist file %s: %w", file, err)
 	}
 	var fromFile []string
 	if err := json.Unmarshal(data, &fromFile); err != nil {
-		return nil, fmt.Errorf("whitelist file %s: expected JSON array of peer ID strings: %w", file, err)
+		return nil, fmt.Errorf("invalid whitelist file %s: expected a JSON array of peer ID strings: %w", file, err)
 	}
 	for _, id := range fromFile {
 		if id = strings.TrimSpace(id); id != "" {
@@ -110,13 +110,13 @@ func applyCoreSettings(net Network, cc *CoreConfig, cookiePath string) (bool, er
 		if errors.As(err, &apiErr) && apiErr.StatusCode == 400 {
 			return false, fmt.Errorf("core rejected settings from config.json: %s", apiErr.Message)
 		}
-		return false, fmt.Errorf("apply settings: %w", err)
+		return false, fmt.Errorf("could not apply settings: %w", err)
 	}
 	var resp struct {
 		RestartRequired []string `json:"restart_required"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return false, fmt.Errorf("apply settings: %w", err)
+		return false, fmt.Errorf("could not apply settings: %w", err)
 	}
 	return len(resp.RestartRequired) > 0, nil
 }

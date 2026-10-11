@@ -17,7 +17,7 @@ func detachProcess(cmd *exec.Cmd) {
 
 // processActivity returns a monotonically-increasing counter of the process's
 // CPU time (jiffies) plus disk I/O (bytes). It's used to tell "alive and busy"
-// (a core loading the chain db on a cold start) from "alive but wedged" — a
+// (a core loading the chain db on a cold start) from "alive but wedged". A
 // value that keeps climbing means the process is doing real work. The bool is
 // false when the value can't be read (e.g. not Linux, where /proc is absent),
 // in which case callers should assume the process IS making progress rather

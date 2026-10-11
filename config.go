@@ -10,23 +10,23 @@ import (
 )
 
 type Config struct {
-	CheckInterval string                 `json:"check_interval"`
+	CheckInterval string                  `json:"check_interval"`
 	Cores         map[Network]*CoreConfig `json:"cores"`
 }
 
 type CoreConfig struct {
-	Enabled         bool     `json:"enabled"`
-	Version         string   `json:"version"`
-	DataDir         string   `json:"data_dir"`
-	WalletFile      string   `json:"wallet_file"`
-	FullSync        bool     `json:"full_sync"`
-	SaveCheckpoints bool     `json:"save_checkpoints"`
-	Listen          string   `json:"listen"`
-	Seed            bool     `json:"seed"`
-	APIAddr         string   `json:"api_addr"`
-	ExplorerAddr    string   `json:"explorer_addr"`
-	P2PMaxInbound   int      `json:"p2p_max_inbound"`
-	P2PMaxOutbound  int      `json:"p2p_max_outbound"`
+	Enabled           bool     `json:"enabled"`
+	Version           string   `json:"version"`
+	DataDir           string   `json:"data_dir"`
+	WalletFile        string   `json:"wallet_file"`
+	FullSync          bool     `json:"full_sync"`
+	SaveCheckpoints   bool     `json:"save_checkpoints"`
+	Listen            string   `json:"listen"`
+	Seed              bool     `json:"seed"`
+	APIAddr           string   `json:"api_addr"`
+	ExplorerAddr      string   `json:"explorer_addr"`
+	P2PMaxInbound     int      `json:"p2p_max_inbound"`
+	P2PMaxOutbound    int      `json:"p2p_max_outbound"`
 	P2PWhitelistPeers []string `json:"p2p_whitelist_peers"`
 	P2PWhitelistFile  string   `json:"p2p_whitelist_file"`
 }
@@ -55,14 +55,14 @@ func LoadConfig(path string) (*Config, error) {
 		if os.IsNotExist(err) {
 			return DefaultConfig(), nil
 		}
-		return nil, fmt.Errorf("read config: %w", err)
+		return nil, fmt.Errorf("could not read config: %w", err)
 	}
 
 	stripped := StripJSONComments(data)
 
 	cfg := DefaultConfig()
 	if err := json.Unmarshal(stripped, cfg); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
+		return nil, fmt.Errorf("could not parse config: %w", err)
 	}
 
 	return cfg, nil
@@ -71,7 +71,7 @@ func LoadConfig(path string) (*Config, error) {
 func SaveConfig(path string, cfg *Config) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
+		return fmt.Errorf("could not encode config: %w", err)
 	}
 	data = append(data, '\n')
 	return os.WriteFile(path, data, 0644)
@@ -170,7 +170,7 @@ func StripJSONComments(src []byte) []byte {
 	for i < len(src) {
 		ch := src[i]
 
-		// Inside a JSON string — copy verbatim until closing quote.
+		// Inside a JSON string: copy verbatim until closing quote.
 		if ch == '"' {
 			out = append(out, ch)
 			i++
@@ -188,7 +188,7 @@ func StripJSONComments(src []byte) []byte {
 			continue
 		}
 
-		// // line comment — skip to end of line.
+		// // line comment: skip to end of line.
 		if ch == '/' && i+1 < len(src) && src[i+1] == '/' {
 			for i < len(src) && src[i] != '\n' {
 				i++
@@ -196,7 +196,7 @@ func StripJSONComments(src []byte) []byte {
 			continue
 		}
 
-		// # line comment — skip to end of line.
+		// # line comment: skip to end of line.
 		if ch == '#' {
 			for i < len(src) && src[i] != '\n' {
 				i++

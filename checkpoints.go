@@ -69,49 +69,76 @@ func fetchCheckpoints(ctx context.Context) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, maxCheckpointsBytes))
 }
 
-func RefreshCheckpoints(dataDir string) (CheckpointsRefresh, error) {
-	var res CheckpointsRefresh
+// CheckpointsStatus is what CheckCheckpoints found without changing anything.
+type CheckpointsStatus struct {
+	Missing   bool // no local checkpoints.dat
+	Stale     bool // local file is missing entries or hashes from bntpool
+	Entries   int
+	MaxHeight uint64
+}
 
+// CheckCheckpoints downloads bntpool's checkpoints and compares them with the
+// local file. It never writes anything.
+func CheckCheckpoints(dataDir string) (CheckpointsStatus, error) {
+	st, _, _, err := compareCheckpoints(dataDir)
+	return st, err
+}
+
+func compareCheckpoints(dataDir string) (st CheckpointsStatus, remoteData, localData []byte, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	remoteData, err := fetchCheckpoints(ctx)
+	remoteData, err = fetchCheckpoints(ctx)
 	if err != nil {
-		return res, err
+		return st, nil, nil, err
 	}
 	remote := parseCheckpoints(remoteData)
 	if len(remote) == 0 {
-		return res, fmt.Errorf("remote checkpoints file has no valid entries")
+		return st, nil, nil, fmt.Errorf("remote checkpoints file has no valid entries")
 	}
-	res.Entries = len(remote)
+	st.Entries = len(remote)
 	for h := range remote {
-		res.MaxHeight = max(res.MaxHeight, h)
+		st.MaxHeight = max(st.MaxHeight, h)
 	}
 
-	path := CheckpointsPath(dataDir)
-	localData, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return res, err
+	localData, err = os.ReadFile(CheckpointsPath(dataDir))
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return st, nil, nil, err
+		}
+		st.Missing = true
+		err = nil
 	}
 	local := parseCheckpoints(localData)
-
-	stale := false
 	for h, hash := range remote {
 		if local[h] != hash {
-			stale = true
+			st.Stale = true
 			break
 		}
 	}
-	if !stale {
+	return st, remoteData, localData, nil
+}
+
+func RefreshCheckpoints(dataDir string) (CheckpointsRefresh, error) {
+	var res CheckpointsRefresh
+
+	st, remoteData, localData, err := compareCheckpoints(dataDir)
+	if err != nil {
+		return res, err
+	}
+	res.Entries = st.Entries
+	res.MaxHeight = st.MaxHeight
+	if !st.Stale {
 		return res, nil
 	}
 
+	path := CheckpointsPath(dataDir)
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return res, err
 	}
 	if localData != nil {
 		res.Backup = path + ".bak"
 		if err := os.WriteFile(res.Backup, localData, 0o644); err != nil {
-			return res, fmt.Errorf("back up checkpoints: %w", err)
+			return res, fmt.Errorf("could not back up checkpoints: %w", err)
 		}
 	}
 	tmp := path + ".tmp"

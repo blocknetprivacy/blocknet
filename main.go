@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
+
+	"golang.org/x/term"
 )
 
 var (
@@ -18,6 +21,14 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	}
+
+	// noArgs wraps a command that takes no arguments.
+	noArgs := func(usage string, fn func([]string) error) error {
+		if err := ExtraArgs(args[1:], 0, usage); err != nil {
+			return err
+		}
+		return fn(args[1:])
 	}
 
 	var err error
@@ -51,26 +62,31 @@ func main() {
 	case "cleanup":
 		err = cmdCleanup(args[1:])
 	case "doctor":
-		err = cmdDoctor(args[1:])
+		err = noArgs("blocknet doctor", cmdDoctor)
 	case "setup":
-		err = cmdSetup(args[1:])
+		err = noArgs("blocknet setup", cmdSetup)
 	case "completions":
-		err = cmdCompletions(args[1:])
+		if err = ExtraArgs(args[1:], 1, "blocknet completions <bash|zsh|fish>"); err == nil {
+			err = cmdCompletions(args[1:])
+		}
 	case "config":
 		err = cmdConfig(args[1:])
 	case "watchdog":
 		err = cmdWatchdog(args[1:])
 	case "version", "--version", "-v":
-		green, reset := "\033[38;2;170;255;0m", "\033[0m"
-		if NoColor {
-			green, reset = "", ""
-		}
-		fmt.Printf("\n%s#%s blocknet %s%s%s\n\n", green, reset, green, Version, reset)
+		err = noArgs("blocknet version", func([]string) error {
+			green, _, _, _, _, reset := Palette(NoColor)
+			fmt.Printf("\n%s\n\n", SectionHead("blocknet "+green+displayVersion()+reset, NoColor))
+			return nil
+		})
 	case "help", "--help", "-h":
-		printUsage()
+		err = noArgs("blocknet help", func([]string) error {
+			printUsage()
+			return nil
+		})
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
-		printUsage()
+		fmt.Fprintf(os.Stderr, "error: unknown command: %s\n", args[0])
+		fmt.Fprintf(os.Stderr, "Run 'blocknet help' for the list.\n")
 		os.Exit(1)
 	}
 
@@ -80,48 +96,60 @@ func main() {
 	}
 }
 
+// displayVersion is the build version with exactly one leading "v" (release
+// builds set Version from the git tag, "v1.1.0"), or "dev" for a build
+// without one.
+func displayVersion() string {
+	v := strings.TrimLeft(strings.TrimSpace(Version), "vV")
+	if v == "" {
+		return "dev"
+	}
+	return "v" + v
+}
+
 func printUsage() {
-	dim, reset := "\033[38;2;160;160;160m", "\033[0m"
-	if NoColor {
-		dim, reset = "", ""
+	_, _, _, _, dim, reset := Palette(NoColor)
+
+	h := func(s string) { fmt.Printf("\n%s\n\n", SectionHead(s, NoColor)) }
+	row := func(cmd, desc string) {
+		fmt.Printf("  %s %s%s%s\n", PadRight(cmd, 32), dim, desc, reset)
 	}
 
-	h := func(s string) string { return fmt.Sprintf("\n%s\n", SectionHead(s, NoColor)) }
-	d := func(s string) string { return fmt.Sprintf("%s%s%s", dim, s, reset) }
-
-	fmt.Printf("\n%s\n\n", SectionHead("blocknet "+Version, NoColor))
+	fmt.Printf("\n%s\n\n", SectionHead("blocknet "+displayVersion(), NoColor))
 	fmt.Printf("  Usage: blocknet <command> [args]\n")
-	fmt.Print(h("Lifecycle"))
-	fmt.Printf("  start [mainnet|testnet]     %s\n", d("Start managed cores"))
-	fmt.Printf("  stop [mainnet|testnet]      %s\n", d("Stop managed cores"))
-	fmt.Printf("  restart [mainnet|testnet]   %s\n", d("Restart managed cores"))
-	fmt.Printf("  enable [mainnet|testnet]    %s\n", d("Enable auto-start for a core"))
-	fmt.Printf("  disable [mainnet|testnet]   %s\n", d("Disable auto-start for a core"))
-	fmt.Printf("  status                      %s\n", d("Show status of all managed cores"))
-	fmt.Print(h("Interactive"))
-	fmt.Printf("  attach [mainnet|testnet]    %s\n", d("Open interactive CLI session"))
-	fmt.Printf("  logs [mainnet|testnet]      %s\n", d("Follow core log output"))
-	fmt.Print(h("Versions"))
-	fmt.Printf("  list                        %s\n", d("List available and installed core versions"))
-	fmt.Printf("  install <version>           %s\n", d("Download a core version"))
-	fmt.Printf("  uninstall <version>         %s\n", d("Remove a core version"))
-	fmt.Printf("  use <version> [network]     %s\n", d("Set which core version to use"))
-	fmt.Printf("  upgrade                     %s\n", d("Download and apply latest core release"))
-	fmt.Printf("  cleanup                     %s\n", d("Remove core versions not in use"))
-	fmt.Print(h("Maintenance"))
-	fmt.Printf("  setup                       %s\n", d("First-run setup wizard"))
-	fmt.Printf("  watchdog [mainnet|testnet]   %s\n", d("Monitor daemon health, restart on crash"))
-	fmt.Printf("  doctor                      %s\n", d("Check system health and diagnose issues"))
-	fmt.Printf("  config                      %s\n", d("Print current configuration"))
-	fmt.Printf("  completions <shell>         %s\n", d("Generate shell completions (bash/zsh/fish)"))
-	fmt.Printf("  version                     %s\n", d("Print version"))
-	fmt.Printf("  help                        %s\n", d("Show this help"))
-	fmt.Print(h("Flags"))
-	fmt.Printf("  --nocolor                   %s\n\n", d("Disable colored output"))
+	h("Lifecycle")
+	row("start [mainnet|testnet]", "Start managed cores")
+	row("stop [mainnet|testnet]", "Stop managed cores")
+	row("restart [mainnet|testnet]", "Restart managed cores")
+	row("enable <mainnet|testnet>", "Enable auto-start for a core")
+	row("disable <mainnet|testnet>", "Disable auto-start for a core")
+	row("status", "Show status of all managed cores")
+	h("Interactive")
+	row("attach [mainnet|testnet]", "Open interactive CLI session")
+	row("logs [mainnet|testnet]", "Follow core log output")
+	h("Versions")
+	row("list", "List available and installed core versions")
+	row("install <version>", "Download a core version")
+	row("uninstall <version>", "Remove a core version")
+	row("use <version> [mainnet|testnet]", "Set which core version to use")
+	row("upgrade", "Upgrade blocknet and the core to the latest release")
+	row("cleanup", "Remove core versions not in use")
+	h("Maintenance")
+	row("setup", "First-run setup wizard")
+	row("watchdog [mainnet|testnet]", "Watch core health, restart on crash")
+	row("doctor", "Check system health and diagnose issues")
+	row("config", "Print current configuration")
+	row("completions <shell>", "Generate shell completions (bash/zsh/fish)")
+	row("version", "Print version")
+	row("help", "Show this help")
+	h("Flags")
+	row("--nocolor", "Disable colored output (or set NO_COLOR=1)")
+	fmt.Println()
 }
 
 func filterFlags(args []string) []string {
-	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+	// No color when NO_COLOR is set or when output goes to a pipe or a file.
+	if os.Getenv("NO_COLOR") != "" || !term.IsTerminal(int(os.Stdout.Fd())) {
 		NoColor = true
 	}
 	var filtered []string

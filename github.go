@@ -39,26 +39,55 @@ func ListReleases(ctx context.Context) ([]Release, error) {
 	return listReleasesFrom(ctx, releasesURL)
 }
 
+// releasesPerPage is the GitHub maximum. maxReleasePages caps how many pages
+// are fetched (1000 releases), in case the API keeps answering full pages.
+const (
+	releasesPerPage = 100
+	maxReleasePages = 10
+)
+
+// listReleasesFrom fetches every page of releases from url, newest first.
 func listReleasesFrom(ctx context.Context, url string) ([]Release, error) {
+	sep := "?"
+	if strings.Contains(url, "?") {
+		sep = "&"
+	}
+	var all []Release
+	for page := 1; page <= maxReleasePages; page++ {
+		rels, n, err := fetchReleasePage(ctx, fmt.Sprintf("%s%sper_page=%d&page=%d", url, sep, releasesPerPage, page))
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, rels...)
+		if n < releasesPerPage {
+			break
+		}
+	}
+	return all, nil
+}
+
+// fetchReleasePage fetches one page of releases. n is how many entries the
+// page held.
+func fetchReleasePage(ctx context.Context, url string) (releases []Release, n int, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+		return nil, 0, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	var raw []struct {
@@ -71,10 +100,10 @@ func listReleasesFrom(ctx context.Context, url string) ([]Release, error) {
 		} `json:"assets"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("parse releases: %w", err)
+		return nil, 0, fmt.Errorf("parse releases: %w", err)
 	}
 
-	releases := make([]Release, 0, len(raw))
+	releases = make([]Release, 0, len(raw))
 	for _, r := range raw {
 		t, _ := time.Parse(time.RFC3339, r.PublishedAt)
 		rel := Release{
@@ -90,10 +119,12 @@ func listReleasesFrom(ctx context.Context, url string) ([]Release, error) {
 		}
 		releases = append(releases, rel)
 	}
-	return releases, nil
+	return releases, len(raw), nil
 }
 
-// LatestRelease returns the newest non-prerelease version.
+// LatestRelease returns the newest non-prerelease version. Its tag is checked
+// with ValidateVersionName, so callers can turn it into a path (upgrade,
+// auto-upgrade, setup, install latest).
 func LatestRelease(ctx context.Context) (*Release, error) {
 	releases, err := ListReleases(ctx)
 	if err != nil {
@@ -101,6 +132,9 @@ func LatestRelease(ctx context.Context) (*Release, error) {
 	}
 	for i := range releases {
 		if !releases[i].Prerelease {
+			if err := ValidateVersionName(releases[i].Tag); err != nil {
+				return nil, fmt.Errorf("latest release tag: %w", err)
+			}
 			return &releases[i], nil
 		}
 	}
