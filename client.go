@@ -75,6 +75,14 @@ func (c *CoreClient) Get(ctx context.Context, path string) (json.RawMessage, err
 }
 
 func (c *CoreClient) Post(ctx context.Context, path string, body any) (json.RawMessage, error) {
+	return c.send(ctx, http.MethodPost, path, body)
+}
+
+func (c *CoreClient) Patch(ctx context.Context, path string, body any) (json.RawMessage, error) {
+	return c.send(ctx, http.MethodPatch, path, body)
+}
+
+func (c *CoreClient) send(ctx context.Context, method, path string, body any) (json.RawMessage, error) {
 	var r io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -83,7 +91,7 @@ func (c *CoreClient) Post(ctx context.Context, path string, body any) (json.RawM
 		}
 		r = strings.NewReader(string(data))
 	}
-	return c.do(ctx, http.MethodPost, path, r)
+	return c.do(ctx, method, path, r)
 }
 
 // SSE opens a Server-Sent Events stream. It calls handler for each event

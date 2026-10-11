@@ -20,11 +20,40 @@ func startCore(net Network, cc *CoreConfig, binPath string) (int, error) {
 		return 0, fmt.Errorf("%s core is already running (pid %d); stop it first", net, pid)
 	}
 
+	useSettings := coreUsesSettingsAPI(binPath)
+	flags := cc.BuildFlags(net)
+	if useSettings {
+		if cc.APIAddr == "" {
+			return 0, fmt.Errorf("%s: api_addr is required to configure this core", net)
+		}
+		flags = cc.BaseFlags(net)
+	}
+
+	pid, err := spawnCore(net, cc, binPath, flags)
+	if err != nil || !useSettings {
+		return pid, err
+	}
+
+	cookiePath := CookiePath(cc.ResolveDataDir(net))
+	restart, err := applyCoreSettings(net, cc, cookiePath)
+	if err != nil {
+		stopCore(net)
+		return 0, fmt.Errorf("%s: %w", net, err)
+	}
+	if !restart {
+		return pid, nil
+	}
+	if err := stopCore(net); err != nil {
+		return 0, fmt.Errorf("%s: restart to apply settings: %w", net, err)
+	}
+	return spawnCore(net, cc, binPath, flags)
+}
+
+func spawnCore(net Network, cc *CoreConfig, binPath string, flags []string) (int, error) {
 	dataDir := cc.ResolveDataDir(net)
 	cookiePath := CookiePath(dataDir)
 	os.Remove(cookiePath)
 
-	flags := cc.BuildFlags(net)
 	cmd := exec.Command(binPath, flags...)
 
 	logPath := LogFile(net)
@@ -68,7 +97,7 @@ func startCore(net Network, cc *CoreConfig, binPath string) (int, error) {
 		return 0, fmt.Errorf("%s: %w", net, err)
 	}
 
-	cmd.Process.Release()
+	go cmd.Wait()
 	logFile.Close()
 
 	return pid, nil
