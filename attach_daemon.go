@@ -275,25 +275,39 @@ func publicPeerAddr(addrs []string, peerID string) string {
 }
 
 func detectPublicIP() string {
-	client := &http.Client{Timeout: 5 * time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	found := make(chan string, len(publicIPServices))
 	for _, svc := range publicIPServices {
-		req, err := http.NewRequest(http.MethodGet, svc, nil)
-		if err != nil {
-			continue
+		go func(svc string) {
+			found <- fetchPublicIP(ctx, svc)
+		}(svc)
+	}
+	for range publicIPServices {
+		if ip := <-found; ip != "" {
+			return ip
 		}
-		req.Header.Set("User-Agent", userAgent)
-		resp, err := client.Do(req)
-		if err != nil {
-			continue
-		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			continue
-		}
-		if ip := net.ParseIP(strings.TrimSpace(string(body))); ip != nil && ip.To4() != nil {
-			return ip.String()
-		}
+	}
+	return ""
+}
+
+func fetchPublicIP(ctx context.Context, svc string) string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, svc, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	if ip := net.ParseIP(strings.TrimSpace(string(body))); ip != nil && ip.To4() != nil {
+		return ip.String()
 	}
 	return ""
 }
