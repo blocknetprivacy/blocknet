@@ -252,6 +252,7 @@ func (s *AttachSession) printWelcome() {
 	if err != nil {
 		fmt.Printf("\n  Connected to %s (status unavailable)\n", s.network)
 		fmt.Println("  Type 'help' for available commands")
+		s.printForkNotice()
 		return
 	}
 
@@ -288,6 +289,19 @@ func (s *AttachSession) printWelcome() {
 	fmt.Printf("  Height:  %d\n", status.Height)
 	fmt.Println()
 	fmt.Println("  Type 'help' for available commands")
+	s.printForkNotice()
+}
+
+func (s *AttachSession) printForkNotice() {
+	amber, reset := "\033[38;2;255;170;0m", "\033[0m"
+	if s.noColor {
+		amber, reset = "", ""
+	}
+	fmt.Println()
+	fmt.Printf("  %sFaraday hard fork: planned for about 2027-02-16.%s\n", amber, reset)
+	fmt.Println("  After the fork, coins must move to the new format within 1 year.")
+	fmt.Println("  Coins not moved by about 2028-02-16 are frozen for good.")
+	fmt.Println("  A future wallet update will move them for you.")
 }
 
 func (s *AttachSession) listenEvents() {
