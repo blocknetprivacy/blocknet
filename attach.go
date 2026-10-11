@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/term"
@@ -242,29 +243,34 @@ func (s *AttachSession) printLogo() {
 	fmt.Println()
 }
 
+type apiResult struct {
+	raw json.RawMessage
+	err error
+}
+
+func (s *AttachSession) fetchAll(ctx context.Context, paths ...string) []apiResult {
+	out := make([]apiResult, len(paths))
+	var wg sync.WaitGroup
+	for i, path := range paths {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			out[i].raw, out[i].err = s.client.Get(ctx, path)
+		}()
+	}
+	wg.Wait()
+	return out
+}
+
 func (s *AttachSession) printWelcome() {
 	s.printLogo()
 
 	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
-	type result struct {
-		raw json.RawMessage
-		err error
-	}
-	fetch := func(path string) <-chan result {
-		ch := make(chan result, 1)
-		go func() {
-			raw, err := s.client.Get(ctx, path)
-			ch <- result{raw, err}
-		}()
-		return ch
-	}
-	statusCh := fetch("/api/status")
-	balCh := fetch("/api/wallet/balance")
-	addrCh := fetch("/api/wallet/address")
+	res := s.fetchAll(ctx, "/api/status", "/api/wallet/balance", "/api/wallet/address")
 
-	st := <-statusCh
+	st := res[0]
 	if st.err != nil {
 		fmt.Printf("\n  Connected to %s (status unavailable)\n", s.network)
 		fmt.Println("  Type 'help' for available commands")
@@ -276,14 +282,14 @@ func (s *AttachSession) printWelcome() {
 	}
 	json.Unmarshal(st.raw, &status)
 
-	if b := <-balCh; b.err == nil {
+	if b := res[1]; b.err == nil {
 		var bal struct {
 			Spendable uint64 `json:"spendable"`
 			Pending   uint64 `json:"pending"`
 		}
 		json.Unmarshal(b.raw, &bal)
 
-		raw2 := (<-addrCh).raw
+		raw2 := res[2].raw
 		var addr struct {
 			Address string `json:"address"`
 		}

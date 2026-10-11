@@ -18,7 +18,8 @@ func (s *AttachSession) cmdStatus() error {
 	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
-	raw, err := s.client.Status(ctx)
+	res := s.fetchAll(ctx, "/api/status", "/api/wallet/balance", "/api/wallet/address")
+	raw, err := res[0].raw, res[0].err
 	if err != nil {
 		return s.handleAPIError(err)
 	}
@@ -52,7 +53,7 @@ func (s *AttachSession) cmdStatus() error {
 	fmt.Printf("  Best Hash:   %s\n", status.BestHash)
 	fmt.Printf("  Syncing:     %v\n", status.Syncing)
 
-	raw, err = s.client.Get(ctx, "/api/wallet/balance")
+	raw, err = res[1].raw, res[1].err
 	if err != nil {
 		// No wallet loaded (or locked) — the node section stands alone.
 		return nil
@@ -65,7 +66,7 @@ func (s *AttachSession) cmdStatus() error {
 	}
 	json.Unmarshal(raw, &bal)
 
-	raw2, _ := s.client.Get(ctx, "/api/wallet/address")
+	raw2 := res[2].raw
 	var addr struct {
 		Address  string `json:"address"`
 		ViewOnly bool   `json:"view_only"`
@@ -693,7 +694,8 @@ func (s *AttachSession) exploreMempool() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	raw, err := s.client.Get(ctx, "/api/mempool")
+	res := s.fetchAll(ctx, "/api/mempool", "/api/mempool/txs")
+	raw, err := res[0].raw, res[0].err
 	if err != nil {
 		return s.handleAPIError(err)
 	}
@@ -722,7 +724,7 @@ func (s *AttachSession) exploreMempool() error {
 	fmt.Printf("  Fee (max):    %s\n", FormatAmount(stats.MaxFee))
 	fmt.Printf("  Fee (avg):    %s\n", FormatAmount(uint64(stats.AvgFee)))
 
-	rawTxs, err := s.client.Get(ctx, "/api/mempool/txs")
+	rawTxs, err := res[1].raw, res[1].err
 	if err != nil {
 		return nil
 	}

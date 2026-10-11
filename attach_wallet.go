@@ -752,8 +752,10 @@ func (s *AttachSession) cmdHistory() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	res := s.fetchAll(ctx, "/api/wallet/history", "/api/wallet/sends?order=asc&limit=500")
+
 	// Incoming: owned outputs.
-	rawIn, err := s.client.Get(ctx, "/api/wallet/history")
+	rawIn, err := res[0].raw, res[0].err
 	if err != nil {
 		return s.handleAPIError(err)
 	}
@@ -783,8 +785,8 @@ func (s *AttachSession) cmdHistory() error {
 			} `json:"recipients"`
 		} `json:"sends"`
 	}
-	if rawOut, err := s.client.Get(ctx, "/api/wallet/sends?order=asc&limit=500"); err == nil {
-		json.Unmarshal(rawOut, &outResp)
+	if res[1].err == nil {
+		json.Unmarshal(res[1].raw, &outResp)
 	}
 
 	type event struct {
