@@ -5,7 +5,11 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -202,27 +206,25 @@ func (s *AttachSession) cmdExportPeer() error {
 	ctx, cancel := withPatience(defaultAPITimeout)
 	defer cancel()
 
-	raw, err := s.client.Get(ctx, "/api/peers")
+	raw, err := s.client.Status(ctx)
 	if err != nil {
 		return s.handleAPIError(err)
 	}
-
-	var resp struct {
-		Peers []struct {
-			PeerID string   `json:"peer_id"`
-			Addrs  []string `json:"addrs"`
-		} `json:"peers"`
+	var status struct {
+		PeerID    string    `json:"peer_id"`
+		PeerAddrs *[]string `json:"peer_addrs"`
 	}
-	json.Unmarshal(raw, &resp)
+	json.Unmarshal(raw, &status)
+	if status.PeerAddrs == nil {
+		return fmt.Errorf("this core does not report its own addresses; run 'blocknet upgrade' to get a newer core")
+	}
 
-	var lines []string
-	for _, p := range resp.Peers {
-		for _, addr := range p.Addrs {
-			lines = append(lines, addr+"/p2p/"+p.PeerID)
-		}
+	lines := append([]string{}, *status.PeerAddrs...)
+	if public := publicPeerAddr(lines, status.PeerID); public != "" && !slices.Contains(lines, public) {
+		lines = append([]string{public}, lines...)
 	}
 	if len(lines) == 0 {
-		return fmt.Errorf("no peers to export")
+		return fmt.Errorf("no external addresses available")
 	}
 
 	if err := os.WriteFile("peer.txt", []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
@@ -230,13 +232,70 @@ func (s *AttachSession) cmdExportPeer() error {
 	}
 
 	fmt.Printf("\n%s\n", SectionHead("Export", s.noColor))
-	fmt.Printf("  %d peer address(es) written to peer.txt\n", len(lines))
-	fmt.Println("  Share this file or its contents with other node operators.")
-	fmt.Println("\n  Reachable peer addresses:")
+	fmt.Println("  Peer addresses written to peer.txt")
+	fmt.Println("  Share this file or its contents with other nodes.")
+	fmt.Println("\n  Other nodes can connect with:")
 	for _, line := range lines {
 		fmt.Printf("    %s\n", line)
 	}
 	return nil
+}
+
+var publicIPServices = []string{
+	"https://api.ipify.org",
+	"https://ifconfig.me/ip",
+	"https://icanhazip.com",
+}
+
+func publicPeerAddr(addrs []string, peerID string) string {
+	if peerID == "" {
+		return ""
+	}
+	port := ""
+	for _, a := range addrs {
+		parts := strings.Split(a, "/")
+		for i := 0; i+1 < len(parts); i++ {
+			if parts[i] == "tcp" {
+				port = parts[i+1]
+				break
+			}
+		}
+		if port != "" {
+			break
+		}
+	}
+	if port == "" {
+		return ""
+	}
+	ip := detectPublicIP()
+	if ip == "" {
+		return ""
+	}
+	return fmt.Sprintf("/ip4/%s/tcp/%s/p2p/%s", ip, port, peerID)
+}
+
+func detectPublicIP() string {
+	client := &http.Client{Timeout: 5 * time.Second}
+	for _, svc := range publicIPServices {
+		req, err := http.NewRequest(http.MethodGet, svc, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("User-Agent", userAgent)
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			continue
+		}
+		if ip := net.ParseIP(strings.TrimSpace(string(body))); ip != nil && ip.To4() != nil {
+			return ip.String()
+		}
+	}
+	return ""
 }
 
 func (s *AttachSession) cmdMining(args []string) error {

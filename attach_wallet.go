@@ -1118,7 +1118,8 @@ func (s *AttachSession) cmdImport() error {
 	fmt.Printf("\n%s\n", SectionHead("Import", s.noColor))
 	fmt.Println("  1) 12-word recovery seed")
 	fmt.Println("  2) spend-key/view-key (hex private keys)")
-	fmt.Print("\n  Choose [1/2]: ")
+	fmt.Println("  3) view-only (spend public key + view private key)")
+	fmt.Print("\n  Choose [1/2/3]: ")
 
 	choiceLine, err := s.reader.ReadString('\n')
 	if err != nil {
@@ -1129,11 +1130,54 @@ func (s *AttachSession) cmdImport() error {
 	switch choice {
 	case "1", "seed", "mnemonic", "12":
 		return s.importFromMnemonic()
-	case "2", "keys", "key", "spend", "view":
-		return fmt.Errorf("key import requires direct access — use the core CLI with --cli flag")
+	case "2", "keys", "key", "spend":
+		return s.importFromKeys()
+	case "3", "view", "viewonly", "view-only", "watch":
+		return s.importViewOnly()
 	default:
-		return fmt.Errorf("invalid import type: choose 1 or 2")
+		return fmt.Errorf("invalid import type: choose 1, 2 or 3")
 	}
+}
+
+func (s *AttachSession) readHexKey(prompt string) (string, error) {
+	key, err := s.readPassword(prompt)
+	if err != nil {
+		return "", err
+	}
+	key = strings.ToLower(strings.TrimSpace(key))
+	if b, err := hex.DecodeString(key); err != nil || len(b) != 32 {
+		return "", fmt.Errorf("invalid key: expected 64 hex chars")
+	}
+	return key, nil
+}
+
+func (s *AttachSession) importFromKeys() error {
+	spendPriv, err := s.readHexKey("  Spend private key (64 hex chars): ")
+	if err != nil {
+		return err
+	}
+	viewPriv, err := s.readHexKey("  View private key (64 hex chars): ")
+	if err != nil {
+		return err
+	}
+	return s.importWallet(map[string]string{"spend_priv": spendPriv, "view_priv": viewPriv})
+}
+
+func (s *AttachSession) importViewOnly() error {
+	fmt.Print("  Spend public key (64 hex chars): ")
+	line, err := s.reader.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	spendPub := strings.ToLower(strings.TrimSpace(line))
+	if b, err := hex.DecodeString(spendPub); err != nil || len(b) != 32 {
+		return fmt.Errorf("invalid spend public key: expected 64 hex chars")
+	}
+	viewPriv, err := s.readHexKey("  View private key (64 hex chars): ")
+	if err != nil {
+		return err
+	}
+	return s.importWallet(map[string]string{"spend_pub": spendPub, "view_priv": viewPriv})
 }
 
 func (s *AttachSession) importFromMnemonic() error {
@@ -1145,7 +1189,10 @@ func (s *AttachSession) importFromMnemonic() error {
 		return err
 	}
 	mnemonic := strings.Join(strings.Fields(strings.ReplaceAll(strings.TrimSpace(line), ",", " ")), " ")
+	return s.importWallet(map[string]string{"mnemonic": mnemonic})
+}
 
+func (s *AttachSession) importWallet(fields map[string]string) error {
 	fmt.Println("  Input the name of this wallet:")
 	fmt.Print("\n> ")
 	nameLine, err := s.reader.ReadString('\n')
@@ -1168,11 +1215,9 @@ func (s *AttachSession) importFromMnemonic() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	raw, err := s.client.Post(ctx, "/api/wallet/import", map[string]string{
-		"mnemonic": mnemonic,
-		"password": password,
-		"filename": filename,
-	})
+	fields["password"] = password
+	fields["filename"] = filename
+	raw, err := s.client.Post(ctx, "/api/wallet/import", fields)
 	if err != nil {
 		return s.handleAPIError(err)
 	}
@@ -1180,11 +1225,15 @@ func (s *AttachSession) importFromMnemonic() error {
 	var resp struct {
 		Address  string `json:"address"`
 		Filename string `json:"filename"`
+		ViewOnly bool   `json:"view_only"`
 	}
 	json.Unmarshal(raw, &resp)
 
 	fmt.Printf("\n  name: %s\n", resp.Filename)
 	fmt.Printf("  address: %s\n", resp.Address)
+	if resp.ViewOnly {
+		fmt.Println("  type: view-only (can watch incoming funds, cannot spend)")
+	}
 	return nil
 }
 
