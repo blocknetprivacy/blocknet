@@ -167,7 +167,7 @@ func cmdStatus(_ []string) error {
 	}
 
 	if cfg.AutoUpgrade {
-		maybeAutoUpgrade(cfg)
+		spawnAutoUpgrade(cfg)
 	}
 
 	green, pink, dim, reset := "\033[38;2;170;255;0m", "\033[38;2;255;0;170m", "\033[2m", "\033[0m"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -29,6 +30,31 @@ func readLastCheck() time.Time {
 func writeLastCheck() {
 	os.MkdirAll(filepath.Dir(lastCheckFile()), 0755)
 	os.WriteFile(lastCheckFile(), []byte(strconv.FormatInt(time.Now().Unix(), 10)+"\n"), 0644)
+}
+
+func spawnAutoUpgrade(cfg *Config) {
+	if time.Since(readLastCheck()) < cfg.CheckIntervalDuration() {
+		return
+	}
+	writeLastCheck()
+
+	self, err := os.Executable()
+	if err != nil {
+		return
+	}
+	logFile, err := os.OpenFile(filepath.Join(ConfigDir(), "upgrade.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	defer logFile.Close()
+
+	cmd := exec.Command(self, "upgrade", "--nocolor")
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	detachProcess(cmd)
+	if cmd.Start() == nil {
+		cmd.Process.Release()
+	}
 }
 
 func maybeAutoUpgrade(cfg *Config) {
