@@ -214,7 +214,7 @@ The last check time is stored in `~/.config/bnt/.last_upgrade_check`. If less th
 
 #### OS scheduler integration
 
-On macOS and Linux, blocknet installs a background scheduler entry (a launchd plist on macOS, a systemd timer on Linux) to run `blocknet upgrade --nocolor` automatically on a schedule derived from `check_interval` (with platform minimums/rounding). On Windows it uses Task Scheduler.
+On macOS and Linux, blocknet installs a background scheduler entry (a launchd plist on macOS, a systemd timer on Linux, a crontab line on Android in Termux) to run `blocknet upgrade --nocolor` automatically on a schedule derived from `check_interval` (with platform minimums/rounding). On Windows it uses Task Scheduler. On Android, Termux needs cron first: `pkg install cronie termux-services` and `sv-enable crond`.
 
 The scheduler is managed automatically:
 
@@ -229,6 +229,9 @@ rm ~/Library/LaunchAgents/com.blocknet.upgrade.plist
 
 # Linux: remove the systemd timer
 systemctl --user disable --now blocknet-upgrade.timer
+
+# Android (Termux): remove the crontab line
+crontab -l | grep -v blocknet-upgrade | crontab -
 ```
 
 The next `blocknet start` puts it back.

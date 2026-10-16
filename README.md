@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.1.0-aaff00?style=flat-square&labelColor=000">
+  <img src="https://img.shields.io/badge/version-1.2.0-aaff00?style=flat-square&labelColor=000">
   <img src="https://img.shields.io/badge/license-BSD--3--Clause-aaff00?style=flat-square&labelColor=000">
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-aaff00?style=flat-square&labelColor=000">
 </p>
@@ -31,6 +31,8 @@ This program helps you install, upgrade and manage [Blocknet cores](https://gith
 4. Optional: open the [interactive shell](docs/reference-core.md) with `blocknet attach mainnet`
 
 > **Windows users:** The binary is `blocknet.exe`. Use `blocknet.exe setup`, etc. All other commands and documentation apply the same way.
+
+> **Android users:** Run blocknet in [Termux](https://termux.dev) from F-Droid or GitHub. The Play Store build of Termux cannot run downloaded programs. Use the `blocknet-arm64-android` download. For auto-updates, run `pkg install cronie termux-services` and `sv-enable crond` first.
 
 ## Build instructions
 1. [Install Go](https://go.dev)

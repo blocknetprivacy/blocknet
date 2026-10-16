@@ -34,6 +34,11 @@ jobs:
             goarch: amd64
             binary: blocknet
             asset: blocknet-amd64-macos
+          - os: ubuntu-latest
+            goos: android
+            goarch: arm64
+            binary: blocknet
+            asset: blocknet-arm64-android
           - os: windows-latest
             goos: windows
             goarch: amd64
@@ -47,6 +52,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      - name: Set up Android cgo
+        if: matrix.goos == 'android'
+        run: |
+          echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
+          echo "CC=$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/aarch64-linux-android24-clang)" >> "$GITHUB_ENV"
 
       - name: Build
         env:
