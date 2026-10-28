@@ -423,14 +423,14 @@ func helpCommandDetails() map[string]helpEntry {
 			description:   []string{"Shows the Blocknet version."},
 			useWhen:       []string{"you are reporting bugs or checking for updates"},
 			exampleInput:  []string{"> version"},
-			exampleOutput: []string{"# blocknet v1.2.0"},
+			exampleOutput: []string{"# blocknet v1.2.1"},
 		},
 		"about": {
 			usage:         []string{"about"},
 			description:   []string{"Shows project info, links and third-party libraries."},
 			useWhen:       []string{"you want project details"},
 			exampleInput:  []string{"> about"},
-			exampleOutput: []string{"# About", "", "  Blocknet v1.2.0"},
+			exampleOutput: []string{"# About", "", "  Blocknet v1.2.1"},
 		},
 		"license": {
 			usage:         []string{"license"},

@@ -116,3 +116,38 @@ func TestCheckCheckpointsReportsWithoutWriting(t *testing.T) {
 		t.Fatal("CheckCheckpoints wrote a backup")
 	}
 }
+
+func TestRefreshCheckpointsBeforeStartReplacesMainnetOnly(t *testing.T) {
+	a, b, c := strings.Repeat("A", 64), strings.Repeat("B", 64), strings.Repeat("C", 64)
+	remote := "100:" + a + "\n200:" + b + "\n"
+	stale := "100:" + a + "\n200:" + c + "\n"
+	serveCheckpoints(t, remote)
+
+	cases := []struct {
+		name    string
+		net     Network
+		full    bool
+		replace bool
+	}{
+		{"mainnet", Mainnet, false, true},
+		{"mainnet full sync", Mainnet, true, false},
+		{"testnet", Testnet, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := CheckpointsPath(dir)
+			if err := os.WriteFile(path, []byte(stale), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			refreshCheckpointsBeforeStart(tc.net, &CoreConfig{DataDir: dir, FullSync: tc.full})
+			got, _ := os.ReadFile(path)
+			if tc.replace && string(got) != remote {
+				t.Fatalf("expected the stale file to be replaced, got %q", got)
+			}
+			if !tc.replace && string(got) != stale {
+				t.Fatalf("expected the file to be left alone, got %q", got)
+			}
+		})
+	}
+}

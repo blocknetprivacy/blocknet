@@ -153,3 +153,19 @@ func RefreshCheckpoints(dataDir string) (CheckpointsRefresh, error) {
 	res.Replaced = true
 	return res, nil
 }
+
+func refreshCheckpointsBeforeStart(net Network, cc *CoreConfig) {
+	if net != Mainnet || cc == nil || cc.FullSync {
+		return
+	}
+	green, _, _, _, dim, reset := Palette(NoColor)
+	res, err := RefreshCheckpoints(cc.ResolveDataDir(net))
+	switch {
+	case err != nil:
+		Warnf("checkpoints refresh failed: %v", err)
+	case res.Replaced && res.Backup != "":
+		fmt.Printf("  %s✓%s Checkpoints updated %s(%d entries, max %d, old file saved as %s)%s\n", green, reset, dim, res.Entries, res.MaxHeight, res.Backup, reset)
+	case res.Replaced:
+		fmt.Printf("  %s✓%s Checkpoints downloaded %s(%d entries, max %d)%s\n", green, reset, dim, res.Entries, res.MaxHeight, reset)
+	}
+}

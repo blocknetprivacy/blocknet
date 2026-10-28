@@ -204,17 +204,7 @@ func startNetworks(args []string, title, usage string, before func([]Network)) e
 		}
 		binPath := CoreBinaryPath(resolved)
 
-		if net == Mainnet && !cc.FullSync {
-			res, err := RefreshCheckpoints(cc.ResolveDataDir(net))
-			switch {
-			case err != nil:
-				Warnf("checkpoints refresh failed: %v", err)
-			case res.Replaced && res.Backup != "":
-				fmt.Printf("  %s✓%s Checkpoints updated %s(%d entries, max %d, old file saved as %s)%s\n", green, reset, dim, res.Entries, res.MaxHeight, res.Backup, reset)
-			case res.Replaced:
-				fmt.Printf("  %s✓%s Checkpoints downloaded %s(%d entries, max %d)%s\n", green, reset, dim, res.Entries, res.MaxHeight, reset)
-			}
-		}
+		refreshCheckpointsBeforeStart(net, cc)
 
 		fmt.Printf("  Starting %s%s%s core %s(%s)...%s\n", nc(net), net, reset, dim, resolved, reset)
 		pid, err := startCore(net, cc, binPath)
@@ -590,6 +580,7 @@ func upgradeStable() error {
 		if err := stopCore(net); err != nil && !errors.Is(err, errCoreNotRunning) {
 			Warnf("%v", err)
 		}
+		refreshCheckpointsBeforeStart(net, cc)
 		newPid, err := startCore(net, cc, destPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  %s✗%s %s%s%s restart failed: %v\n", pink, reset, NetColor(net, NoColor), net, reset, err)

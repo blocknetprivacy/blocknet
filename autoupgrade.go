@@ -139,6 +139,7 @@ func restartTracking(cfg *Config, track, label, binPath string) int {
 		nc := NetColor(net, NoColor)
 		fmt.Printf("  Restarting %s%s%s core with %s...\n", nc, net, reset, label)
 		stopCore(net)
+		refreshCheckpointsBeforeStart(net, cfg.Cores[net])
 		newPid, err := startCore(net, cfg.Cores[net], binPath)
 		if err != nil {
 			Warnf("could not restart %s: %v", net, err)
