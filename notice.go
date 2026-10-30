@@ -24,7 +24,17 @@ func upgradeNoticeFrom(statusRaw json.RawMessage) string {
 	return builtinUpgradeNotice
 }
 
-func runningCoreNotice(cfg *Config) string {
+func updateNoticeFrom(statusRaw json.RawMessage) string {
+	var st struct {
+		UpdateNotice string `json:"update_notice"`
+	}
+	if json.Unmarshal(statusRaw, &st) != nil {
+		return ""
+	}
+	return strings.TrimSpace(st.UpdateNotice)
+}
+
+func runningCoreStatus(cfg *Config) json.RawMessage {
 	for _, net := range []Network{Mainnet, Testnet} {
 		cc := cfg.Cores[net]
 		if cc == nil || cc.APIAddr == "" {
@@ -37,16 +47,27 @@ func runningCoreNotice(cfg *Config) string {
 		raw, err := NewCoreClientDirect(cc.APIAddr, "").Status(ctx)
 		cancel()
 		if err == nil {
-			return upgradeNoticeFrom(raw)
+			return raw
 		}
 	}
-	return builtinUpgradeNotice
+	return nil
+}
+
+func printCoreNotices(statusRaw json.RawMessage, noColor bool) {
+	printUpgradeNotice(upgradeNoticeFrom(statusRaw), noColor)
+	if n := updateNoticeFrom(statusRaw); n != "" {
+		printNoticeSection("Update", n, noColor)
+	}
 }
 
 // printUpgradeNotice prints the notice as its own section: a blank line, an
 // amber "# Network upgrade" heading, a blank line and the plain wrapped text.
 func printUpgradeNotice(text string, noColor bool) {
-	fmt.Printf("\n%s\n\n", WarnHead("Network upgrade", noColor))
+	printNoticeSection("Network upgrade", text, noColor)
+}
+
+func printNoticeSection(head, text string, noColor bool) {
+	fmt.Printf("\n%s\n\n", WarnHead(head, noColor))
 	for _, line := range wrapWords(text, 72) {
 		fmt.Printf("  %s\n", line)
 	}

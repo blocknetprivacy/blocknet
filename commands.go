@@ -220,7 +220,7 @@ func startNetworks(args []string, title, usage string, before func([]Network)) e
 			fmt.Printf("  %s✓%s %s%s%s running %s(pid %d, api %s)%s\n", green, reset, nc(net), net, reset, dim, pid, cc.APIAddr, reset)
 		}
 	}
-	printUpgradeNotice(runningCoreNotice(cfg), NoColor)
+	printCoreNotices(runningCoreStatus(cfg), NoColor)
 	fmt.Println()
 	return nil
 }
@@ -293,7 +293,7 @@ func cmdStatus(args []string) error {
 
 	_, _, amber, _, dim, reset := Palette(NoColor)
 
-	notice := builtinUpgradeNotice
+	var statusRaw json.RawMessage
 
 	watchedNets := make(map[Network]bool)
 	if wdPid, nets, err := readWatchdogState(); err == nil && processAlive(wdPid) {
@@ -363,7 +363,7 @@ func cmdStatus(args []string) error {
 		if err != nil {
 			continue
 		}
-		notice = upgradeNoticeFrom(raw)
+		statusRaw = raw
 
 		var status struct {
 			Height  uint64 `json:"chain_height"`
@@ -380,7 +380,7 @@ func cmdStatus(args []string) error {
 			row("Explorer", cc.ExplorerAddr)
 		}
 	}
-	printUpgradeNotice(notice, NoColor)
+	printCoreNotices(statusRaw, NoColor)
 	fmt.Println()
 	return nil
 }

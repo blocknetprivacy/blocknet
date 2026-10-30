@@ -447,7 +447,7 @@ func (s *AttachSession) printWelcome() {
 	}
 	fmt.Println()
 	fmt.Println("  Type 'help' for available commands")
-	printUpgradeNotice(upgradeNoticeFrom(st.raw), s.noColor)
+	printCoreNotices(st.raw, s.noColor)
 }
 
 func (s *AttachSession) listenEvents() {

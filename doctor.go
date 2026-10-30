@@ -314,7 +314,7 @@ func cmdDoctor(args []string) error {
 		warn("Watchdog", "not running")
 	}
 
-	printUpgradeNotice(runningCoreNotice(cfg), NoColor)
+	printCoreNotices(runningCoreStatus(cfg), NoColor)
 
 	fmt.Println()
 	switch {
