@@ -49,3 +49,4 @@ Note: The build process doesn't generate any text output, only a `blocknet` or `
 - [Wallet Management](docs/reference-wallet.md): loading, passwords, backups, recovery, and security
 - [Version Management & Upgrades](docs/reference-upgrade.md): installing, pinning, upgrading, cleanup, and nightly builds
 - [Troubleshooting & FAQ](docs/troubleshooting.md): common issues and how to fix them
+- [Run a Seed Node](docs/run-a-seed.md): help new nodes join the network

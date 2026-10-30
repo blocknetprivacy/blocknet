@@ -82,7 +82,7 @@ Each network has its own configuration block. All fields are optional; omitted f
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `listen` | string | `""` | P2P listen address. When empty, uses the network default (mainnet `:28080`, testnet `:38080`). Set to a specific address/port to override (e.g. `"0.0.0.0:28080"`). |
+| `listen` | string | `""` | P2P listen address as a multiaddr. When empty, uses the network default (mainnet `/ip4/0.0.0.0/tcp/28080`, testnet `/ip4/0.0.0.0/tcp/38080`). Set it to override, for example `"/ip4/0.0.0.0/tcp/28080"`. The core rejects the `host:port` form. |
 | `seed` | bool | `false` | Run as a seed node with persistent p2p identity. Seed nodes help new nodes discover peers. |
 | `p2p_max_inbound` | int | `0` | Maximum inbound peer connections. `0` means use the core's default. |
 | `p2p_max_outbound` | int | `0` | Maximum outbound peer connections. `0` means use the core's default. |
@@ -212,13 +212,15 @@ The core does not open this wallet at startup, because the wallet needs its pass
 
 ### Seed node (no wallet, maximum peers)
 
+See [Run a seed node](run-a-seed.md) for the full steps.
+
 ```json
 {
   "cores": {
     "mainnet": {
       "enabled": true,
       "seed": true,
-      "listen": "0.0.0.0:28080",
+      "listen": "/ip4/0.0.0.0/tcp/28080",
       "p2p_max_inbound": 128,
       "p2p_max_outbound": 16
     }
