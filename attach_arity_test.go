@@ -39,7 +39,7 @@ func TestCommandArity_CoversDispatch(t *testing.T) {
 		"send", "sign", "verify", "history", "hist", "h", "outputs", "outs", "out", "peers", "banned",
 		"export-peer", "mining", "load", "unload", "sync", "scan", "seed", "import", "viewkeys", "prove",
 		"lock", "unlock", "audit", "explore", "exp", "mempool", "purge", "certify", "save-checkpoints",
-		"load-checkpoints", "license", "about", "quit", "exit", "q"}
+		"load-checkpoints", "license", "about", "priority", "bump", "quit", "exit", "q"}
 	for _, c := range cmds {
 		if _, ok := commandArity[c]; !ok && !freeText[c] {
 			t.Errorf("%q is missing from commandArity", c)
@@ -60,7 +60,7 @@ func TestSend_BNTUnitIsNotMemo(t *testing.T) {
 			}
 		}
 		json.NewEncoder(w).Encode(map[string]any{"fee": 1})
-	}), "n\n", "testwallet.wallet.dat")
+	}), "\nn\n", "testwallet.wallet.dat")
 
 	for _, unit := range []string{"BNT", "bnt", "Bnt"} {
 		got = nil
@@ -97,7 +97,7 @@ func TestSendAll_BadPreviewJSON(t *testing.T) {
 		case "/api/wallet/send/advanced":
 			w.Write([]byte(`{"fee": "oops"}`))
 		}
-	}), "y\n", "testwallet.wallet.dat")
+	}), "\ny\n", "testwallet.wallet.dat")
 
 	if err := session.cmdSend([]string{"9PNoaddr", "all"}); err == nil {
 		t.Fatal("expected an error for a bad fee preview")

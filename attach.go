@@ -122,6 +122,10 @@ func (s *AttachSession) executeCommand(line string) error {
 		return s.cmdAddress()
 	case "send":
 		return s.cmdSend(args)
+	case "priority":
+		return s.cmdPriority(args)
+	case "bump":
+		return s.cmdBump(args)
 	case "sign":
 		return s.cmdSign()
 	case "verify":
@@ -222,6 +226,8 @@ var commandArity = map[string]arity{
 	"load-checkpoints": {0, "load-checkpoints"},
 	"license":          {0, "license"},
 	"about":            {0, "about"},
+	"priority":         {2, priorityUsage},
+	"bump":             {1, "bump <txid>"},
 	"quit":             {0, "quit"}, "exit": {0, "quit"}, "q": {0, "quit"},
 }
 
@@ -238,7 +244,7 @@ const (
 var needsUnlockedWallet = map[string]bool{
 	"balance": true, "bal": true, "b": true,
 	"address": true, "addr": true, "a": true,
-	"send": true, "sign": true,
+	"send": true, "sign": true, "bump": true,
 	"history": true, "hist": true, "h": true,
 	"outputs": true, "outs": true, "out": true,
 	"seed": true, "viewkeys": true, "prove": true, "audit": true,

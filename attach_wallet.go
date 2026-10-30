@@ -479,8 +479,13 @@ func (s *AttachSession) cmdSend(args []string) error {
 
 	ctx := context.Background()
 
+	fee, err := s.askFeePriority(ctx)
+	if err != nil {
+		return err
+	}
+
 	if sendAll {
-		return s.sendAll(ctx, address, memoText, memoHex, memoDisplay)
+		return s.sendAll(ctx, address, memoText, memoHex, memoDisplay, fee)
 	}
 
 	recipient := map[string]any{"address": address, "amount": amount}
@@ -490,8 +495,9 @@ func (s *AttachSession) cmdSend(args []string) error {
 		recipient["memo_text"] = memoText
 	}
 	sendReq := map[string]any{
-		"recipients": []map[string]any{recipient},
-		"dry_run":    true,
+		"recipients":         []map[string]any{recipient},
+		"dry_run":            true,
+		"extra_fee_per_byte": fee.extra,
 	}
 
 	raw, err := s.client.Post(ctx, "/api/wallet/send", sendReq)
@@ -517,7 +523,7 @@ func (s *AttachSession) cmdSend(args []string) error {
 		fmt.Println()
 	}
 	fmt.Printf("  Send %s to %s?\n", FormatAmount(amount), address)
-	fmt.Printf("  Fee:      %s\n", FormatAmount(preview.Fee))
+	fmt.Printf("  Fee:      %s (%s)\n", FormatAmount(preview.Fee), fee.label())
 	if resolved.ResolvedHandle != "" {
 		fmt.Printf("  Address:  %s\n", resolved.ResolvedAddress)
 	}
@@ -527,10 +533,8 @@ func (s *AttachSession) cmdSend(args []string) error {
 	if memoDisplay != "" {
 		fmt.Printf("  Memo:     %s\n", memoDisplay)
 	}
-	fmt.Print("  Confirm [y/N]: ")
-
-	confirm, _ := s.reader.ReadString('\n')
-	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
+	s.printFeeWarning(fee, amount+preview.Fee)
+	if !s.confirmFee(fee, preview.Fee) {
 		fmt.Println("  Cancelled")
 		return nil
 	}
@@ -552,7 +556,7 @@ func (s *AttachSession) cmdSend(args []string) error {
 	return nil
 }
 
-func (s *AttachSession) sendAll(ctx context.Context, address, memoText, memoHex, memoDisplay string) error {
+func (s *AttachSession) sendAll(ctx context.Context, address, memoText, memoHex, memoDisplay string, fee feeChoice) error {
 	raw, err := s.client.Get(ctx, "/api/wallet/outputs")
 	if err != nil {
 		return s.handleAPIError(err)
@@ -590,9 +594,10 @@ func (s *AttachSession) sendAll(ctx context.Context, address, memoText, memoHex,
 		recipient["memo_text"] = memoText
 	}
 	sendReq := map[string]any{
-		"recipients": []map[string]any{recipient},
-		"inputs":     inputs,
-		"dry_run":    true,
+		"recipients":         []map[string]any{recipient},
+		"inputs":             inputs,
+		"dry_run":            true,
+		"extra_fee_per_byte": fee.extra,
 	}
 
 	raw, err = s.client.Post(ctx, "/api/wallet/send/advanced", sendReq)
@@ -624,17 +629,15 @@ func (s *AttachSession) sendAll(ctx context.Context, address, memoText, memoHex,
 		fmt.Println()
 	}
 	fmt.Printf("  Send all (%s) to %s?\n", FormatAmount(amount), address)
-	fmt.Printf("  Fee:      %s\n", FormatAmount(preview.Fee))
+	fmt.Printf("  Fee:      %s (%s)\n", FormatAmount(preview.Fee), fee.label())
 	if resolved.ResolvedHandle != "" {
 		fmt.Printf("  Address:  %s\n", resolved.ResolvedAddress)
 	}
 	if memoDisplay != "" {
 		fmt.Printf("  Memo:     %s\n", memoDisplay)
 	}
-	fmt.Print("  Confirm [y/N]: ")
-
-	confirm, _ := s.reader.ReadString('\n')
-	if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
+	s.printFeeWarning(fee, total)
+	if !s.confirmFee(fee, preview.Fee) {
 		fmt.Println("  Cancelled")
 		return nil
 	}
@@ -782,6 +785,7 @@ func (s *AttachSession) cmdHistory() error {
 			RecordedHeight uint64 `json:"recorded_height"`
 			InMempool      bool   `json:"in_mempool"`
 			TotalAmount    uint64 `json:"total_amount"`
+			Bumps          int    `json:"bumps"`
 			Recipients     []struct {
 				MemoHex string `json:"memo_hex"`
 			} `json:"recipients"`
@@ -800,6 +804,7 @@ func (s *AttachSession) cmdHistory() error {
 		txid      string
 		memoHex   string
 		spent     bool
+		bumps     int
 	}
 
 	var events []event
@@ -816,7 +821,7 @@ func (s *AttachSession) cmdHistory() error {
 		}
 		events = append(events, event{
 			height: o.RecordedHeight, pending: o.InMempool, direction: "OUT",
-			amount: o.TotalAmount, txid: o.TxID, memoHex: memo,
+			amount: o.TotalAmount, txid: o.TxID, memoHex: memo, bumps: o.Bumps,
 		})
 	}
 
@@ -866,6 +871,9 @@ func (s *AttachSession) cmdHistory() error {
 			if e.spent {
 				extras += "  (spent)"
 			}
+		}
+		if e.bumps > 0 {
+			extras += "  (sped up)"
 		}
 		fmt.Printf("  %s  %s  %s  %s%s\n",
 			PadRight(where(e), whereW), PadRight(color+e.direction+reset, 3),

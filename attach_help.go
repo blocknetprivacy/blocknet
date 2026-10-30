@@ -29,6 +29,10 @@ func normalizeHelpTopic(topic string) string {
 		return "address"
 	case "send":
 		return "send"
+	case "priority":
+		return "priority"
+	case "bump":
+		return "bump"
 	case "sign":
 		return "sign"
 	case "verify":
@@ -158,12 +162,14 @@ func helpCommandDetails() map[string]helpEntry {
 				"> send 9PNo... all",
 			},
 			exampleOutput: []string{
+				"  Priority [normal/fast/urgent/custom] (Enter = normal):",
+				"",
 				"# Send",
 				"",
 				"  Resolved @rock -> 9PNo... ✓ verified",
 				"",
 				"  Send 100 BNT to @rock?",
-				"  Fee:      0.0001 BNT",
+				"  Fee:      0.0004893 BNT (normal, 10 per byte)",
 				"  Address:  9PNo...",
 				"  Memo:     hello",
 				"  Confirm [y/N]: y",
@@ -175,6 +181,8 @@ func helpCommandDetails() map[string]helpEntry {
 				"memos with spaces are supported",
 				"short names can be used as @name or $name",
 				"'send <addr> all' sends your whole spendable balance minus the fee",
+				"each send asks for a fee priority; Enter uses your default (see 'help priority')",
+				"urgent and custom fees need you to type yes, not y",
 				"a bntpay.com or blocknet: payment link can be pasted as a command",
 			},
 		},
@@ -425,6 +433,51 @@ func helpCommandDetails() map[string]helpEntry {
 			exampleInput:  []string{"> version"},
 			exampleOutput: []string{"# blocknet v1.2.1"},
 		},
+		"bump": {
+			usage:        []string{"bump <txid>"},
+			description:  []string{"Speeds up a pending send by paying a higher fee."},
+			useWhen:      []string{"a send is stuck in the mempool behind higher fees"},
+			exampleInput: []string{"> bump 5d0dd597d3e3..."},
+			exampleOutput: []string{
+				"  Priority [normal/fast/urgent/custom] (Enter = normal): fast",
+				"",
+				"# Speed up",
+				"",
+				"  Send:     5d0dd597d3e3...",
+				"  Old fee:  0.0004893 BNT",
+				"  New fee:  0.0009786 BNT (20 per byte)",
+				"  Costs:    0.0004893 BNT more",
+				"  Confirm [y/N]: y",
+				"  Sped up:  9f0b...",
+			},
+			notes: []string{
+				"the new fee rate is at least the old rate plus the base rate, even if you pick a lower level",
+				"the bump spends the same coins and may add one if the change is too small",
+				"nodes that are not updated keep the old send until it confirms or expires",
+			},
+		},
+		"priority": {
+			usage:       []string{"priority", "priority normal|fast|urgent", "priority custom <extra>"},
+			description: []string{"Shows or sets the default fee priority for send."},
+			useWhen:     []string{"the mempool is busy and you want sends to confirm sooner"},
+			exampleInput: []string{
+				"> priority",
+				"> priority fast",
+				"> priority custom 100",
+			},
+			exampleOutput: []string{
+				"# Fee priority",
+				"",
+				"  Default:  normal (10 per byte)",
+				"  Levels:   " + feeLevelsText(),
+				"  Change:   priority fast",
+			},
+			notes: []string{
+				"the fee is paid per byte: the core's base rate plus the extra of the level you pick",
+				"miners take the highest fee per byte first, so a higher priority confirms sooner when blocks are full",
+				"the default is saved in config.json; each send can still pick another level",
+			},
+		},
 		"about": {
 			usage:         []string{"about"},
 			description:   []string{"Shows project info, links and third-party libraries."},
@@ -460,6 +513,8 @@ var helpWalletRows = []helpRow{
 	{"address", "Shows the receive address"},
 	{"send <addr> <amt> [memo]", "Sends BNT, with an optional memo"},
 	{"send <addr> all [memo]", "Sends the whole spendable balance"},
+	{"priority [level]", "Shows or sets the default fee priority"},
+	{"bump <txid>", "Speeds up a pending send with a higher fee"},
 	{"sign", "Signs a message with your spend key"},
 	{"verify", "Checks a signed message against an address"},
 	{"history", "Shows incoming and outgoing transactions"},

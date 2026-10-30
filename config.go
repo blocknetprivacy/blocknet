@@ -10,8 +10,10 @@ import (
 )
 
 type Config struct {
-	CheckInterval string                  `json:"check_interval"`
-	Cores         map[Network]*CoreConfig `json:"cores"`
+	CheckInterval   string                  `json:"check_interval"`
+	FeePriority     string                  `json:"fee_priority,omitempty"`
+	FeeExtraPerByte uint64                  `json:"fee_extra_per_byte,omitempty"`
+	Cores           map[Network]*CoreConfig `json:"cores"`
 }
 
 type CoreConfig struct {
